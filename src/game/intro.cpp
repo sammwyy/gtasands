@@ -5,8 +5,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "platform/input.h"
+#include "assets/ds_formats.h"
+#include "assets/texture.h"
 #include "hud/hud.h"
+#include "platform/input.h"
+#include "render/sprite2d.h"
 
 namespace intro {
 
@@ -26,6 +29,9 @@ struct DvidHeader {
 #define PNT           (*(vu16*)(SND0 + 10))
 #define LEN           (*(vu16*)(SND0 + 12))
 
+// DTEX scratch: 16B header + 64KB pixels + 512B palette
+static u8 s_dtex[16 + 65536 + 512];
+
 static bool playDvid(const char* path) {
 	FILE* f = fopen(path, "rb");
 	if (!f) return false;
@@ -34,16 +40,10 @@ static bool playDvid(const char* path) {
 		fclose(f);
 		return false;
 	}
-	hud::log("intro %s: %uf %ufps %uHz", path, dh.numFrames, (unsigned)dh.fps, (unsigned)dh.audioRate);
+	hud::log("intro %s: %uf %ufps %uHz", path, (unsigned)dh.numFrames, (unsigned)dh.fps, (unsigned)dh.audioRate);
 	const u32 frameBytes = (u32)dh.w * dh.h;
 	u8* frame = (u8*)malloc(frameBytes);
-	u8* ring = (u8*)calloc(1, 65536); // ~1.5s @ 22050Hz, ring buffer
-
-	videoSetMode(MODE_5_2D);
-	vramSetBankA(VRAM_A_MAIN_BG);
-	int bg = bgInit(2, BgType_Bmp8, BgSize_B8_256x256, 0, 0);
-	dmaCopy(dh.palette, BG_PALETTE, 512);
-	dmaFillWords(0, bgGetGfxPtr(bg), 256 * 256);
+	u8* ring = (u8*)calloc(1, 65536); // ~1.5s @ 22050Hz
 
 	soundEnable();
 	u8* wr = ring;
@@ -54,12 +54,25 @@ static bool playDvid(const char* path) {
 	CNT_H = 64 << 8;
 	CNT_L = 127 | (1u << 10) | (1u << 12) | (1u << 15); // vol,loop,pcm16,enable
 
+	// fabricate a pal256 DTEX around the frame buffer; DS textures need powers
+	// of two -> video rows go into a 256x256 texture (bottom rows stay black)
+	memset(s_dtex + 16, 0, 65536);
+	ds::TexHeader* th = (ds::TexHeader*)s_dtex;
+	th->magic = DS_FOURCC('D', 'T', 'E', 'X');
+	th->width = dh.w;
+	th->height = dh.h == dh.w ? dh.h : dh.w; // 192 -> 256
+	th->format = 4; // GL_RGB256
+	th->flags = 0;
+	th->numColors = 256;
+	th->texelBytes = (u32)th->width * th->height;
+	memcpy(s_dtex + 16 + th->texelBytes, dh.palette, 512);
+
 	const int framesPerVblank = 60 / (dh.fps ? dh.fps : 10);
 	bool done = false;
+	tex::Texture* t = nullptr;
 	u32 audioLeft = 0;
 	for (u32 i = 0; i < dh.numFrames && !done; i++) {
 		if (fread(&audioLeft, 4, 1, f) != 1) audioLeft = 0;
-		// write audio chunk into ring (wraps)
 		u32 left = audioLeft;
 		while (left) {
 			u32 space = ring + 65536 - wr;
@@ -70,8 +83,16 @@ static bool playDvid(const char* path) {
 			left -= n;
 		}
 		if (fread(frame, 1, frameBytes, f) != frameBytes) break;
-		dmaCopy(frame, bgGetGfxPtr(bg), frameBytes);
-		// skip on real button press only, after a warmup window
+		memcpy(s_dtex + 16, frame, frameBytes);
+		tex::unload(t);
+		t = tex::load(s_dtex);
+
+		sprite::beginFrame();
+		sprite::rect({ 0, 0, 640, 480 }, { 0, 0, 0, 255 });
+		sprite::draw(t, { 0, 0, 640, 480 }, { 255, 255, 255, 255 });
+		sprite::endFrame();
+		glFlush(0);
+
 		input::poll();
 		if (i > 10 && (input::get().down & (KEY_A | KEY_B | KEY_START | KEY_X | KEY_Y |
 		                                  KEY_L | KEY_R | KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)))
@@ -80,23 +101,10 @@ static bool playDvid(const char* path) {
 	}
 
 	CNT_L = 0;
+	tex::unload(t);
 	fclose(f);
 	free(frame);
 	free(ring);
-
-	// restore 3D mode for the menu/game
-	videoSetMode(MODE_0_3D);
-	vramSetBankA(VRAM_A_TEXTURE);
-	glInit();
-	glEnable(GL_TEXTURE_2D | GL_ANTIALIAS);
-	glViewport(0, 0, 255, 191);
-	glClearColor(10, 14, 22, 31);
-	glClearPolyID(63);
-	glClearDepth(GL_MAX_DEPTH);
-	glMatrixMode(GL_PROJECTION);
-	glLoadIdentity();
-	gluPerspective(60, 256.0f / 192.0f, 0.1f, 200.0f);
-	glMatrixMode(GL_MODELVIEW);
 	return true;
 }
 
