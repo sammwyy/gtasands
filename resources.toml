@@ -177,6 +177,11 @@ texture = { scale = 0.5, max_size = 256, auto_colors = 256 }
 match = "models/particle.txd"
 texture = { max_size = 32 }
 
+[[models_loose.rule]]     # sky sprites drawn additively on PC: luminance -> alpha (a5i3), see render/sky.cpp
+match = "models/particle.txd"
+match_texture = ["coronastar", "coronamoon", "cloud1"]
+texture = { max_size = 32, format = "a5i3", additive = true }
+
 # -----------------------------------------------------------------------------
 [data]                    # IDE/IPL/DAT/handling/scm: copied verbatim
 kind = "copy"

@@ -91,6 +91,9 @@ extern State g;
 // Month is 1..12, day is 1..daysInMonth, weekday is 1..7 (a new game is 4).
 extern unsigned g_clockH, g_clockM, g_clockDay, g_clockMonth;
 extern int g_weekday;
+unsigned clockSeconds();    // CClock::ms_nGameClockSeconds, 0..59
+float minutesToday();       // CClock::GetMinutesToday (fractional, 0..1440)
+void setClock(unsigned h, unsigned m);   // CClock::SetGameClock (seconds reset)
 
 void init();
 void update();            // once per frame while INGAME and the menu is down

@@ -11,7 +11,7 @@ BPP = {A3I5: 8, PAL4: 2, PAL16: 4, PAL256: 8, A5I3: 8, DIRECT: 16}
 FLAG_COLOR0_TRANSPARENT, FLAG_ALPHA = 1, 2
 
 DEFAULTS = dict(scale=1.0, max_size=256, min_size=8, format='auto', auto_colors=16,
-                alpha_threshold=24, opaque=False)
+                alpha_threshold=24, opaque=False, additive=False)
 
 
 def _pow2_floor(n):
@@ -114,9 +114,26 @@ def _mapper(pal):
     return m
 
 
+def additive_to_alpha(px):
+    """PC additive sprites (blend ONE/ONE: coronas, moon, clouds) -> alpha-blend
+    equivalent: alpha = brightest channel, colour normalised to full intensity.
+    The DS has no additive blending; over a dark sky a*c + (1-a)*dst ~ dst + c."""
+    out = bytearray(px)
+    for i in range(0, len(px), 4):
+        r, g, b, a = px[i:i + 4]
+        m = max(r, g, b)
+        if m:
+            out[i:i + 4] = bytes((r * 255 // m, g * 255 // m, b * 255 // m, m * a // 255))
+        else:
+            out[i:i + 4] = b'\0\0\0\0'
+    return out
+
+
 def encode(px, w, h, p):
     """RGBA8 -> (format, flags, texel bytes, palette list)."""
     n = w * h
+    if p.get('additive'):
+        px = additive_to_alpha(px)
     cols = [rgb15(px[i * 4], px[i * 4 + 1], px[i * 4 + 2]) for i in range(n)]
     alpha = px[3::4] if not p['opaque'] else b'\xff' * n
     th = p['alpha_threshold']

@@ -393,8 +393,17 @@ static void exercise(bool sprinting, bool running, uint32_t ms) {
 	}
 }
 
+unsigned clockSeconds() { return s_clockAcc; }   // 60 vblanks per game minute -> 1 vblank = 1 game second
+float minutesToday() { return (float)(g_clockH * 60 + g_clockM) + (float)s_clockAcc / 60.0f; }
+void setClock(unsigned h, unsigned m) {
+	g_clockH = h % 24;
+	g_clockM = m % 60;
+	s_clockAcc = 0;
+}
+
+// CClock::Update. dbg::opts.clockRate scales it (0 = gbFreezeTime).
 static void tickClock(uint32_t vblanks) {
-	s_clockAcc += vblanks;
+	s_clockAcc += vblanks * (uint32_t)dbg::opts.clockRate;
 	while (s_clockAcc >= 60) { // 60 vblanks = 1 real second = 1 game minute
 		s_clockAcc -= 60;
 		g_clockM++;
@@ -424,6 +433,12 @@ static void tickClock(uint32_t vblanks) {
 		}
 	}
 }
+
+// CCam::Process_FollowPed: the camera swings round only behind a ped that
+// walks away from it (or sideways). Stick back = CJ turns to face the camera
+// and walks straight at it; the camera keeps its heading and just backs off
+// (it is on a string around him), it never spins 180 degrees.
+static bool camFollows() { return fabsf(wrap(g.heading - s_camYaw)) < 1.9f; }
 
 static void followCam(float targetYaw) {
 	float diff = wrap(targetYaw - s_camYaw);
@@ -634,7 +649,7 @@ static void updateMove() {
 		const float vx = wx / DT + (s_action == ACT_GLIDE ? s_jumpVX : 0.0f);
 		const float vy = wy / DT + (s_action == ACT_GLIDE ? s_jumpVY : 0.0f);
 		g.speed = sqrtf(vx * vx + vy * vy);
-		if (!looking && !g.aiming) followCam(g.heading);
+		if (!looking && !g.aiming && camFollows()) followCam(g.heading);
 		else { s_betaSpeed = 0.0f; s_betaSign = 0; }
 		return;
 	}
@@ -685,7 +700,7 @@ static void updateMove() {
 
 	// keyboard-mode camera: swings back behind CJ while he moves (or is
 	// still finishing a start/stop) unless the player is looking around
-	if (!looking && !g.aiming && (moving || s_move.phase != 0))
+	if (!looking && !g.aiming && (moving || s_move.phase != 0) && camFollows())
 		followCam(g.heading);
 	else { s_betaSpeed = 0.0f; s_betaSign = 0; }
 }

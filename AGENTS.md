@@ -3,70 +3,60 @@
 C++17 ARM9 homebrew (devkitARM + libnds/calico), porting the gta-reversed decompilation, with a
 Python asset pipeline that converts the PC game files into DS-native formats packed in NitroFS.
 
-Current state: boot + screen setup + placeholder 3D scene + HUD console + NitroFS + DSPK reader on
-the runtime side; full asset pipeline (textures, models, collision, anims, SFX, streams) on the tools
-side. No game logic ported yet. See "Roadmap" for what to do next.
+**Read `ARCHITECTURE.md` first** - it maps every directory/system (frame loop, render engine and
+DS hardware rules, time cycle/weather/sky, player/camera/anims, HUD, loading jobs, memory,
+asset pipeline and formats, optimisation strategies, porting map). Use it instead of re-reading
+the code base; open source files only for the parts you are changing, and update
+ARCHITECTURE.md when a system changes or a new one lands.
+
+Current state: frontend + loading screen + intro, CJ (clothes, anims, locomotion, jump/fight/aim),
+bottom-screen GTA HUD with radar, debug UI, time cycle + weather + sky/fog/rain on a placeholder
+ground. No world streaming yet (see Roadmap).
 
 ## Toolchain
-- devkitPro at `~/devkitpro` (`DEVKITPRO`/`DEVKITARM` exported; `source ~/devkitpro/devkitarm.sh`).
-- Emulator: melonDS at `~/bin/melonds` (AppImage wrapper). Override with `EMU=...`.
-- Python 3.12 stdlib only (no pip/venv on this machine, no numpy/PIL). `ffmpeg` is used for OGG streams.
-- The PC game lives at `/mnt/c/Program Files (x86)/Steam/steamapps/common/Grand Theft Auto San Andreas`
-  (WSL). It is heavily modded (SAMP, CLEO, modloader, ENB); `gta3.img` is stock, some `data/` files may not be.
+- devkitPro at `~/devkitpro` (`source ~/devkitpro/devkitarm.sh`).
+- Emulator: melonDS at `~/bin/melonds` (AppImage wrapper). Override with `EMU=...`. It ignores
+  SIGTERM sometimes: use `timeout -s INT` and `pkill -f -i melonds` if a run hangs around.
+- Python 3.12 stdlib only (no pip/venv, no numpy/PIL). `ffmpeg` is used for OGG streams/movies.
+- PC game: `/mnt/c/Program Files (x86)/Steam/steamapps/common/Grand Theft Auto San Andreas`
+  (heavily modded: SAMP, CLEO, modloader, ENB; `gta3.img` stock, some `data/` files are not,
+  e.g. `timecyc.dat`).
 
 ## Build / run
-- `make -j16` -> `gtasads.nds`. Runs the asset build first if `resources.toml` or `tools/**.py` changed.
-  Must stay warning-free (`-Wall -Wextra`, libnds headers are `-isystem`).
-- `make build` / `make -j16` -> normal ROM. `make build-quick` -> same ROM with
-  `-DGTASADS_QUICKTEST` (skips intro movies, auto-starts the game, forces the GAME hud
-  screen - headless smoke path). Both write `gtasads.nds`; `make run` launches it (builds
-  first if missing). A `build/.optsig` stamp forces recompilation when OPT flags change,
-  so toggling QUICKTEST/FAT/DEBUG no longer needs `make clean`.
-- `make ASSETS=0` - skip the asset pipeline (fast code iteration).
-- `make FAT=1` - SD-backed build: assets are NOT embedded; at runtime they are read from
-  `sd:/gtasads/` (devoptab `nitro:` -> `fat:` redirect in `platform/fs.cpp`). Produces a ~350 KB
-  .nds that boots as homebrew under TWiLight Menu++ — the ~400 MB NitroFS build crashes
-  nds-bootstrap's homebrew loader ("an error occurred").
-- `make sdcard` - stage `sdcard/gtasads/` (full asset tree) + `sdcard/gtasads.nds`; copy both to
-  the SD root to run on hardware (DSi + TWiLight: no DLDI patch needed, DSi SD driver is used).
-- `make dldi` - patch `gtasads.nds` with `tools/dldi/r4tfv2.dldi` so melonDS's virtual flashcart
-  SD works. melonDS is configured with `[DLDI] Enable=true, FolderSync=true,
-  FolderPath=<repo>/sdcard` in `~/.config/melonDS/melonDS.toml`. NOTE: writes land in `dldi.bin`
-  (the virtual FAT image), not the host folder; FolderSync is one-way at boot.
-- DEBUG builds (`DEBUG=1`) write `fat:/gtasads_fsok.txt` on fat backend init - an observable
-  proof the SD path works when you can't see the screen (emulator or hardware).
-- `make sync` / `make assets` - wrappers for `tools/assets.py sync|build`.
-- `DEBUG=1` for `-Og -DGTASADS_DEBUG`. `make compdb` for `compile_commands.json`.
-- `make clean` / `make distclean` (also removes `nitrofs/`).
-- Smoke test: `timeout 8 melonds gtasads.nds` must not crash (exit 124 = still running = good). You
-  can't see the screen from the agent; ask the user for a screenshot/HUD log when visuals matter.
-- Fat-backend test: `make FAT=1 DEBUG=1 && make sdcard && make dldi && timeout 12 melonds
-  gtasads.nds`, then `strings dldi.bin | grep "probe"` -> `probe ok` means the whole chain works.
+- `make -j16` -> `gtasads.nds`. Runs the asset build first if `resources.toml` or `tools/**.py`
+  changed. **Must stay warning-free** (`-Wall -Wextra`, libnds headers are `-isystem`).
+- `make ASSETS=0` skip the asset pipeline (fast code iteration). `DEBUG=1` = `-Og -DGTASADS_DEBUG`.
+- `make build-quick` (= `QUICKTEST=1`): skips intro movies, auto-starts the game, forces the GAME
+  HUD screen. `build/.optsig` forces recompilation when flags change (no `make clean` needed).
+  Note: every make invocation must repeat the same flags, or it rebuilds with the default ones.
+- `make FAT=1`: assets not embedded, read from `sd:/gtasads/` (`nitro:` -> `fat:` redirect);
+  ~450 KB .nds that boots under TWiLight Menu++ (the ~400 MB NitroFS build crashes nds-bootstrap).
+- `make sdcard` stages `sdcard/gtasads/` + `sdcard/gtasads.nds`; `make dldi` patches the ROM with
+  `tools/dldi/r4tfv2.dldi` for melonDS's virtual SD. `make sd` = clean FAT build + both.
+- `make sync` / `make assets` wrap `tools/assets.py sync|build`. `make compdb`, `make clean`,
+  `make distclean` (also removes `nitrofs/`).
 
-## Layout
-- `src/` engine code; every subdir is auto-discovered by the Makefile. Objects are flattened into
-  `build/`, so source basenames must be unique (the Makefile errors on duplicates).
-  - `platform/` video (screen/VRAM setup), input, fs (NitroFS), timing (profiling, timers 0+1)
-  - `render/` top screen 3D (placeholder scene)
-  - `hud/` bottom screen 2D console: stats rows 0-9, log rows 10-23 (`hud::log`)
-  - `assets/` `ds_formats.h` (all binary layouts, mirrors the Python writers) + `pack.{h,cpp}` (DSPK reader)
-- `third_party/gta-reversed/` shallow git submodule. Reference only, never compiled as-is: port code
-  into `src/` piece by piece. `git submodule update --init --depth 1`.
-- `game/` (gitignored) PC files needed by enabled sections, filled by `tools/assets.py sync`.
-- `nitrofs/` (gitignored) generated by the pipeline, packed into the ROM by ndstool.
-- `resources.toml` asset build config (the main knob file). `tools/` pipeline code.
-- `build/assets_cache/` per-entry conversion cache (safe to delete), `build/assets_report.json`,
-  `build/assets_manifest.json` (outputs of the last full build; stale files get pruned), `build/preview/`.
+## Verification
+- Smoke: `timeout -s INT 8 melonds gtasads.nds` must not crash (exit 124 = still running).
+  You can't see the screen: ask the user for screenshots when visuals matter.
+- Headless numbers (preferred): DEBUG builds write `fat:/gtasads_hudok.txt` after 120 in-game
+  frames: hud stats, mem summary, fps/cpu per section, per-tag bytes, VRAM, a `sky:` line
+  (weather, sky colours, far/fog, sun z, polys) and the last log lines.
+  ```
+  F="ASSETS=0 QUICKTEST=1 FAT=1 DEBUG=1"
+  make $F -j16 && make $F sdcard && make $F dldi
+  XDG_CONFIG_HOME=/tmp/melcfg timeout -s INT 35 melonds gtasads.nds
+  strings /tmp/melcfg/dldi.bin | grep -E "hudok|^sky:|fps=|^log:" | grep -v %
+  ```
+  `/tmp/melcfg/melonDS` is a copy of `~/.config/melonDS` with `[DLDI] Enable=true,
+  FolderSync=true, FolderPath=<repo>/sdcard, ImagePath=/tmp/melcfg/dldi.bin` (SIGINT, not TERM:
+  melonDS only writes the image on a clean exit). Recreate it if /tmp was wiped.
+- To test a specific state headless (time, weather...), add a temporary `#ifdef` hook in a loading
+  job and pass it through `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DMYHOOK=..."`;
+  remove it afterwards.
+- Fat-backend probe: `strings dldi.bin | grep probe` -> `probe ok`.
 
-## Hardware budget (keep in mind for every decision)
-- ARM9 67 MHz, no FPU -> fixed point everywhere at runtime (20.12 / 4.12, libnds `f32`/`v16`/`t16`).
-- 4 MB main RAM (code + heap + streaming buffers). Nothing big stays resident; stream from NitroFS.
-- 3D: 2048 polygons / 6144 vertices per frame, 256 KB texture VRAM (banks A+B), palettes in E.
-- Cart/ROM max 512 MB; `[global].budget_mb = 448` in resources.toml. Current full build: ~340 MB.
-- Top = main engine (3D), bottom = sub engine 2D HUD (`lcdMainOnTop()`).
-  VRAM: A,B textures; C sub BG (HUD); E texture palettes; D, F-I free (sprites, more textures).
-
-## Asset pipeline (`tools/`)
+## Asset pipeline commands
 ```
 python3 tools/assets.py sync                      # PC install -> game/ (only what enabled sections need)
 python3 tools/assets.py build [SECTION..]         # game/ -> nitrofs/ ; -j N, --force, --limit N
@@ -74,239 +64,35 @@ python3 tools/assets.py report                    # sizes per section/type vs bu
 python3 tools/assets.py list gta3_img -n 40       # biggest entries + resolved params / REMOVED
 python3 tools/assets.py info models/gta3.img:infernus.dff   # inspect img/txd/dff/col/ifp
 python3 tools/assets.py preview models/gta3.img:infernus.txd [TEX] --section gta3_img
-                                                  # build/preview/<tex>_orig.png vs <tex>_ds.png
 ```
-- Full cold build ~6 min on 16 cores (pure Python + multiprocessing). Cached rebuilds only redo what
-  changed: cache key = handler + resolved params + source entry (offset/size/mtime) + hash of the
-  handler's modules (`HANDLER_SRC` in `pipeline.py`). Editing `ds_texture.py` only rebuilds textures.
-- Use `--limit N` and single sections while tuning; `build` with no sections also prunes stale outputs.
-- Errors on single entries don't stop the build; they're listed in the report (`build/assets_report.json`).
+Full cold build ~6 min (16 cores); `models_loose` alone ~20 s. Use single sections / `--limit N`
+while tuning. Current total ~413 MB of the 448 MB budget.
 
-### resources.toml
-- `[global]`: paths, jobs, `budget_mb`, global multipliers `texture_scale`, `model_ratio`, `audio_rate_scale`.
-- `[defaults.<handler>]` for `texture`, `model`, `collision`, `anim`, `audio` (all params documented inline).
-- Sections (any table with `kind`): `img` (IMG -> one DSPK), `files` (globs, converted 1:1 by extension),
-  `copy` (verbatim), `sfx` (audio/SFX paks), `streams` (audio/STREAMS packs). Keys: `enabled`, `src`, `out`,
-  `remove = [globs]`, `keep = [globs]`, `<handler> = {...}`.
-- `[[section.rule]]` in order: `match` (entry globs), `match_ide` (names declared in IDE files, e.g.
-  `data/vehicles.ide`), `match_texture` (texture names inside TXDs), `remove = true|false`, handler overrides.
-- Param resolution: defaults -> section -> matching rules -> global multipliers.
-- To add a section: add the table, `tools/assets.py sync`, `tools/assets.py build <section>`.
+## Hardware budget (keep in mind for every decision)
+- ARM9 67 MHz, no FPU -> fixed point at runtime (20.12 / 4.12, libnds `f32`/`v16`/`t16`).
+- 4 MB main RAM; nothing big stays resident, stream from NitroFS/SD.
+- 3D: 2048 polys / 6144 verts per frame, 256 KB texture VRAM (A+B, D also mapped), palettes in E.
+- Cart max 512 MB (`budget_mb = 448`). Top = 3D main engine, bottom = sub engine 2D.
 
-### Code map (`tools/gtasa/`)
-- Readers: `rw.py` (RW chunks), `img.py` (VER2), `txd.py` (D3D8/9 natives, DXT1/3/5, PAL8, 8888...),
-  `dff.py` (frames+HAnim ids, geometry, materials, skin), `col.py` (COLL/COL2/3/4, tolerant to broken
-  stock files), `ifp.py` (ANP3), `audio.py` (PakFiles/BankLkup/StrmPaks/TrakLkup, XOR stream decrypt).
-- Converters: `ds_texture.py` (pow2 resize from best mip, median-cut, pal4/16/256, a3i5, a5i3, direct),
-  `ds_mesh.py` (vertex-clustering decimation w/ binary search on grid res, s16 quantisation with per-geometry
-  exponent, triangle lists grouped by material), `ds_misc.py` (DCOL, DANM keyframe decimation),
-  `audio.py` (box resample, IMA-ADPCM DS encoder, PCM8/16).
-- `dsfmt.py` fixed point helpers + DSPK writer. `pipeline.py` config/rules/cache/pool/report/sync.
-- **Changing a binary layout**: edit the writer AND `src/assets/ds_formats.h` (static_asserts check sizes),
-  bump that format's `version`.
-
-### Output formats (details in `src/assets/ds_formats.h`)
-- `models/gta3.dspk`, `gta_int.dspk`, `player.dspk`, `anim/anim.dspk`: DSPK packs replacing IMG archives.
-  Entry names are the original ones (`infernus.dff`), payload is DS format (`DMDL`, `DTXD`, `DCOL`, `DANM`);
-  `.ipl/.dat/...` inside IMGs are copied raw. TOC sorted by FNV-1a(lowercase name).
-- Loose files keep their relative path, lowercased (`models/hud.txd` -> DTXD at `nitrofs/models/hud.txd`).
-- `data/**`, `text/american.gxt`: verbatim, lowercased paths. Runtime must lowercase paths from data files.
-- `audio/sfx/<pak>.dsfx` + `audio/sfx/banks.dsbl` (global bank id -> pak/index), `audio/streams/<pack>.dsst`.
-  Sounds are `DSND` (ADPCM default, DS hardware format: 4-byte header + nibbles low first).
-
-### Known gaps in the pipeline
-- Dropped: 2dfx (lights/particles), night vertex colors, second UV set, material effects/reflection,
-  COL face groups and shadow meshes, IFP beats, stream beat data. GXT/FXP/SCM are copied raw.
-- No tex4x4 (GL_COMPRESSED) yet; `nds_texcompress` exists in `~/devkitpro/tools/bin` if wanted.
-- Decimation is vertex clustering by default (fast, crude, moves seam verts). `model.decimate = "qem"`
-  (used by `player_img`) does quadric half-edge collapses with open-edge/UV-seam verts locked and
-  same-bone collapses only -> CJ's runtime-assembled parts stay crack-free.
-- CJ assembly (`src/game/cj.cpp`) follows CClothesBuilder: the torso clothing dff (vest.dff) is the
-  whole torso incl. arms/neck (torso.dff is NOT drawn on top), textured with player_torso + vest
-  composited at runtime (PlaceTextureOnTopOfTexture); hands use the same composite.
-  After blending the pose, `CPed::ShoulderBoneRotation` is applied (bones 301/302 "breast" are CJ's
-  deltoids: take the upper arm matrix, halve the twist vs the clavicle). Skipping it = boxy shoulders.
-- Skinning is reduced to one dominant bone per vertex: CJ is skinned on the GX matrix stack. Each
-  part is compiled once into a packed display list (`render/gxlist.*`) with MTX_RESTORE per bone
-  change (slots 30 down, max 16 bones/part; entity matrix in slot 14); per frame the CPU only
-  evaluates the skeleton and stores entity*world*invBone per used bone, then DMAs the list.
-- DSPK lookups ignore hash collisions (none in stock archives); TOC is 16 B/entry in RAM (gta3 = 256 KB).
-- Disabled by default (see resources.toml): ped speech paks SPC_EA/FA/GA/NA, all radio stations, cutscenes,
-  `cutscene.img`, `cuts.img`, movies.
-
-## Porting from gta-reversed (`third_party/gta-reversed/source/game_sa/`)
-Key files: `Streaming.cpp`/`StreamingInfo` (model streaming), `FileLoader.cpp` (gta.dat, IDE, IPL parsing),
-`IplStore`, `TxdStore`, `Models/` (ModelInfo types), `Collision/`, `Animation/` (AnimManager = IFP loader),
-`Audio/` (Loaders/AEBankLoader, AETrackLoader), `Renderer.cpp`, `World.cpp`, `Entity/`, `Pools/`,
-`Camera.cpp`, `Hud.cpp`, `Radar.cpp`, `TimeCycle.cpp`, `Scripts/` (SCM VM), `Core/` (Matrix, lists, pools).
-`RenderWare/` holds RW types the game uses; on DS those calls get replaced by our GX backend.
-
-Rules: port into `src/` with the same class names where reasonable, replace float math with fixed point
-in hot paths, replace RW with our formats/renderer, keep memory pools small and explicit.
+## Working rules
+- Port from `third_party/gta-reversed/source/game_sa/` (shallow submodule, reference only) with the
+  original class/function names in comments; replace RW with our formats/GX, floats with fixed
+  point in hot paths, keep pools small and explicit.
+- Every allocation through `mem::` with a tag; temp reads in `mem::Scratch`; PERM only once per boot.
+- New heavy init work = a resumable loading-screen job, never inline in a frame.
+- Never write VRAM C outside vblank (bottom screen) and never toggle 3D control/fog/clear registers
+  mid-frame (use `video::setFog/setClearColor/setManualSort`).
+- Changing a binary layout: writer + `src/assets/ds_formats.h` + bump version.
+- Source basenames must be unique (objects are flattened into `build/`).
 
 ## Roadmap (suggested order)
-1. Runtime loaders: DTXD -> VRAM (texture manager with LRU over banks A/B/D), DMDL -> GX display lists
-   (build at load, `glCallList`), DCOL. Show `infernus.dff` + its TXD on the top screen as first milestone.
-2. World data: parse `data/gta.dat`, IDE (objs/tobj/cars/peds) and IPL (text in `data/maps`, binary
-   `bnry` IPLs inside gta3.dspk) -> model info table indexed by model id; replace name lookups with ids.
-3. Streaming: sector grid around the camera, fixed RAM budget, LOD selection (`lod*.dff`), draw distance
-   + fog, per-frame poly budget (2048). Port the relevant parts of CStreaming/CRenderer.
-4. Player: CJ ped (player.dspk clothes or a pre-baked single model), DANM playback, rigid skinning,
-   basic controls (D-pad/ABXY), camera.
-5. Collision + simple physics (ped vs world, then vehicles from handling.cfg).
-6. Bottom screen HUD: radar (radarNN.txd from gta3.dspk) as 2D BG on the sub engine, health/money/weapon,
-   touch map.
-7. Audio: DSND playback via libnds sound API (ARM7), SFX banks, ambience/radio streaming ring buffer.
-8. Scripts: SCM VM (`data/script/main.scm`) - large; start with a minimal mission-less free roam.
-Profile constantly with the HUD stats (CPU us/frame, polys/verts) and tune resources.toml to fit.
-
-## Memory manager (`src/mem/`) — use it for every allocation
-- Regions carved once from the crt0 heap (`mem/budget.h`): SYS (TLSF, libc
-  malloc/new only — `_malloc_r` & co are replaced in mem.cpp, newlib's
-  dlmalloc/sbrk are not linked), SCRATCH (LIFO stack, `mem::Scratch` RAII,
-  spills to STREAM), PERM (bump, never freed), STREAM (TLSF, everything else).
-- `mem::alloc(n, TAG_x)` / `mem::free`, `mem::perm`, `mem::Scratch s; s.alloc(n)`.
-  Every allocation is tagged; `mem::summary`, `mem::stats`, `mem::check`.
-- `mem::Pool<T>` = CPool port (byte map, handles) for fixed-count objects:
-  textures, anim clips, radar tiles; budgets for peds/vehicles/objects are
-  declared in budget.h for when those systems land.
-- Temp file reads (TXD entries, DMDL staging, display-list build) go to scratch;
-  loose TXDs are read per entry via `assets/txdfile.*`, never whole.
-- Static BSS is ~130 KB (was 1.75 MB); STREAM has ~2.9 MB in DS mode.
-- `tlsf.cpp` passes a 400k-op host stress test (see git history); keep it portable.
-
-## Debug UI (bottom screen, SELECT)
-- `src/hud/debugui.*`: touch tabs LOG / PERF / MEM / GAME / REND on the text console.
-  GAME = quick actions (wanted, health, armour, money, weapons, fat/muscle, sprint, clock,
-  outfit presets `cj::setOutfit`, respawn); REND = `dbg::opts` (`game/debugopts.h`: CJ mesh,
-  skeleton overlay, ground, fixed step, sim speed/pause, camera distance, HUD repaint).
-  Touch drives the camera only on the GAME screen. `hud::log` only fills a 32-line ring.
-- Timing: `timing::sectionUs(SEC_3D/SEC_SIM/SEC_HUD)`; cpu now includes the HUD.
-- Player sim is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4, button
-  edges only on the first step) so animation speed no longer depends on fps.
-- Controls = PC keyboard mode (`game/pad.*`, CPad-lite): D-pad is WASD (+-128 -> CJ jogs),
-  L held + direction = walk (LALT), L tap = next weapon, B sprint (tap to go faster),
-  X jump, A attack/fire, R aim, Y enter/exit, touch = mouse look.
-- Locomotion (`game/pedmove.*`, per-ped State + PoseApi so AI peds can reuse it):
-  PlayerControlZelda (blend = |stick|/60, walk caps 1.0, 0.07 per 30 Hz step, release = 0),
-  turn at ~10.5 rad/s, SetRealMoveAnim-style idle/walk_start/walk/run/sprint/run_stop(R)/
-  idle_tired weights, and walk/run/sprint phase-synced to the heaviest cycle (no leg
-  crossing in crossfades). `CPlayerPed::SetRealMoveAnim` itself is unreversed in
-  gta-reversed (plugin call), so the blend is reconstructed, not a 1:1 port.
-- Headless check without touching ~/.config: copy it to /tmp/melcfg/melonDS, enable [DLDI]
-  there (FolderSync -> repo/sdcard, ImagePath /tmp/melcfg/dldi.bin) and run
-  `XDG_CONFIG_HOME=/tmp/melcfg timeout -s INT 30 melonds gtasads.nds` (SIGINT, not TERM:
-  melonDS only writes the DLDI image on a clean exit). The hudok marker now includes
-  mem summary, per-tag bytes, fps/cpu sections and the last log lines.
-
-## Bottom-screen game HUD (current milestone)
-The bottom screen boots into a real software-rendered GTA HUD (default
-`hud::Screen::GAME`); `SELECT` toggles to the debug console and back
-(`hud::toggleScreen()`). `chud::init` waits for `g_models` to be open
-(opened by the loadscreen) before latching — until then the screen is a
-flat sky clear.
-- `src/game/hud/subfb.*`: CPU renderer into a 96KB RAM backbuffer that is
-  DMA'd to the sub engine's B16 bitmap BG3 (VRAM C, MODE_5_2D) inside vblank
-  (`subfb::present` — DC_FlushRange + dmaCopy). CPU never touches VRAM, so
-  the bottom screen cannot tear. `consoleInit` is re-run when switching back
-  to DEBUG, so `hud::log` also keeps a 14-line ring buffer that is replayed.
-- Timing: `hud::draw()` renders to RAM mid-frame, `hud::present()` runs
-  AFTER `video::endFrame()` (inside vblank). Never write VRAM C outside
-  blanking; debug-console printf is the only exception (tiny tile writes).
-- `src/game/hud/hudtex.*`: DTEX decode to RAM (sprites u16+alpha planes,
-  font coverage u8 maps, flat rgb15 tiles).
-- `src/game/hud/hudfont.*`: CFont for the fb — same glyph math as
-  `game/text/font.cpp` (16-col grid, fonts.dat prop widths, ~color~ codes,
-  pricedown/subfont remaps, edge drop shadow) rasterizing coverage maps.
-- `src/game/hud/radar.*`: CRadar port — rotating map (world->radar by
-  heading). Tiles come pre-baked from `models/radar.dsrt` (pipeline section
-  `[radar]`, `tools/gtasa/ds_radar.py`: RGB15 64px + 32px mip, area-filtered
-  from the PC DXT source, fixed stride, no TOC/decoding) and stream into two
-  mem::Pools (16 full / 36 mip slots, ~200 KB) around the player, nearest
-  ring first, max 12 KB of reads per frame; `radar::prefetch()` fills the
-  window under the loading bar. Inner loop marches in texel space (two adds
-  + shifts per pixel). Dynamic range 300-900, mip above MIP_RANGE, north
-  marker, blips (`radar::setBlip`, hud.txd read per sprite), player arrow.
-- `src/game/hud/chud.*`: CHud port — clock, money, wanted stars (font2 `]`
-  glyph + flash), weapon icon (`*icon` tex from weapon dspk txds, fist
-  otherwise), ammo `reserve-clip`, health/armor/breath bars (DrawBarChart
-  port), zone+vehicle names with the original NAME_* fade state machine.
-  Layout: top-left weapon icon + ammo, bottom-left radar, top-right stats
-  (clock, money, bars, wanted stars), bottom-right zone/vehicle names.
-  NOTE: glyph quads are 32*sw px wide but advance is prop*sw — right-edge
-  anchoring must account for the overhang (see hudfont::print RIGHT).
-  Dirty-region drawing: the RAM backbuffer persists, so only the radar box
-  is repainted every frame; stats/weapon blocks repaint when a hash of what
-  they show changes, names every frame while visible (HUD went 33 ms -> ~8).
-  `chud::invalidate()` forces a full repaint. Init is `chud::initStep()`
-  (loading-screen job); `hud::setGameActive()` gates drawing to INGAME.
-- `tools/hosthud/`: host harness — compiles the same hud/player/zones
-  sources with an nds.h stub and dumps the framebuffer to PPM
-  (`./hosthud [frame] [out.ppm]`), for visual iteration without hardware.
-- `src/game/player.*`: the player/game-state snapshot the HUD reads
-  (pos/heading/speed/health/armour/breath/money/wanted/weapon/zone/vehicle +
-  game clock). Currently a demo driver (circular path around LS, cycling
-  wanted level and weapons) until real gameplay lands.
-- `src/game/zones.*`: info.zon parser; smallest containing box -> GXT name.
-- `GTASADS_QUICKTEST` define: skips intro movies, auto-starts the game and
-  forces the GAME screen — headless smoke path. In DEBUG builds the HUD
-  writes `fat:/gtasads_hudok.txt` after ~2s (verify with
-  `strings dldi.bin | grep hudok`); expect
-  `hudok range=... tiles=N fist=1 weap=... wanted=N zone=...`.
-
-## Frontend port
-The DS boots into a *port* of the PC frontend, not a recreation:
-- `src/game/menu/screens.{h,cpp}`: `aScreens` table, enums and sprite names ported verbatim
-  from `Frontend/MenuManager_Internal.h` + `FrontendScreensPC.h` (PC build, USE_EU_STUFF off -> EN/ES).
-- `src/game/menu/menu.{h,cpp}`: CMenuManager port - SwitchToNewScreen, UserInput (DPad nav,
-  A=enter, B=back, L/R sliders), ProcessMenuOptions (toggles/cycles/language/sliders),
-  DrawBackground/DrawStandardMenus/DisplaySlider, virtual 640x480 coords compressed by ortho.
-  Game deps are stubs (no saves -> all slots SLOT_FREE, no audio, no stats/map radar tiles yet).
-- `src/game/text/gxt.{h,cpp}`: CText (GXT TKEY/TDAT, CRC32 uppercase hash, american/spanish.gxt).
-- `src/game/text/font.{h,cpp}`: CFont (fonts.dat prop widths, glyph UV math, ~codes~, drop shadow).
-- `src/render/sprite2d.*`: ortho 2D quads on the 3D engine; `src/assets/texture.*`: DTEX->VRAM loader.
-- main.cpp: MENU (title) -> Start Game -> INGAME placeholder scene; START = pause menu; Quit -> powerOff.
-- Gaps vs the PC frontend: pano strip drawn only on the title screen, radio station list is text
-  (no logo sprites yet), Stats/Brief empty, no mouse, no settings persistence, controls-redefine
-  screen stub, no radar map zooming, fonts are a3i5 256px (font text slightly less crisp).
-
-## Loading screen (CLoadingScreen port)
-- `src/game/loadscreen.{h,cpp}`: `beginTitle()` shows `title_pc_US` from
-  `models/txd/loadscs.txd` (the boot title, fade in/hold/fade out, skippable);
-  `begin()` shows random loadsc0..14 artwork (256x256 pal256 DTXD) +
-  DrawBarChart port (bottom-left, 180x10, light gray + black border), fade in/out,
-  progress = min(jobFraction, minTime/90vbl). Init work is a list of
-  resumable jobs run with a 10 ms/frame budget (the screen never freezes):
-  free frontend VRAM -> splash -> loading tune (ADPCM, 1 channel/slice) ->
-  gta3 open + sparse TOC index (16 KB/slice) -> player/anim packs -> ped
-  anim block -> CJ (one part / one pinned clip per slice) -> player state ->
-  HUD (one font atlas per slice, radar, sprites) -> zones -> radar prefetch.
-  New heavy init work must be added as a job, never inline in a frame.
-- `src/game/streaming.{h,cpp}`: `Pack g_models/g_player/g_anim`. `Pack`
-  keeps small TOCs resident; gta3 (16k entries) keeps a sparse index (first
-  hash per 64-entry page) + 4-page LRU, `find()` returns the entry by value.
-- `src/game/animstore.*`: DANM v2 blocks (header + per-clip directory, see
-  ds_formats.h) keep only the directory resident; clips are read on first
-  play, refcounted, LRU-evicted over budget::ANIM_CACHE_BYTES. The player's
-  25 on-foot clips are pinned at load (~100 KB); fat/muscle blocks open lazily.
-- Menu textures are freed on Start Game (VRAM) and lazily reloaded on pause-menu
-  open via `CMenuManager::ensureTextures` (sprite::alpha() added for fade quads).
-- `sprite::draw()` maps v=0 to the top texel row (upright); `drawUV()` is the raw
-  variant (font uses it with an inverted rect).
-
-## Intro video + SFX (movies milestone)
-- `tools/gtasa/intro.py`: .mpg -> DVID (256x256 letterboxed pal8 frames @10fps + PCM16
-  22050Hz audio interleaved per-frame). Section `[movies]` in resources.toml. Note:
-  ffmpeg's rawvideo muxer appends a 1024B palette after every pal8 frame - the
-  converter detects the stride (W*H vs W*H+1024); slicing at W*H drifts +4 rows/frame.
-- `src/game/intro.cpp`: plays DVID on MODE_5_2D bitmap bg + PCM16 ring-buffer channel
-  (raw SCHANNEL0 regs), skippable with any key after warmup, restores MODE_0_3D after.
-- `src/game/sfx.cpp`: reads banks 59+60 of `nitro:/audio/sfx/genrl.dsfx` (frontend
-  menu SFX + start whoosh), decodes DSND IMA-ADPCM -> PCM16, plays L/R pairs
-  panned like the original. Bank 82 (LOADING tunes): only offsets kept, one
-  random stereo pair decoded+looped during title/loading (`tuneStart/tuneStop`).
-- Boot order: Logo.mpg -> GTAtitles.mpg -> title screen (title_pc_US) -> main
-  menu. Menu nav/enter/back play the real frontend sounds (highlight 4/5,
-  select 6/7, back 0/1); New Game -> confirm screen -> loading -> ingame.
-- Caveat: video shows via bitmap BG, audio via PCM16 ring (not compressed ADPCM);
-  if the intro runs too fast in melonDS, swiWaitForVBlank cadence may need rework.
+1. World data: `data/gta.dat`, IDE (objs/tobj/cars/peds), IPL (text `data/maps` + binary `bnry`
+   inside gta3.dspk) -> model info table by id.
+2. Streaming: sector grid around the camera, fixed RAM budget, LOD (`lod*.dff`), draw distance tied
+   to `dbg::opts.fogView`/timecyc far clip, per-frame poly budget. CStreaming/CRenderer.
+   World materials then need `POLY_FOG` and the `timecycle::worldLight` tint.
+3. Collision + simple physics (ped vs world -> real ground z, collision lighting for `pedLight`,
+   rain splashes on real surfaces), then vehicles from handling.cfg.
+4. Audio: DSND via the ARM7 sound API, SFX banks (thunder for lightning), ambience streams.
+5. Scripts: SCM VM (`data/script/main.scm`), start with mission-less free roam.
+Profile constantly (PERF tab, hudok marker) and tune resources.toml to fit.

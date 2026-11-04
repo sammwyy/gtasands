@@ -27,6 +27,9 @@ public:
 	// Finalizes the count word. Returns total words (incl. the count word),
 	// or 0 if the buffer overflowed.
 	u32 finish();
+	// Words written so far (incl. the count word): right after cmd(id, a) the
+	// parameter `a` sits at index words() - 1, so callers can patch it later.
+	u32 words() const { return m_n; }
 
 private:
 	void open(u8 id, int params);

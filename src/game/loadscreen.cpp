@@ -16,11 +16,14 @@
 #include "game/player.h"
 #include "game/sfx.h"
 #include "game/streaming.h"
+#include "game/timecycle.h"
+#include "game/weather.h"
 #include "game/zones.h"
 #include "hud/hud.h"
 #include "mem/mem.h"
 #include "platform/input.h"
 #include "platform/timing.h"
+#include "render/sky.h"
 #include "render/sprite2d.h"
 
 namespace loadscreen {
@@ -95,6 +98,13 @@ static bool jobZones() { zones::preload(); return true; }
 static bool jobCj() { return cj::initStep(); }
 static bool jobPlayer() { player::init(); return true; }
 static bool jobRadar() { radar::prefetch(); return true; }
+static bool jobTimeCycle() { return timecycle::loadStep(); }   // one weather (8 lines) per slice
+static bool jobSky() {
+	sky::loadStep();
+	timecycle::update(player::g.x, player::g.y, player::g.z);   // first in-game frame has colours
+	return true;
+}
+static bool jobWeather() { weather::init(); return true; }
 static bool jobReport() {
 	char buf[96];
 	mem::summary(buf, sizeof buf);
@@ -113,6 +123,9 @@ static bool (*const s_jobs[])() = {
 	jobPedBlock,
 	jobCj,
 	jobPlayer,
+	jobWeather,
+	jobTimeCycle,
+	jobSky,
 	jobHud,
 	jobZones,
 	jobRadar,

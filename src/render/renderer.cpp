@@ -6,8 +6,15 @@
 #include "game/cj.h"
 #include "game/debugopts.h"
 #include "game/player.h"
+#include "game/timecycle.h"
+#include "game/weather.h"
+#include "render/sky.h"
 
 namespace renderer {
+
+// timecycle::worldLight for the placeholder geometry (u8 multiplier per channel)
+static u8 s_lr = 255, s_lg = 255, s_lb = 255;
+static inline u16 lit(int r5, int g5, int b5) { return RGB15(r5 * s_lr >> 8, g5 * s_lg >> 8, b5 * s_lb >> 8); }
 
 // --- world geometry ---------------------------------------------------------
 // Everything is emitted in player-local space: DS matrix registers are s20.12
@@ -32,24 +39,24 @@ static void box(float cx, float cy, float s, float hgt, float adx, float adz) {
 	const float z0 = (-cy - s - adz) * 0.125f, z1 = (-cy + s - adz) * 0.125f; // SA y -> GL -z
 	const float t = hgt * 0.125f;
 	if (x1 < -7.5f || x0 > 7.5f || z1 < -7.5f || z0 > 7.5f) return; // outside v16 range
-	glPolyFmt(POLY_ALPHA(31) | POLY_CULL_NONE);
+	glPolyFmt(POLY_ALPHA(31) | POLY_CULL_NONE | POLY_FOG);
 	glBegin(GL_QUADS);
-	glColor3b(150, 140, 120);
+	glColor(lit(18, 17, 15));
 	glTexCoord2t16(0, 0);
 	glVertex3v16(floattov16(x0), 0, floattov16(z1)); glVertex3v16(floattov16(x1), 0, floattov16(z1));
 	glVertex3v16(floattov16(x1), floattov16(t), floattov16(z1)); glVertex3v16(floattov16(x0), floattov16(t), floattov16(z1));
 	glVertex3v16(floattov16(x1), 0, floattov16(z0)); glVertex3v16(floattov16(x0), 0, floattov16(z0));
 	glVertex3v16(floattov16(x0), floattov16(t), floattov16(z0)); glVertex3v16(floattov16(x1), floattov16(t), floattov16(z0));
-	glColor3b(110, 100, 90);
+	glColor(lit(13, 12, 11));
 	glVertex3v16(floattov16(x1), 0, floattov16(z1)); glVertex3v16(floattov16(x1), 0, floattov16(z0));
 	glVertex3v16(floattov16(x1), floattov16(t), floattov16(z0)); glVertex3v16(floattov16(x1), floattov16(t), floattov16(z1));
 	glVertex3v16(floattov16(x0), 0, floattov16(z0)); glVertex3v16(floattov16(x0), 0, floattov16(z1));
 	glVertex3v16(floattov16(x0), floattov16(t), floattov16(z1)); glVertex3v16(floattov16(x0), floattov16(t), floattov16(z0));
-	glColor3b(200, 190, 170);
+	glColor(lit(25, 23, 21));
 	glVertex3v16(floattov16(x0), floattov16(t), floattov16(z0)); glVertex3v16(floattov16(x1), floattov16(t), floattov16(z0));
 	glVertex3v16(floattov16(x1), floattov16(t), floattov16(z1)); glVertex3v16(floattov16(x0), floattov16(t), floattov16(z1));
 	glEnd();
-	glPolyFmt(POLY_ALPHA(31) | POLY_CULL_BACK);
+	glPolyFmt(POLY_ALPHA(31) | POLY_CULL_BACK | POLY_FOG);
 }
 
 void init() {
@@ -70,6 +77,18 @@ void draw() {
 	const float eyeH = lookH + sinf(pitch) * dist;
 	const float elx = sinf(yaw) * horiz;
 	const float ely = -cosf(yaw) * horiz;
+
+	// sky first (constant far depth), it also latches the frame's fog/clear
+	const sky::View view{ px + elx, py + ely, player::groundZ() + eyeH, yaw, pitch };
+	sky::draw(view);
+	timecycle::worldLight(s_lr, s_lg, s_lb);
+	// wet ground reads darker (CWeather::WetRoads; road reflections not ported)
+	const int wet = 256 - (int)(weather::g.wetRoads * 64.0f);
+	s_lr = (u8)(s_lr * wet >> 8); s_lg = (u8)(s_lg * wet >> 8); s_lb = (u8)(s_lb * wet >> 8);
+	u8 lr = 255, lg = 255, lb = 255;
+	if (dbg::opts.pedLight) timecycle::pedLight(lr, lg, lb);
+	cj::setLight(lr, lg, lb);
+
 	glLoadIdentity();
 	glRotatef(pitch * 57.2958f, 1.0f, 0.0f, 0.0f);
 	glRotatef(-yaw * 57.2958f, 0.0f, 1.0f, 0.0f);
@@ -79,28 +98,28 @@ void draw() {
 	// emitted unit is one ground cell (8 SA units). Anchor delta stays small.
 	const int ax = (int)floorf(px * 0.125f), ay = (int)floorf(py * 0.125f);
 	const float adx = ax * 8.0f - px, adz = -(ay * 8.0f - py);
-	if (!dbg::opts.ground) {
-		cj::draw(0.0f, 0.0f, player::g.z - player::groundZ(), player::g.heading);
-		return;
+	if (dbg::opts.ground) {
+		glPushMatrix();
+		glTranslatef(adx, 0.0f, adz);
+		glScalef(8.0f, 8.0f, 8.0f);
+		glDisable(GL_TEXTURE_2D);
+		glPolyFmt(POLY_ALPHA(31) | POLY_CULL_BACK | POLY_FOG);
+		glBegin(GL_QUADS);
+		for (int i = -6; i < 6; i++)
+			for (int j = -6; j < 6; j++) {
+				const int cx = ax + i, cyi = ay + j;    // absolute cell coords (colour only)
+				cellQuad(i, -j - 1, (cx + cyi) & 1 ? lit(9, 15, 7) : lit(10, 10, 11));
+			}
+		glEnd();
+		box(2488.0f - px, -1674.0f - py, 1.5f, 6.0f, adx, adz);
+		box(2502.0f - px, -1652.0f - py, 2.0f, 9.0f, adx, adz);
+		box(2495.0f - px, -1640.0f - py, 1.0f, 3.0f, adx, adz);
+		glEnable(GL_TEXTURE_2D);
+		glPopMatrix(1);
 	}
-	glPushMatrix();
-	glTranslatef(adx, 0.0f, adz);
-	glScalef(8.0f, 8.0f, 8.0f);
-	glDisable(GL_TEXTURE_2D);
-	glBegin(GL_QUADS);
-	for (int i = -6; i < 6; i++)
-		for (int j = -6; j < 6; j++) {
-			const int cx = ax + i, cyi = ay + j;    // absolute cell coords (colour only)
-			cellQuad(i, -j - 1, (cx + cyi) & 1 ? RGB15(9, 15, 7) : RGB15(10, 10, 11));
-		}
-	glEnd();
-	box(2488.0f - px, -1674.0f - py, 1.5f, 6.0f, adx, adz);
-	box(2502.0f - px, -1652.0f - py, 2.0f, 9.0f, adx, adz);
-	box(2495.0f - px, -1640.0f - py, 1.0f, 3.0f, adx, adz);
-	glEnable(GL_TEXTURE_2D);
-	glPopMatrix(1);
 
 	cj::draw(0.0f, 0.0f, player::g.z - player::groundZ(), player::g.heading);
+	sky::drawWeatherFx(view);
 }
 
 int polyCount() { int n = 0; glGetInt(GL_GET_POLYGON_RAM_COUNT, &n); return n; }

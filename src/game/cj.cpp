@@ -82,6 +82,8 @@ static const ds::TexHeader* findOrFirst(const void* txd, const char* name) {
 static constexpr int MAX_PART_BONES = 16;
 static constexpr int SLOT_TOP = 30;
 static constexpr int SLOT_BASE = SLOT_TOP - MAX_PART_BONES;
+// Material COLOR words patched in place by setLight (ped lighting tint).
+static constexpr int MAX_PART_COLORS = 8;
 
 struct Part {
 	const PartDef* def;
@@ -91,7 +93,17 @@ struct Part {
 	uint8_t node[MAX_PART_BONES]; // hAnim node per used bone (slot SLOT_TOP - k)
 	uint8_t numBones;
 	uint16_t verts;
+	uint16_t colorAt[MAX_PART_COLORS];   // list word index of each CMD_COLOR parameter
+	uint16_t colorBase[MAX_PART_COLORS]; // the material colour (RGB15) before the tint
+	uint8_t numColors;
 };
+
+static u16 s_light = 0x7FFF;   // RGB15 multiplier for every material colour
+
+static inline u16 tint(u16 c, u16 t) {
+	auto ch = [&](int sh) { return (u16)(((((c >> sh) & 31) * (((t >> sh) & 31) + 1)) >> 5) << sh); };
+	return ch(0) | ch(5) | ch(10);
+}
 
 static Part s_parts[NUM_PARTS];
 static mdl::Model* s_skel;        // vest.dff parsed view: the shared skeleton
@@ -185,6 +197,7 @@ static inline u32 vtxXY(s32 x, s32 y) { return (u32)(u16)(s16)x | ((u32)(u16)(s1
 static bool buildPart(Part& p, const mdl::Model* m, s32& minZ) {
 	p.numBones = 0;
 	p.verts = 0;
+	p.numColors = 0;
 	size_t words = 16;
 	for (int g = 0; g < m->numGeoms; g++) {
 		const mdl::Geometry& geo = m->geoms[g];
@@ -217,8 +230,12 @@ static bool buildPart(Part& p, const mdl::Model* m, s32& minZ) {
 		}
 		for (int mi = 0; mi < geo.h->numMaterials; mi++) {
 			const ds::GeometryMaterial& mat = geo.mats[mi];
-			dl.cmd(gx::CMD_POLYGON_ATTR, POLY_ALPHA(mat.alpha >= 248 ? 31 : (mat.alpha >> 3) | 1) | POLY_CULL_NONE);
-			dl.cmd(gx::CMD_COLOR, mat.color);
+			dl.cmd(gx::CMD_POLYGON_ATTR, POLY_ALPHA(mat.alpha >= 248 ? 31 : (mat.alpha >> 3) | 1) | POLY_CULL_NONE | POLY_FOG);
+			dl.cmd(gx::CMD_COLOR, tint(mat.color, s_light));
+			if (p.numColors < MAX_PART_COLORS) {
+				p.colorAt[p.numColors] = (uint16_t)(dl.words() - 1);
+				p.colorBase[p.numColors++] = mat.color;
+			}
 			dl.cmd(gx::CMD_BEGIN_VTXS, GL_TRIANGLES);
 			for (uint32_t i = mat.firstIndex; i < mat.firstIndex + mat.numIndices; i++) {
 				const int v = geo.idx[i] < nv ? geo.idx[i] : 0;
@@ -789,5 +806,19 @@ void draw(float x, float y, float z, float heading) {
 }
 
 int vertCount() { return s_vertCount; }
+
+void setLight(u8 r, u8 g, u8 b) {
+	const u16 t = RGB15(r >> 3, g >> 3, b >> 3);
+	if (t == s_light) return;
+	s_light = t;
+	for (Part& p : s_parts) {
+		if (!p.list) continue;
+		for (int i = 0; i < p.numColors; i++) {
+			u32* w = p.list + p.colorAt[i];
+			*w = tint(p.colorBase[i], t);
+			DC_FlushRange(w, 4);
+		}
+	}
+}
 
 }

@@ -5,6 +5,8 @@
 #include "game/loadscreen.h"
 #include "game/player.h"
 #include "game/sfx.h"
+#include "game/timecycle.h"
+#include "game/weather.h"
 #include "game/menu/menu.h"
 #include "game/text/gxt.h"
 #include "hud/hud.h"
@@ -122,7 +124,11 @@ int main() {
 		}
 		timing::setSection(timing::SEC_3D, timing::usSince(t));
 		t = timing::ticks();
-		if (s_state == AppState::INGAME && !FrontEndMenuManager.m_bMenuActive) player::update();
+		if (s_state == AppState::INGAME && !FrontEndMenuManager.m_bMenuActive) {
+			player::update();
+			weather::update(player::g.x, player::g.y, player::g.z);     // CWeather::Update
+			timecycle::update(player::g.x, player::g.y, player::g.z);   // CTimeCycle::Update
+		}
 		timing::setSection(timing::SEC_SIM, timing::usSince(t));
 		// bottom screen renders into a RAM backbuffer (safe mid-frame), then
 		// a ~0.6ms DMA pushes it to VRAM C inside vblank -> no tearing

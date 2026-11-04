@@ -1,0 +1,285 @@
+# gtasads architecture
+
+Reference map of the code base so work can start without re-reading every file.
+Build/run/test commands and working rules live in `AGENTS.md`; this file is the
+"what is where and how does it work" part. Keep it current when a system changes.
+
+## 1. Big picture
+
+```
+PC install --tools/assets.py sync--> game/ --tools/assets.py build--> nitrofs/ --ndstool--> gtasads.nds
+                                                                         |  (or sd:/gtasads/ with FAT=1)
+ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading jobs -> INGAME loop
+```
+
+- Top screen = main engine, 3D (`render/`). Bottom screen = sub engine, 2D: either the
+  software-rendered GTA HUD (`game/hud/`) or the text debug console (`hud/debugui`), SELECT toggles.
+- Code is a port of gta-reversed (`third_party/gta-reversed/source/game_sa/`, reference only,
+  never compiled). Same class/function names in comments (`CTimeCycle::CalcColoursForPoint`) so
+  the original can be found by grep. RenderWare calls are replaced by our GX code + DS formats.
+
+## 2. Source layout (`src/`, every subdir auto-discovered, object basenames must be unique)
+
+| Path | What |
+|---|---|
+| `main.cpp` | AppState machine (TITLE/MENU/LOADING/INGAME), per-frame order (see 3.) |
+| `platform/video.*` | screen/VRAM setup, projection constants (`FOV_Y`, `NEAR_PLANE`, `FAR_PLANE`, `TAN_HALF_FOV_*`), per-frame render environment (fog, clear colour, manual translucent sort) applied in vblank, `depth15()` z-buffer helpers |
+| `platform/input.*` | key/touch polling, edges (`consumeEdges`) |
+| `platform/fs.*` | NitroFS or `nitro:`->`fat:` redirect (FAT=1), debug `fsok` marker |
+| `platform/timing.*` | timers 0+1, `vblanks()`, `ticks()`, `usSince()`, per-section CPU (`SEC_3D/SIM/HUD`) |
+| `mem/` | memory manager (budget.h regions, TLSF, scratch stack, perm arena, `Pool<T>`) |
+| `assets/ds_formats.h` | every binary layout (mirrors the Python writers, static_asserts) |
+| `assets/pack.*` | DSPK reader (sorted FNV-1a TOC) |
+| `assets/texture.*` | DTEX -> VRAM, `tex::Group` (FRONTEND / GAME) for bulk unloads |
+| `assets/txdfile.*` | loose DTXD read per entry into scratch (never whole) |
+| `assets/model.*` | DMDL parsed view (`mdl::Model`, geometries, skin) |
+| `render/renderer.*` | top-screen frame: chase camera, sky, placeholder ground/boxes, CJ, weather FX |
+| `render/sky.*` | sky polys, sun/moon/stars/clouds/rainbow/flares, fog setup, rain/sand streaks |
+| `render/gxlist.*` | packed GX display list builder + DMA `callList` |
+| `render/sprite2d.*` | 2D quads on the 3D engine (frontend, loading screen), virtual 640x480 |
+| `game/player.*` | player state snapshot + CClock + controls glue, chase camera, weapons, jump/fight |
+| `game/pedmove.*` | locomotion (PlayerControlZelda, SetRealMoveAnim-style blends), reusable for AI |
+| `game/pad.*` | CPad-lite (PC keyboard mode mapping) |
+| `game/cj.*` | CJ assembly (CClothesBuilder), GX skinning, anim slots, ped light tint |
+| `game/anim.*`, `game/animstore.*` | DANM sampling/blending; clip streaming + LRU |
+| `game/timecycle.*` | CTimeCycle/CColourSet port (timecyc.dat) |
+| `game/weather.*` | CWeather port |
+| `game/streaming.*` | open packs (`g_models` gta3, `g_player`, `g_anim`) |
+| `game/loadscreen.*` | CLoadingScreen + resumable init jobs |
+| `game/zones.*` | info.zon -> zone GXT names |
+| `game/sfx.*`, `game/intro.*` | frontend SFX/loading tune; DVID movie player |
+| `game/menu/` | CMenuManager port (screens table verbatim) |
+| `game/text/` | CText (GXT), CFont |
+| `game/hud/` | CHud/CRadar ports on a CPU framebuffer (`subfb`), `hudtex`, `hudfont` |
+| `game/debugopts.*` | `dbg::opts` runtime switches edited from the debug UI |
+| `hud/hud.*` | bottom-screen owner: GAME (chud) vs DEBUG (console), log ring, DEBUG hudok marker |
+| `hud/debugui.*` | touch tabs LOG / PERF / MEM / GAME / REND / SKY |
+
+Other dirs: `tools/` (pipeline, `hosthud/` host HUD harness, `dldi/`), `game/` (gitignored PC
+files), `nitrofs/` (gitignored output), `build/` (objects, `assets_cache/`, reports, previews).
+
+## 3. Frame loop (`main.cpp`)
+
+```
+timing::frameStart; input::poll
+state transitions (title -> menu -> loading -> ingame), SELECT = toggle bottom screen, START = pause menu
+video::beginFrame()                 // resets render env: no fog, default clear, auto sort
+  menu | loadscreen::draw | renderer::draw      -> SEC_3D
+INGAME && !menu: player::update; weather::update; timecycle::update   -> SEC_SIM
+hud::draw()  (CPU framebuffer in RAM / debug console)                  -> SEC_HUD
+timing::frameEnd
+video::endFrame()   // glFlush(manual sort?) ; swiWaitForVBlank ; apply fog/clear registers
+hud::present()      // DMA bottom framebuffer to VRAM C inside vblank
+```
+Rendering happens before the simulation step, so draw uses last frame's sim/timecycle state.
+Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
+
+## 4. Render engine (top screen)
+
+### Coordinates and ranges
+- SA world: x east, y north, z up, metres. GL: x east, y up, z south -> `GL = (x, z, -y)`.
+- DS matrices are s20.12 and `v16` vertices are 4.12 (+-8). Never emit absolute SA coords:
+  everything is drawn in **player-local** space (origin = player x,y at ground z). Larger things
+  use a scale matrix (ground cells: `glScalef(8)`, weather FX: `glScalef(4)`).
+- Chase camera (`renderer::draw`): yaw 0 looks north, eye south of CJ on a sphere of
+  `dbg::opts.camDist`; pitch > 0 looks down. View = `Rx(pitch) Ry(-yaw) T(-eye)`.
+  Camera basis in GL world space: right `(cos y,0,-sin y)`, up `(-sin p sin y, cos p, -sin p cos y)`,
+  forward `(-cos p sin y, -sin p, -cos p cos y)` (see `sky::draw`).
+- Projection: `gluPerspective(60, 4:3, 0.1, 200)` (`video::` constants; `sprite2d::endFrame`
+  restores it). Z-buffering (not W): depth15 = z/w * 0x4000 + 0x3FFF, very non-linear.
+
+### Draw order in `renderer::draw`
+1. `sky::draw(view)` - latches fog/clear/manual sort, draws sky polys + sprites with
+   constant-depth projections (see 5.), restores the projection.
+2. world light (`timecycle::worldLight`, darkened by `WetRoads`) for placeholder geometry,
+   ped light (`timecycle::pedLight`) -> `cj::setLight`.
+3. view matrix, ground grid + landmark boxes (`POLY_FOG`), `cj::draw`, `sky::drawWeatherFx`.
+
+### GX display lists (CJ)
+- Each CJ part is compiled once (`cj.cpp buildPart`) into a packed list: POLY_ATTR, COLOR,
+  BEGIN, then per vertex MTX_RESTORE (when the bone slot changes), TEXCOORD, VTX_16.
+- Matrix stack slots: bones from slot 30 down (max 16 per part), entity matrix in slot 14,
+  `glPushMatrix` uses the bottom. Per frame the CPU only computes `entity*world*invBone` per bone
+  and stores it; the list is DMA'd (`gx::callList`, FIFO DMA, waits for other DMA channels).
+- `gx::ListBuilder::words()` gives the index of the last parameter -> lists can be patched in place
+  (CJ material colours for lighting: `colorAt[]`, then `DC_FlushRange` of the word).
+- Skinning = one dominant bone per vertex. After the pose blend, `shoulderBoneRotation` is applied.
+
+### Translucency / hardware rules worth remembering
+- Polygons with alpha 1..30 or an A3I5/A5I3 texture are translucent: drawn after opaque, do not
+  write depth (POLY_ATTR bit 11 off), and a translucent pixel is NOT drawn over a translucent pixel
+  with the same polygon ID -> give overlapping sprites different `POLY_ID`s.
+- Default translucent order is hardware Y-sort; `video::setManualSort(true)` (renderer does it)
+  makes it submission order.
+- DISP3DCNT (fog enable), fog table/colour/offset and clear colour are read while the engine
+  renders the previous flush -> never toggle them mid-frame; use `video::setFog/setClearColor`
+  (written right after the vblank in `endFrame`).
+- Fog needs `POLY_FOG` per polygon (ground, boxes, CJ lists have it; sky/sprites do not).
+- No additive blending on DS. PC additive sprites are converted by the pipeline
+  (`texture.additive`: alpha = max(r,g,b), colour normalised) and drawn with polygon alpha =
+  max channel and normalised vertex colour (`sky.cpp additive()`), ~ dst + c over dark skies.
+- A triangle with a repeated vertex renders as a 1-px line (skeleton overlay, rain, streaks).
+- Budget: 2048 polys / 6144 verts per frame (current scene ~1300 polys incl. sky ~100).
+
+## 5. Time cycle, weather and sky
+
+- **Clock** (`player.cpp`, CClock): 60 vblanks = 1 game minute at `dbg::opts.clockRate` 1
+  (0 = frozen, 10, 60). `player::clockSeconds()` (0..59), `minutesToday()` (fractional),
+  `setClock(h, m)`. New game 12:00, day 1/1.
+- **CWeather** (`game/weather.*`): state in `weather::g`. Region from position every 16 frames
+  (LA/SF/LV/DESERT/DEFAULT, `findRegion` = original boxes); 64-entry lists per region (bytes,
+  verbatim from `Data/Weather.def.h`). `interpolation = (sec/60 + min)/60`; when it wraps (new
+  hour) old = new and new = forced type or the next list entry. Derived each frame: rain,
+  sandstorm (step_to with time-varying intensity), cloudCoverage, foggyness(SF), extraSunnyness,
+  rainbow, sunGlare, heatHaze, wetRoads, wind/windClipped/windDir (gust tables), lightning
+  bursts (rainy old+new), traffic light brightness, rain particle strength.
+  API: `forceWeather` (next hour), `forceWeatherNow`, `releaseWeather`, `debugFlash`.
+- **CTimeCycle** (`game/timecycle.*`): `timecyc.dat` = 23 weathers x 8 samples
+  (0,5,6,7,12,19,20,22 h), 52 columns, parsed by a loading job (one weather per slice, PERM
+  ~10 KB, parsed once per boot; short lines keep the previous values like the original).
+  `Colours` is a flat byte struct + s16 farClip/fogStart so blends are an 8-bit integer loop:
+  time blend per weather -> LA smog fades into the clear type with camera altitude -> weather
+  blend. Also `vectorToSun()` (one turn per day), below-horizon grey, `dayNightBalance()`,
+  `pedLight()` (GetLightingFromCol: avg ambient + street surface light day 15/night 5, times
+  amb_obj + 0.75*illumination), `worldLight()`. Lightning flash -> white horizon/fog, full ped light.
+  Not ported: timecycle boxes, extra colours, underwater/tunnel, post-FX.
+- **Sky** (`render/sky.*`):
+  - Constant-depth projection trick: z row = -k * z_eye, w = -z_eye, so every vertex has
+    z/w = k (4095/4096 for sky polys, 4094/4096 for sprites): behind all world geometry
+    (anything nearer than ~160 m), in front of the clear plane, never far-clipped. Geometry is
+    placed 2 units from the eye (sizes in v16 range), perspective makes distance irrelevant.
+  - `renderSkyPolys` = CClouds::RenderSkyPolys (top->horizon gradient, horizon band, below-horizon
+    grey, ceiling, floor) oriented by the camera heading.
+  - Sprites (coronastar/coronamoon/lunar/cloud1 from `models/particle.txd`, ~3 KB VRAM):
+    moon (00:00-07:20, phase via the lunar mask drawn in sky colour), R* logo stars (22-06),
+    12 low clouds, rainbow, shooting star (0-5 AM, extra sunny), sun core + corona (sizes from
+    timecyc x10 values / (farClip*0.95)) and the 26-sprite sun lens flare. Sizes convert from
+    CSprite::CalcScreenCoors units with `SPRITE_K = 2*tan(hfov/2)*dist`.
+  - Fog: linear fogStart..farClip scaled to the DS view distance `dbg::opts.fogView` (default
+    140 m), colour = sky bottom, 32-entry table built in depth15 space only when inputs change.
+  - Weather FX: fixed-point (1/256 m) world-space drops in a box wrapping around the camera,
+    gravity + wind, motion streaks, ground splashes; sandstorm dust uses the same loop.
+    One BEGIN, one polygon ID, <= 72 lines + splashes.
+- **Debug SKY tab**: clock (+/-h, rate || x1 x10 x60), weather old>new %, region, forced, pick +
+  next hour/now/auto, presets (sun/cld/rain/fog/sand), live weather values, sky colours, fog view
+  +/-, ped light, toggles sky/sprites/fog/weather fx/ped light, lightning test.
+
+## 6. Player, camera, animation
+
+- `player::update`: pad -> fixed 60 Hz steps of `updateMove` (aim, PlayerControlZelda via
+  `pedmove::control`, sprint energy, weapons, `updateAction` for jump/punch/land state machine,
+  root motion from `cj::rootDelta` rotated by heading), clock tick, stats, zone lookup.
+- Camera (keyboard mode): touch drag orbits (yaw/pitch). `followCam` (beta speed spring) swings
+  behind CJ while he moves, but only when `camFollows()` (|heading - camYaw| < 1.9 rad, as in
+  CCam::Process_FollowPed): stick back makes CJ turn and walk at the camera, which does not spin.
+- Locomotion details: `pedmove.*` (blend = |stick|/60, idle/walk/run/sprint weights,
+  phase-synced cycles, run_stop/R). Anim clips: `animstore` streams per clip from DANM v2
+  blocks, refcounted, LRU over `budget::ANIM_CACHE_BYTES`; 27 on-foot clips are pinned (~100 KB).
+- CJ assembly follows CClothesBuilder: torso clothing dff is the whole torso (+arms/neck),
+  textured with player_torso + clothing composite (PlaceTextureOnTopOfTexture); hands share it.
+  Outfit presets `cj::setOutfit`, fat/muscle scale bones and pick the motion group.
+
+## 7. Bottom screen
+
+- `game/hud/subfb.*`: 96 KB RAM backbuffer DMA'd to sub BG3 (B16 bitmap, VRAM C) in vblank.
+  CPU never writes VRAM mid-frame (no tearing). Debug console printf is the only exception.
+- `chud.*` (CHud): clock, money, wanted stars, weapon icon/ammo, bars, zone/vehicle names.
+  Dirty-region drawing: only the radar repaints every frame; stat blocks repaint on a hash change
+  (note: clockRate x60 changes the clock every frame -> HUD ~24 ms/frame while testing).
+- `radar.*` (CRadar): pre-baked RGB15 tiles from `models/radar.dsrt`, two pools around the player,
+  max 12 KB reads/frame, texel-space inner loop.
+- `hudtex`, `hudfont` (CFont on the framebuffer). `tools/hosthud/` compiles the HUD sources on the
+  host with an nds.h stub (`shim.cpp`) and dumps PPMs (`./hosthud [frames] [out.ppm]`,
+  `./hosthud shots <prefix>`). Glyph quads are 32*sw wide but advance prop*sw: right-anchored text
+  must account for the overhang (`hudfont::print RIGHT`).
+- `chud::initStep()` is a loading job; `hud::setGameActive()` gates drawing to INGAME;
+  `chud::invalidate()` forces a full repaint. `hud::log` keeps a 32-line ring (14 replayed when
+  the console is re-initialised on switching back to DEBUG).
+- `hud/debugui.*`: tabs (5 chars each, `>` marks the active one): LOG, PERF (fps/cpu/sections/
+  polys/loco), MEM (regions, tags, VRAM, anim cache), GAME (wanted/health/money/weapons/body/
+  clock/outfit/respawn), REND (`dbg::opts` render/sim switches), SKY (section 5).
+
+## 8. Frontend, loading, intro, audio
+
+- Frontend = CMenuManager port (`game/menu/`), `aScreens` verbatim, virtual 640x480 through
+  sprite2d. Menu textures are GROUP_FRONTEND, freed on Start Game, reloaded on pause.
+- Loading screen (`loadscreen.cpp`): resumable jobs with a 10 ms/frame budget, order:
+  free frontend, splash, loading tune, open gta3 + sparse TOC index, player/anim packs, ped anim
+  block, CJ (part per slice), player init, weather init, timecyc (weather per slice), sky
+  textures (+ first timecycle update), HUD init, zones, radar prefetch, mem report.
+  **New heavy init work must be a job.**
+- Intro: DVID (pal8 256x256 @10 fps + PCM16) on a bitmap BG. SFX: `genrl.dsfx` banks 59/60
+  (frontend), 82 (loading tunes), IMA-ADPCM decoded to PCM16.
+
+## 9. Memory (`src/mem/`)
+
+- Regions carved once from the heap (`budget.h`): SYS (TLSF for libc malloc/new), SCRATCH (LIFO
+  `mem::Scratch` RAII, spills to STREAM), PERM (bump, never freed), STREAM (TLSF, everything else).
+- Every allocation is tagged (`mem::alloc(n, TAG_x)`): sys text model tex anim audio radar hud
+  pack world temp. `mem::summary/stats/check`. `mem::Pool<T>` (CPool port) for fixed-count objects.
+- Temp file reads go to scratch. Static BSS ~130 KB; STREAM ~2.9 MB. Typical in-game:
+  STREAM ~600 KB used, PERM 231/320 KB.
+- PERM is never freed: allocate there only once per boot (guard with a pointer, e.g. timecycle).
+- libc `_malloc_r` & co are replaced in `mem.cpp` (newlib dlmalloc/sbrk are not linked).
+  `tlsf.cpp` is portable and passed a 400k-op host stress test (git history); keep it portable.
+- Pool budgets for peds/vehicles/objects are already declared in `budget.h`.
+
+## 10. Asset pipeline (`tools/`)
+
+- `tools/assets.py sync|build|report|list|info|preview` (see AGENTS.md for invocations).
+  Pure Python + multiprocessing, cached per entry (key = handler + params + source entry + hash of
+  the handler's modules). Editing a handler module rebuilds that handler's outputs only.
+- `resources.toml`: `[global]`, `[defaults.<handler>]`, sections (`kind` = img/files/copy/sfx/
+  streams/...) with `[[section.rule]]` (`match`, `match_ide`, `match_texture`, `remove`, handler
+  overrides). Resolution: defaults -> section -> rules -> global multipliers.
+- Readers (`tools/gtasa/`): rw, img, txd (D3D8/9, DXT, PAL8...), dff, col (tolerant), ifp (ANP3),
+  audio. Converters: `ds_texture.py` (pow2 from best mip, median cut, pal4/16/256, a3i5, a5i3,
+  direct, `additive`), `ds_mesh.py` (cluster or QEM decimation, s16 quantisation, tris by
+  material), `ds_misc.py` (DCOL, DANM), `ds_radar.py`, `intro.py`, `dsfmt.py` (fixed point, DSPK).
+- Output formats (details in `ds_formats.h`): DSPK packs (`models/gta3.dspk`, `gta_int.dspk`,
+  `player.dspk`, `anim/anim.dspk`) with original entry names; loose files keep lowercased paths;
+  `data/**` and `text/*.gxt` verbatim (runtime must lowercase paths read from data files);
+  `audio/sfx/*.dsfx` + `banks.dsbl`, `audio/streams/*.dsst` (DSND, IMA-ADPCM).
+- DSPK: entry names are the original ones (`infernus.dff`), payload in DS format (DMDL, DTXD,
+  DCOL, DANM); `.ipl/.dat` inside IMGs copied raw. TOC sorted by FNV-1a(lowercase name),
+  16 B/entry in RAM (gta3 = 256 KB, hence the sparse index). DSND = DS IMA-ADPCM (4-byte header,
+  nibbles low first) or PCM8/16. `banks.dsbl` maps global bank id -> pak/index.
+- Decimation: vertex clustering by default (fast, moves seam verts); `model.decimate = "qem"`
+  (player_img) = quadric half-edge collapses with open-edge/UV-seam verts locked and same-bone
+  collapses only, so runtime-assembled CJ parts stay crack-free.
+- CJ shoulders: after the pose blend `CPed::ShoulderBoneRotation` (bones 301/302 are the deltoids:
+  upper-arm matrix with half the twist vs the clavicle). Skipping it = boxy shoulders.
+- Intro converter note: ffmpeg's rawvideo pal8 output appends a 1024 B palette per frame; the
+  converter detects the stride (slicing at W*H drifts 4 rows/frame).
+- `tex4x4` is not used yet; `nds_texcompress` exists in `~/devkitpro/tools/bin`.
+- Pipeline outputs: `build/assets_cache/` (safe to delete), `build/assets_report.json` (per-entry
+  errors), `build/assets_manifest.json` (stale outputs pruned on full builds), `build/preview/`.
+- Changing a binary layout: edit the writer AND `ds_formats.h`, bump that format's version.
+- Known gaps: 2dfx, night vertex colours, second UV set, material effects, COL face groups and
+  shadow meshes, IFP beats; GXT/FXP/SCM copied raw; no tex4x4; DSPK ignores hash collisions;
+  `las.ifp` (ANPK) unsupported. Disabled by default: speech paks, radio, cutscenes.
+- The source install is modded: `data/timecyc.dat` is a modded timecycle (both it and
+  `_timecyc.dat` differ from stock); runtime uses `timecyc.dat` like the game.
+
+## 11. Optimisation strategies used everywhere
+
+- Fixed point in hot paths (4.12 / 20.12 libnds types); floats only for per-frame scalars
+  (camera, a few dozen sprites, weather state). Byte-array integer lerps for table blends.
+- Build once, replay many: GX display lists DMA'd per frame; CPU only touches matrices.
+- Patch instead of rebuild: change a few list words (CJ colours) only when the value changes.
+- Recompute on change: fog table, HUD blocks (hash), radar only region every frame.
+- Never block a frame: loading jobs with a time budget; streaming reads capped per frame.
+- Small resident sets: sparse TOC indexes + page LRU, per-entry TXD reads, pinned clip sets.
+- Hardware tricks instead of CPU work: constant-depth sky projection, GE lines, hardware fog,
+  manual translucent sort, vblank-latched registers.
+- Measure: PERF tab (cpu, sections, polys), DEBUG `hudok` marker for headless numbers.
+
+## 12. Porting map (gta-reversed `source/game_sa/`)
+
+Streaming.cpp/StreamingInfo (model streaming), FileLoader.cpp (gta.dat, IDE, IPL), IplStore,
+TxdStore, Models/ (ModelInfo), Collision/ (incl. ColourSet), Animation/ (AnimManager),
+Audio/ (AEBankLoader, AETrackLoader), Renderer.cpp, World.cpp, Entity/, Pools/, Camera.cpp,
+Hud.cpp, Radar.cpp, TimeCycle.cpp, Weather.cpp, Clouds.cpp, Coronas.cpp, Clock.cpp,
+`app/app_light.cpp` (lighting setup), Scripts/ (SCM VM), Core/. Ported so far: Clock (in player),
+TimeCycle, Weather, Clouds (sky polys + Render), Coronas (sun only), Hud, Radar, MenuManager,
+LoadingScreen, Text/Font, ClothesBuilder (CJ), parts of Ped/PlayerPed control.

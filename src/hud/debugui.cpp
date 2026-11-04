@@ -12,6 +12,8 @@
 #include "game/hud/chud.h"
 #include "game/hud/radar.h"
 #include "game/player.h"
+#include "game/timecycle.h"
+#include "game/weather.h"
 #include "hud/hud.h"
 #include "mem/mem.h"
 #include "platform/timing.h"
@@ -19,9 +21,9 @@
 
 namespace dbgui {
 
-enum Tab { TAB_LOG, TAB_PERF, TAB_MEM, TAB_GAME, TAB_REND, TAB_COUNT };
-static const char* const k_tabs[TAB_COUNT] = { "LOG", "PERF", "MEM", "GAME", "REND" };
-static constexpr int TAB_W = 6;          // characters per tab
+enum Tab { TAB_LOG, TAB_PERF, TAB_MEM, TAB_GAME, TAB_REND, TAB_SKY, TAB_COUNT };
+static const char* const k_tabs[TAB_COUNT] = { "LOG", "PERF", "MEM", "GAME", "REND", "SKY" };
+static constexpr int TAB_W = 5;          // characters per tab (">" marker + 4-char label)
 static constexpr int COLS = 31;          // last column left empty: writing it wraps (and row 23 would scroll)
 static constexpr int ROWS = 24;
 
@@ -303,6 +305,88 @@ static void pageRend() {
 	blank(9, 23);
 }
 
+// Two toggles on one row: name at col 0 / 13, buttons at col 7 / 24.
+static void toggle2(int row, const char* a, bool& va, const char* b, bool& vb) {
+	char buf[40];
+	snprintf(buf, sizeof buf, "%-6.6s        %-10.10s", a, b);
+	put(row, 0, buf);
+	int c = 7;
+	if (button(row, c, va ? "ON " : "OFF")) va = !va;
+	c = 24;
+	if (button(row, c, vb ? "ON " : "OFF")) vb = !vb;
+}
+
+static int s_pickWeather = weather::EXTRASUNNY_LA;
+
+static void pageSky(bool inGame) {
+	if (!inGame) {
+		line(1, "\x1b[33m(start a game first)\x1b[39m");
+		blank(2, 23);
+		return;
+	}
+	dbg::Options& o = dbg::opts;
+	weather::State& w = weather::g;
+	const timecycle::Colours& c = timecycle::current();
+	int col;
+
+	line(1, "time %02u:%02u:%02u  day %u/%u", player::g_clockH, player::g_clockM, player::clockSeconds(),
+	     player::g_clockDay, player::g_clockMonth);
+	put(2, 0, "");
+	col = 0;
+	if (button(2, col, "-1h")) player::setClock(player::g_clockH + 23, player::g_clockM);
+	if (button(2, col, "+1h")) player::setClock(player::g_clockH + 1, player::g_clockM);
+	if (button(2, col, "+6h")) player::setClock(player::g_clockH + 6, player::g_clockM);
+	if (button(2, col, "0h")) player::setClock(0, 0);
+	if (button(2, col, "12h")) player::setClock(12, 0);
+	line(3, "rate x%d", o.clockRate);
+	col = 9;
+	if (button(3, col, "||")) o.clockRate = 0;
+	if (button(3, col, "x1")) o.clockRate = 1;
+	if (button(3, col, "x10")) o.clockRate = 10;
+	if (button(3, col, "x60")) o.clockRate = 60;
+
+	line(4, "w %s>%s %2d%%", weather::name(w.oldType), weather::name(w.newType), (int)(w.interpolation * 100.0f));
+	line(5, "rgn %s  frc %s", weather::regionName(w.region), weather::name(w.forcedType));
+	line(6, "pick %s", weather::name((weather::Type)s_pickWeather));
+	col = 17;
+	if (button(6, col, "<")) s_pickWeather = (s_pickWeather + weather::NUM_PLAYABLE - 1) % weather::NUM_PLAYABLE;
+	if (button(6, col, ">")) s_pickWeather = (s_pickWeather + 1) % weather::NUM_PLAYABLE;
+	put(7, 0, "");
+	col = 0;
+	if (button(7, col, "next hour")) weather::forceWeather((weather::Type)s_pickWeather);
+	if (button(7, col, "now")) weather::forceWeatherNow((weather::Type)s_pickWeather);
+	if (button(7, col, "auto")) weather::releaseWeather();
+	put(8, 0, "");
+	col = 0;
+	if (button(8, col, "sun")) weather::forceWeatherNow(weather::EXTRASUNNY_LA);
+	if (button(8, col, "cld")) weather::forceWeatherNow(weather::CLOUDY_LA);
+	if (button(8, col, "rain")) weather::forceWeatherNow(weather::RAINY_SF);
+	if (button(8, col, "fog")) weather::forceWeatherNow(weather::FOGGY_SF);
+	if (button(8, col, "sand")) weather::forceWeatherNow(weather::SANDSTORM_DESERT);
+
+	line(9, "rain %.2f sand %.2f fog %.2f", w.rain, w.sandstorm, w.foggyness);
+	line(10, "cloud %.2f xsun %.2f wind %.2f", w.cloudCoverage, w.extraSunnyness, w.wind);
+	line(11, "glare %.2f rbow %.2f wet %.2f", w.sunGlare, w.rainbow, w.wetRoads);
+	const float* s = timecycle::vectorToSun();
+	line(12, "sun %+.2f %+.2f %+.2f dn %.2f", s[0], s[1], s[2], timecycle::dayNightBalance());
+	line(13, "skyT %3d %3d %3d B %3d %3d %3d", c.skyTopR, c.skyTopG, c.skyTopB, c.skyBotR, c.skyBotG, c.skyBotB);
+	u8 pr, pg, pb;
+	timecycle::pedLight(pr, pg, pb);
+	line(14, "far %d fog %d view %d", c.farClip, c.fogStart, o.fogView);
+	col = 23;
+	if (button(14, col, "-") && o.fogView > 40) o.fogView -= 20;
+	if (button(14, col, "+") && o.fogView < 200) o.fogView += 20;
+	line(15, "ped light %3d %3d %3d", pr, pg, pb);
+	toggle2(16, "sky", o.sky, "sprites", o.skySprites);
+	toggle2(17, "fog", o.fog, "weather fx", o.weatherFx);
+	line(18, "ped lit");
+	col = 7;
+	if (button(18, col, o.pedLight ? "ON " : "OFF")) o.pedLight = !o.pedLight;
+	col = 13;
+	if (button(18, col, "lightning")) weather::debugFlash();
+	blank(19, 23);
+}
+
 // ---- frame --------------------------------------------------------------------
 
 void enter() {
@@ -325,10 +409,10 @@ void frame(const input::State& in, bool inGame) {
 	// tab bar
 	printf("\x1b[0;0H");
 	// tab bar: the console has no background colours, so the active tab is
-	// bracketed and yellow
+	// marked with '>' and yellow
 	for (int t = 0; t < TAB_COUNT; t++) {
 		char lbl[8];
-		snprintf(lbl, sizeof lbl, t == s_tab ? "[%s]" : " %s ", k_tabs[t]);
+		snprintf(lbl, sizeof lbl, t == s_tab ? ">%s" : " %s", k_tabs[t]);
 		printf(t == s_tab ? "\x1b[33m%-*s\x1b[39m" : "\x1b[37m%-*s\x1b[39m", TAB_W, lbl);
 	}
 	switch (s_tab) {
@@ -336,6 +420,7 @@ void frame(const input::State& in, bool inGame) {
 	case TAB_PERF: pagePerf(); break;
 	case TAB_MEM: pageMem(); break;
 	case TAB_GAME: pageGame(inGame); break;
+	case TAB_SKY: pageSky(inGame); break;
 	default: pageRend(); break;
 	}
 	s_repaint = false;

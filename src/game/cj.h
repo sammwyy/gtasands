@@ -83,4 +83,9 @@ void draw(float x, float y, float z, float heading);
 // Total skinned vertices emitted per draw (for the HUD stats row).
 int vertCount();
 
+// Ped lighting (timecycle::pedLight): multiplies every material colour. The
+// COLOR words inside the display lists are patched in place (a handful per
+// part) only when the 15-bit tint changes, so it costs nothing per frame.
+void setLight(unsigned char r, unsigned char g, unsigned char b);
+
 }

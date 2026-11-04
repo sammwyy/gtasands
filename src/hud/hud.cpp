@@ -12,6 +12,11 @@
 #include "mem/mem.h"
 #include "platform/input.h"
 #include "platform/timing.h"
+#ifdef GTASADS_DEBUG
+#include "game/timecycle.h"
+#include "game/weather.h"
+#include "render/renderer.h"
+#endif
 
 namespace hud {
 
@@ -86,6 +91,11 @@ void draw() {
 					for (int t = 0; t < mem::TAG_COUNT; t++)
 						fprintf(f, " %s=%uK", mem::tagName((mem::Tag)t), (unsigned)(mem::tagBytes((mem::Tag)t) >> 10));
 					fprintf(f, " vram=%uK\n", (unsigned)(tex::vramBytes() >> 10));
+					const timecycle::Colours& tc = timecycle::current();
+					fprintf(f, "sky: w=%s>%s t=%.2f top=%d,%d,%d bot=%d,%d,%d far=%d fog=%d sunz=%.2f polys=%d\n",
+					        weather::name(weather::g.oldType), weather::name(weather::g.newType),
+					        weather::g.interpolation, tc.skyTopR, tc.skyTopG, tc.skyTopB, tc.skyBotR, tc.skyBotG,
+					        tc.skyBotB, tc.farClip, tc.fogStart, timecycle::vectorToSun()[2], renderer::polyCount());
 					for (int i = 0; i < LOG_LINES; i++) {
 						const char* l = s_log[(s_logHead + i) % LOG_LINES];
 						if (*l) fprintf(f, "log: %s\n", l);
