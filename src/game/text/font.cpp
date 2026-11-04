@@ -193,8 +193,8 @@ float getNumberLines(float, float, const GxtChar*) { return 1; }
 
 void printString(float x, float y, const GxtChar* text) {
 	if (!s_ok) init();
-	if (rs.align == ALIGN_CENTER) x += rs.centre / 2 - getStringWidth(text) / 2;
-	else if (rs.align == ALIGN_RIGHT) x = rs.rjwrap ? rs.rjwrap - getStringWidth(text) : x - getStringWidth(text);
+	if (rs.align == ALIGN_CENTER) x -= getStringWidth(text) / 2;
+	else if (rs.align == ALIGN_RIGHT) x -= getStringWidth(text);
 	printLine(x, y, text);
 }
 

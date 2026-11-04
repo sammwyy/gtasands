@@ -30,6 +30,7 @@ static void boot() {
 		hud::log("\x1b[31mamerican.gxt missing (make assets)\x1b[39m");
 		return;
 	}
+	hud::log("gxt ok: %.12s", (const char*)TheText.get("FEP_STG"));
 	FrontEndMenuManager.initialise();
 	hud::log("frontend up: %u screens", (unsigned)SCREEN_COUNT);
 }
