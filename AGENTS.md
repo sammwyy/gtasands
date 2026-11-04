@@ -184,6 +184,15 @@ Profile constantly with the HUD stats (CPU us/frame, polys/verts) and tune resou
 - Timing: `timing::sectionUs(SEC_3D/SEC_SIM/SEC_HUD)`; cpu now includes the HUD.
 - Player sim is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4, button
   edges only on the first step) so animation speed no longer depends on fps.
+- Controls = PC keyboard mode (`game/pad.*`, CPad-lite): D-pad is WASD (+-128 -> CJ jogs),
+  L held + direction = walk (LALT), L tap = next weapon, B sprint (tap to go faster),
+  X jump, A attack/fire, R aim, Y enter/exit, touch = mouse look.
+- Locomotion (`game/pedmove.*`, per-ped State + PoseApi so AI peds can reuse it):
+  PlayerControlZelda (blend = |stick|/60, walk caps 1.0, 0.07 per 30 Hz step, release = 0),
+  turn at ~10.5 rad/s, SetRealMoveAnim-style idle/walk_start/walk/run/sprint/run_stop(R)/
+  idle_tired weights, and walk/run/sprint phase-synced to the heaviest cycle (no leg
+  crossing in crossfades). `CPlayerPed::SetRealMoveAnim` itself is unreversed in
+  gta-reversed (plugin call), so the blend is reconstructed, not a 1:1 port.
 - Headless check without touching ~/.config: copy it to /tmp/melcfg/melonDS, enable [DLDI]
   there (FolderSync -> repo/sdcard, ImagePath /tmp/melcfg/dldi.bin) and run
   `XDG_CONFIG_HOME=/tmp/melcfg timeout -s INT 30 melonds gtasads.nds` (SIGINT, not TERM:

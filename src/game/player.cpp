@@ -2,26 +2,30 @@
 
 #include <nds.h>
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "game/cj.h"
 #include "game/debugopts.h"
+#include "game/pad.h"
+#include "game/pedmove.h"
 #include "game/zones.h"
 #include "hud/hud.h"
 #include "platform/input.h"
 #include "platform/timing.h"
 
 // New-game snapshot (CPlayerInfo::Clear, CStats::Init, CClock::Initialise) plus
-// the on-foot controls this port can honour:
-//   D-pad  left stick, full deflection (blend eases up to a run)
-//   B      sprint. Taps raise m_fMoveSpeed the way ControlButtonSprint does,
-//          so a double tap outruns a held sprint. Energy is m_fTimeCanRun.
-//   A      punch (fists / melee) or fire (a gun, once one is given)
-//   X      jump (JUMP_launch / glide / land). Not while aiming, as in Zelda.
-//   Y      enter/exit edge for the vehicle port. Nothing is spawned yet.
-//   L      next occupied weapon slot (ProcessWeaponSwitch, one direction)
-//   R      aim. Fists go to FIGHTIDLE; a gun free-aims along the camera.
-//   touch  right stick: orbits the chase cam. There is no second stick.
+// the on-foot controls in PC keyboard mode (button map in game/pad.h):
+//   D-pad   WASD: full deflection -> CJ jogs; L held = walk (LALT)
+//   B       sprint. Taps raise m_fMoveSpeed the way ControlButtonSprint does,
+//           so tapping outruns a held sprint. Energy is m_fTimeCanRun.
+//   A       punch (fists / melee) or fire (a gun, once one is given)
+//   X       jump (JUMP_launch / glide / land). Not while aiming.
+//   Y       enter/exit edge for the vehicle port. Nothing is spawned yet.
+//   L tap   next occupied weapon slot (ProcessWeaponSwitch, one direction)
+//   R       aim. Fists go to FIGHTIDLE; a gun free-aims along the camera.
+//   touch   mouse look: orbits the chase cam.
+// Locomotion (move blend, turn, clip blending) lives in game/pedmove.
 namespace player {
 
 State g;
@@ -139,12 +143,8 @@ static uint32_t s_clockAcc;      // vblanks toward the next game minute
 static int s_hoursNoEat;         // CPlayerInfo::m_nNumHoursDidntEat
 static bool s_hungryTold;
 
-enum Phase { PH_IDLE, PH_START, PH_MOVE, PH_STOP };
-static Phase s_phase;
-static float s_ratio;
-static bool s_stopR;
-static bool s_restartStart, s_restartStop;
-static float s_wIdle, s_wWalk, s_wRun, s_wSprint, s_wStart, s_wStop, s_wTired;
+static pedmove::State s_move;    // CJ's locomotion (move blend, phases, clip weights)
+static const pedmove::PoseApi k_cjPose = { cj::pose, cj::clipPhase, cj::clipEnded };
 
 enum Action { ACT_NONE, ACT_LAUNCH, ACT_GLIDE, ACT_LAND, ACT_PUNCH };
 static Action s_action;
@@ -157,12 +157,28 @@ static const char* k_punch[] = { "FightA_1", "FightA_2", "FightA_3" };
 static constexpr float CAM_TIMESTEP = 0.5f; // CTimer is 1 at 30 fps; we step at 60
 static constexpr float DT = 1.0f / 60.0f;
 static constexpr uint32_t MAX_STEPS = 4;    // simulation catch-up cap per frame
-// GTA's on-foot jump is driven by ped physics, not just root motion in the
-// animation. Keep a modest horizontal carry so a running D-pad jump clears
-// ground rather than becoming a vertical hop. Units are SA world units/sec.
-static constexpr float JUMP_UP_SPEED = 5.2f;
-static constexpr float JUMP_GRAVITY = 16.0f;
-static constexpr float JUMP_FORWARD_SPEED = 3.8f;
+// CTaskSimpleJump / CTaskSimpleInAir / CTaskComplexInAirAndLand, converted
+// from SA's per-step units (1 step = 1/50 s) to world units per second:
+//  - the ped stays on the ground for the whole JUMP_launch(_R) clip (its
+//    root motion carries the take-off step), and only when it ends Launch()
+//    applies the jump: ApplyMoveForce(0,0,8.5) on a 70 kg ped = 0.121/step
+//  - horizontal speed 0.1/step standing or walking, 0.1..0.17 by run blend,
+//    0.17..0.22 by sprint blend, along the facing
+//  - while rising the forward speed is held at >= 0.05/step
+//  - gravity GAME_GRAVITY 0.008/step^2; peds keep a little air drag
+//  - JUMP_land only when landing at move blend > 1.5 with the stick held,
+//    FALL_land otherwise; x2 speed when landing a held sprint
+static constexpr float JUMP_UP_SPEED = 8.5f / 70.0f * 50.0f;     // 6.07 u/s
+static constexpr float JUMP_GRAVITY = 0.008f * 50.0f * 50.0f;    // 20 u/s^2
+static constexpr float JUMP_H_STAND = 0.10f * 50.0f;             // 5 u/s
+static constexpr float JUMP_H_RUN = 0.17f * 50.0f;               // 8.5 u/s
+static constexpr float JUMP_H_SPRINT = 0.22f * 50.0f;            // 11 u/s
+static constexpr float JUMP_MIN_RISE_FWD = 0.05f * 50.0f;        // 2.5 u/s
+static constexpr float JUMP_AIR_DRAG = 0.99f;                    // per 60 Hz step
+static const char* s_launchClip = "JUMP_launch";
+static const char* s_landClip = "JUMP_land";
+static float s_jumpH;            // horizontal speed Launch() will apply
+static int s_landSpeed = 1;      // ticks per step for the land clip
 
 static float wrap(float a) {
 	while (a > 3.14159265f) a -= 6.2831853f;
@@ -261,6 +277,12 @@ void respawn() {
 	g.heading = 0.0f;
 	s_camYaw = 0.0f;
 	s_action = ACT_NONE;
+}
+
+void locoDebug(char* buf, int n) {
+	static const char* const k_state[] = { "none", "walk", "run", "sprint" };
+	snprintf(buf, n, "mbr %.2f %s %s%s", s_move.moveBlend, k_state[s_move.moveState & 3],
+	         pedmove::phaseName(s_move), pad::get().pedWalk ? " WALK" : "");
 }
 
 static void nextWeapon() {
@@ -423,32 +445,13 @@ static void followCam(float targetYaw) {
 	s_camYaw = wrap(s_camYaw + fminf(CAM_TIMESTEP, 10.0f) * s_betaSpeed);
 }
 
-static void approach(float& v, float target, float dt) {
-	const float step = 8.0f * dt;
-	if (v < target) v = v + step < target ? v + step : target;
-	else if (v > target) v = v - step > target ? v - step : target;
-}
-
-static float clipOr(const char* name, float fallback) {
-	const float p = cj::clipPhase(name);
-	return p >= 0.0f ? p : fallback;
-}
-
-static void turnToward(float target, float rate) {
-	float turn = wrap(target - g.heading);
-	const float maxTurn = rate * DT;
-	if (turn > maxTurn) turn = maxTurn;
-	if (turn < -maxTurn) turn = -maxTurn;
-	g.heading = wrap(g.heading + turn);
-}
-
 static void poseOne(const char* name, bool loop, bool extract, bool restart) {
 	const cj::Clip c = { name, 1.0f, loop, extract, false, restart, 0.0f };
 	cj::pose(&c, 1);
 }
 
 static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee,
-                         bool moveHeld) {
+                         bool moveHeld, bool sprintHeld) {
 	if (s_reload > 0) {
 		if (--s_reload == 0) refillClip();
 	}
@@ -470,38 +473,45 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 		return;
 	}
 	if (s_action == ACT_LAUNCH) {
-		// No horizontal physics yet: the launch's root motion IS the takeoff
-		// carry (CAN_EXTRACT_VELOCITY), consumed below via rootDelta. s_jumpVX
-		// only drives the glide once the launch clip ends.
-		g.z += s_jumpVZ * DT;
-		s_jumpVZ -= JUMP_GRAVITY * DT;
-		// Let go of the stick without making the jump stop dead in mid-air.
-		const float drag = moveHeld ? 0.992f : 0.965f;
-		s_jumpVX *= drag;
-		s_jumpVY *= drag;
-		if (cj::clipEnded("JUMP_launch") || cj::clipPhase("JUMP_launch") < 0.0f) {
-			s_action = ACT_GLIDE;
-			poseOne("JUMP_glide", true, false, true);
-		} else {
-			poseOne("JUMP_launch", false, true, false);
+		// on the ground: the launch clip's root motion is the take-off step
+		g.z = groundZ();
+		if (!cj::clipEnded(s_launchClip) && cj::clipPhase(s_launchClip) >= 0.0f) {
+			poseOne(s_launchClip, false, true, false);
+			return;
 		}
+		// CTaskSimpleJump::Launch
+		s_jumpVZ = JUMP_UP_SPEED;
+		s_jumpVX = -sinf(g.heading) * s_jumpH;
+		s_jumpVY = cosf(g.heading) * s_jumpH;
+		s_action = ACT_GLIDE;
+		poseOne("JUMP_glide", true, false, true);
 		return;
 	}
 	if (s_action == ACT_GLIDE) {
+		// CTaskSimpleInAir: hold a minimum forward speed while rising
+		const float fx = -sinf(g.heading), fy = cosf(g.heading);
+		const float fwd = s_jumpVX * fx + s_jumpVY * fy;
+		if (s_jumpVZ > 0.0f && fwd < JUMP_MIN_RISE_FWD) {
+			s_jumpVX += fx * (JUMP_MIN_RISE_FWD - fwd);
+			s_jumpVY += fy * (JUMP_MIN_RISE_FWD - fwd);
+		}
 		g.x += s_jumpVX * DT;
 		g.y += s_jumpVY * DT;
 		g.z += s_jumpVZ * DT;
 		s_jumpVZ -= JUMP_GRAVITY * DT;
-		s_jumpVX *= 0.965f;
-		s_jumpVY *= 0.965f;
-		if (g.z <= groundZ()) {
-			s_action = ACT_LAND;
+		s_jumpVX *= JUMP_AIR_DRAG;
+		s_jumpVY *= JUMP_AIR_DRAG;
+		if (g.z <= groundZ() && s_jumpVZ < 0.0f) {
 			g.z = groundZ();
 			s_jumpVX = s_jumpVY = s_jumpVZ = 0.0f;
-			// JUMP_land's ~1 unit of root motion is the authored follow-through
-			// (CAN_EXTRACT_VELOCITY): the ped steps it out instead of the mesh
-			// sliding ahead and warping back when the clip ends.
-			poseOne("JUMP_land", false, true, true);
+			// CTaskComplexInAirAndLand: a running landing with the stick held
+			// rolls on with JUMP_land (its root motion is the follow-through);
+			// anything else plants with FALL_land
+			const bool runLand = s_move.moveBlend > 1.5f && moveHeld;
+			s_landClip = runLand ? "JUMP_land" : "FALL_land";
+			s_landSpeed = runLand && sprintHeld ? 2 : 1;
+			s_action = ACT_LAND;
+			poseOne(s_landClip, false, true, true);
 		} else {
 			poseOne("JUMP_glide", true, false, false);
 		}
@@ -509,23 +519,35 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 	}
 	if (s_action == ACT_LAND) {
 		g.z = groundZ();
-		if (cj::clipEnded("JUMP_land") || cj::clipPhase("JUMP_land") < 0.0f) s_action = ACT_NONE;
-		else poseOne("JUMP_land", false, true, false);
+		if (cj::clipEnded(s_landClip) || cj::clipPhase(s_landClip) < 0.0f) {
+			s_action = ACT_NONE;
+			s_landSpeed = 1;
+			// back to locomotion with the move blend the jump started with
+			pedmove::resume(s_move, moveHeld);
+		} else {
+			poseOne(s_landClip, false, true, false);
+		}
 		return;
 	}
 
 	if (jumpDown && !aiming) {
+		// StartLaunchAnim: the foot that is down picks launch / launch_R
+		// (moving cycle phase + 0.367), and the run/sprint blend sets the
+		// horizontal speed Launch() will give
+		const cj::Motion mo = cj::motion();
+		const pedmove::Cycle c = pedmove::dominantCycle(s_move);
+		const char* cyc = c == pedmove::CYCLE_SPRINT ? mo.sprint : c == pedmove::CYCLE_RUN ? mo.run : mo.walk;
+		float ph = pedmove::cycleWeight(s_move, c) > 0.3f ? cj::clipPhase(cyc) : -1.0f;
+		ph = ph < 0.0f ? 0.0f : ph + 0.367f;
+		if (ph > 1.0f) ph -= 1.0f;
+		s_launchClip = ph >= 0.5f ? "JUMP_launch_R" : "JUMP_launch";
+		const float wSprint = pedmove::cycleWeight(s_move, pedmove::CYCLE_SPRINT);
+		const float wRun = pedmove::cycleWeight(s_move, pedmove::CYCLE_RUN);
+		if (wSprint > 0.0f) s_jumpH = JUMP_H_RUN + (JUMP_H_SPRINT - JUMP_H_RUN) * wSprint;
+		else if (wRun > 0.0f) s_jumpH = JUMP_H_STAND + (JUMP_H_RUN - JUMP_H_STAND) * wRun;
+		else s_jumpH = JUMP_H_STAND;
 		s_action = ACT_LAUNCH;
-		s_jumpVZ = JUMP_UP_SPEED;
-		// Facing is (-sin(h), cos(h)). Starting a jump from a held direction
-		// carries CJ forward; a standing jump stays vertical.
-		if (moveHeld) {
-			s_jumpVX = -sinf(g.heading) * JUMP_FORWARD_SPEED;
-			s_jumpVY =  cosf(g.heading) * JUMP_FORWARD_SPEED;
-		} else {
-			s_jumpVX = s_jumpVY = 0.0f;
-		}
-		poseOne("JUMP_launch", false, true, true);
+		poseOne(s_launchClip, false, true, true);
 		return;
 	}
 	if (attackDown && melee) {
@@ -537,17 +559,15 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 
 static void updateMove() {
 	const input::State& in = input::get();
-	const bool jumpDown = (in.down & KEY_X) != 0;
-	const bool attackDown = (in.down & KEY_A) != 0;
-	const bool attackHeld = (in.held & KEY_A) != 0;
+	const pad::Pad& pd = pad::get();
 	const bool inAction = s_action != ACT_NONE;
 
-	g.aiming = (in.held & KEY_R) && !inAction && !g.inVehicle;
-	if (in.down & KEY_L) nextWeapon();
+	g.aiming = pd.target && !inAction && !g.inVehicle;
+	if (pd.nextWeaponJustDown) nextWeapon();
 	const Slot& wep = s_slots[s_slot];
 	const bool melee = wep.melee || wep.type == WEAPON_UNARMED;
 
-	// Touch is the right stick. A drag orbits; it does not steer CJ.
+	// Touch is the mouse: a drag orbits the camera, it does not steer CJ.
 	bool looking = false;
 	// on the debug screen the touch panel drives the debug UI, not the camera
 	if (in.touching && hud::screen() == hud::Screen::GAME) {
@@ -565,54 +585,42 @@ static void updateMove() {
 	if (s_camPitch < -0.45f) s_camPitch = -0.45f;
 	if (s_camPitch > 1.05f) s_camPitch = 1.05f;
 
-	const float ix = (in.held & KEY_RIGHT ? 1.0f : 0.0f) - (in.held & KEY_LEFT ? 1.0f : 0.0f);
-	const float iy = (in.held & KEY_UP ? 1.0f : 0.0f) - (in.held & KEY_DOWN ? 1.0f : 0.0f);
-	const bool hasMoveInput = ix != 0.0f || iy != 0.0f;
-	const bool moving = hasMoveInput && !inAction;
+	const bool hasMoveInput = pd.walkLR || pd.walkUD;
 
-	float wish = g.heading;
-	if (moving && !g.aiming) {
-		const float dx = -sinf(s_camYaw) * iy + cosf(s_camYaw) * ix;
-		const float dy =  cosf(s_camYaw) * iy + sinf(s_camYaw) * ix;
-		wish = atan2f(-dx, dy);
-		turnToward(wish, 6.0f);
-	} else if (g.aiming) {
-		turnToward(s_camYaw, 10.0f);
+	// PlayerControlZelda: stick -> move blend + aiming rotation. Aiming owns
+	// the ped (no blend). During a jump/punch PlayerControlZelda does not run
+	// at all: the move blend is frozen (the landing picks its clip from it and
+	// the run resumes at it) and the heading stays put (no air steering).
+	bool moving = false;
+	if (!inAction) {
+		const pedmove::Input mi = { (float)pd.walkLR, (float)pd.walkUD, pd.pedWalk, !g.aiming, s_camYaw };
+		float wish = g.heading;
+		moving = pedmove::control(s_move, mi, CAM_TIMESTEP, wish);
+		if (moving) pedmove::turn(g.heading, wish, DT, false);
+		else if (g.aiming) pedmove::turn(g.heading, s_camYaw, DT, true);
 	}
 
-	const bool wantSprint = moving && (in.held & KEY_B) && !g.aiming && !inAction;
-	const bool tapSprint = moving && (in.down & KEY_B) && !g.aiming && !inAction;
+	// sprint keeps its pace through a jump while the button stays held
+	const bool sprintable = (moving || (inAction && hasMoveInput)) && !g.aiming;
+	const bool wantSprint = sprintable && pd.sprint;
+	const bool tapSprint = sprintable && pd.sprintJustDown;
 	const float sprintR = controlSprint(wantSprint, tapSprint);
 	const bool sprinting = sprintR >= 1.0f;
 
-	const float gait = s_ratio;
-	if (sprinting) s_ratio = 2.0f;
-	else if (moving && !g.aiming) {
-		// Full stick asks for a run (blend 2). It gets there at 0.07/timestep.
-		const float target = 2.0f;
-		const float step = 2.1f * DT;
-		if (s_ratio < target) s_ratio = s_ratio + step < target ? s_ratio + step : target;
-		else if (s_ratio > target) s_ratio = s_ratio - step > target ? s_ratio - step : target;
-	} else if (!moving) {
-		s_ratio = 0.0f;
-	} else {
-		// Aiming: walk pace only. The fight/gun shuffle carries the step.
-		s_ratio = 1.0f;
-	}
-
-	recoverEnergy(moving && !sprinting && !g.aiming && s_ratio > 1.0f, sprinting);
+	recoverEnergy(moving && !sprinting && s_move.moveBlend > 1.0f, sprinting);
 	g.sprint = s_timeCanRun <= 0.0f ? 0.0f : s_timeCanRun * 100.0f / energyMax();
 	if (g.sprint > 100.0f) g.sprint = 100.0f;
 
 	if (!melee && !inAction) {
-		const bool trigger = wep.automatic ? attackHeld : attackDown;
+		const bool trigger = wep.automatic ? pd.attack : pd.attackJustDown;
 		const int gap = wep.automatic ? 5 : 16;
 		if (trigger && s_fireCd == 0 && fireOne()) s_fireCd = gap;
 	}
 
-	updateAction(jumpDown && !g.aiming, attackDown, g.aiming, melee, hasMoveInput);
+	updateAction(pd.jumpJustDown && !g.aiming, pd.attackJustDown, g.aiming, melee, hasMoveInput,
+	             pd.sprint && sprinting);
 	if (s_action != ACT_NONE) {
-		cj::advance(1);
+		cj::advance(s_action == ACT_LAND ? s_landSpeed : 1);
 		float mx, my;
 		cj::rootDelta(mx, my);
 		const float c = cosf(g.heading), s = sinf(g.heading);
@@ -631,77 +639,15 @@ static void updateMove() {
 		return;
 	}
 
-	const cj::Motion mo = cj::motion();
 	if (!g.aiming) {
-		if (moving) {
-			if (s_phase == PH_IDLE || s_phase == PH_STOP) {
-				if (sprinting) s_phase = PH_MOVE;
-				else { s_phase = PH_START; s_restartStart = true; }
-			} else if (s_phase == PH_START &&
-			           (sprinting || cj::clipEnded(mo.start) || cj::clipPhase(mo.start) < 0.0f)) {
-				s_phase = PH_MOVE;
-			}
-		} else if (s_phase == PH_MOVE || s_phase == PH_START) {
-			if (s_phase == PH_MOVE && gait > 1.0f) {
-				float ph = clipOr(mo.run, -1.0f);
-				if (s_wSprint >= s_wRun && s_wSprint >= s_wWalk) ph = clipOr(mo.sprint, ph);
-				else if (s_wWalk >= s_wRun) ph = clipOr(mo.walk, ph);
-				if (ph < 0.0f) ph = clipOr(mo.start, 0.0f);
-				s_stopR = ph >= 0.5f;
-				s_phase = PH_STOP;
-				s_restartStop = true;
-			} else {
-				s_phase = PH_IDLE;
-			}
-		} else if (s_phase == PH_STOP) {
-			const char* sn = s_stopR ? mo.stopR : mo.stop;
-			if (cj::clipEnded(sn) || cj::clipPhase(sn) < 0.0f) s_phase = PH_IDLE;
-		}
-
-		float tIdle = 0, tWalk = 0, tRun = 0, tSprint = 0, tStart = 0, tStop = 0, tTired = 0;
-		if (s_phase == PH_IDLE) {
-			if (s_spent) tTired = 1.0f;
-			else tIdle = 1.0f;
-		} else if (s_phase == PH_START) {
-			tStart = 1.0f;
-		} else if (s_phase == PH_MOVE) {
-			if (sprinting) tSprint = 1.0f;
-			else if (s_ratio <= 1.0f) { tWalk = s_ratio; tIdle = 1.0f - s_ratio; }
-			else { tWalk = 2.0f - s_ratio; tRun = s_ratio - 1.0f; }
-		} else {
-			tStop = 1.0f;
-		}
-		approach(s_wIdle, tIdle, DT);
-		approach(s_wWalk, tWalk, DT);
-		approach(s_wRun, tRun, DT);
-		approach(s_wSprint, tSprint, DT);
-		approach(s_wStart, tStart, DT);
-		approach(s_wStop, tStop, DT);
-		approach(s_wTired, tTired, DT);
-
-		cj::Clip clips[7];
-		int n = 0;
-		const float walkPh = clipOr(mo.walk, 0.0f);
-		auto add = [&](const char* name, float w, bool loop, bool extract, bool sync, bool restart, float phase) {
-			if (w <= 0.01f || n >= 7) return;
-			clips[n++] = { name, w, loop, extract, sync, restart, phase };
-		};
-		add(mo.idle, s_wIdle, true, false, false, false, 0.0f);
-		add(mo.tired, s_wTired, true, false, false, false, 0.0f);
-		add(mo.start, s_wStart, false, true, false, s_restartStart, 0.0f);
-		add(mo.walk, s_wWalk, true, true, false, false, 0.0f);
-		add(mo.run, s_wRun, true, true, s_wWalk > 0.05f, false, walkPh);
-		add(mo.sprint, s_wSprint, true, true, false, false, 0.0f);
-		add(s_stopR ? mo.stopR : mo.stop, s_wStop, false, true, false, s_restartStop, 0.0f);
-		s_restartStart = s_restartStop = false;
-		cj::pose(clips, n);
+		pedmove::setRealMoveAnim(s_move, cj::motion(), sprinting, s_spent, DT, k_cjPose);
 	} else {
-		s_phase = PH_IDLE;
-		s_wWalk = s_wRun = s_wSprint = s_wStart = s_wStop = s_wTired = 0.0f;
-		s_wIdle = 0.0f;
+		pedmove::suspend(s_move);
 		const char* pose = melee ? "FIGHTIDLE" : "IDLE_armed";
-		if (moving) {
-			// Stick relative to the aim heading: forward / back / strafe.
+		if (hasMoveInput) {
+			// Stick relative to the aim heading: forward / back / strafe
+			// (ControlGunMove / the fight shuffle).
+			const float ix = pd.walkLR / 128.0f, iy = pd.walkUD / 128.0f;
 			const float fx = -sinf(g.heading), fy = cosf(g.heading);
 			const float rx = cosf(g.heading), ry = sinf(g.heading);
 			const float dx = -sinf(s_camYaw) * iy + cosf(s_camYaw) * ix;
@@ -720,7 +666,7 @@ static void updateMove() {
 		}
 		// The aim shuffles and FIGHTIDLE all carry CAN_EXTRACT_VELOCITY; the
 		// gun idles (Gun_stand / IDLE_armed) do not.
-		poseOne(pose, true, moving || melee, false);
+		poseOne(pose, true, hasMoveInput || melee, false);
 	}
 
 	cj::advance(1);
@@ -737,8 +683,9 @@ static void updateMove() {
 	g.y += wy;
 	g.speed = sqrtf(wx * wx + wy * wy) / DT;
 
-	if (!looking && !g.aiming &&
-	    (moving || s_phase == PH_START || s_phase == PH_MOVE || s_phase == PH_STOP))
+	// keyboard-mode camera: swings back behind CJ while he moves (or is
+	// still finishing a start/stop) unless the player is looking around
+	if (!looking && !g.aiming && (moving || s_move.phase != 0))
 		followCam(g.heading);
 	else { s_betaSpeed = 0.0f; s_betaSign = 0; }
 }
@@ -764,13 +711,8 @@ void init() {
 	s_betaSign = 0;
 	s_zoneTimer = 0;
 	s_camDrag = false;
-	s_phase = PH_IDLE;
-	s_ratio = 0;
+	pedmove::reset(s_move);
 	s_spent = false;
-	s_stopR = false;
-	s_restartStart = s_restartStop = false;
-	s_wIdle = 1.0f;
-	s_wWalk = s_wRun = s_wSprint = s_wStart = s_wStop = s_wTired = 0.0f;
 	s_action = ACT_NONE;
 	s_combo = 0;
 	s_jumpVX = s_jumpVY = s_jumpVZ = 0.0f;
@@ -800,8 +742,8 @@ void init() {
 }
 
 void update() {
-	const input::State& in = input::get();
-	g.vehicleRequest = (in.down & KEY_Y) != 0;
+	pad::update(input::get());
+	g.vehicleRequest = pad::get().enterExitJustDown;
 	// inVehicle stays false until a car exists to enter. Y is the edge the
 	// vehicle port will consume; pressing it on foot changes nothing else.
 
@@ -826,11 +768,14 @@ void update() {
 	if (steps > MAX_STEPS) steps = MAX_STEPS;
 	for (uint32_t i = 0; i < steps; i++) {
 		updateMove();
-		if (i == 0) input::consumeEdges();
+		if (i == 0) {
+			input::consumeEdges();
+			pad::consumeEdges();
+		}
 	}
 
-	const bool running = s_phase == PH_MOVE && s_wRun > s_wSprint && s_wRun > 0.4f && !g.aiming;
-	const bool sprinting = s_wSprint > 0.5f;
+	const bool running = pedmove::isRunning(s_move) && !g.aiming;
+	const bool sprinting = pedmove::isSprinting(s_move);
 	exercise(sprinting, running, dv * (1000u / 60u));
 
 	if (--s_zoneTimer <= 0) {

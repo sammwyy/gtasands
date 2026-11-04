@@ -313,7 +313,7 @@ static bool loadPart(int i) {
 static const char* const k_resident[] = {
 	"idle_stance", "walk_player", "run_player", "sprint_civi",
 	"walk_start", "idle_tired", "run_stop", "run_stopr",
-	"jump_launch", "jump_glide", "jump_land",
+	"jump_launch", "jump_launch_r", "jump_glide", "jump_land", "fall_land",
 	"fightidle", "fighta_1", "fighta_2", "fighta_3",
 	"fightsh_fwd", "fightsh_bwd", "fightsh_left", "fightsh_right",
 	"idle_armed", "gun_stand",

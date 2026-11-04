@@ -143,10 +143,13 @@ static void pagePerf() {
 	const player::State& p = player::g;
 	line(10, "pos %7.1f %7.1f %5.1f", p.x, p.y, p.z);
 	line(11, "hdg %5.2f spd %5.1f aim %d", p.heading, p.speed, (int)p.aiming);
-	line(12, "radar rng %3d tiles %2d", (int)radar::range(), radar::tilesCached());
+	char loco[40];
+	player::locoDebug(loco, sizeof loco);
+	line(12, "%s", loco);
+	line(14, "radar rng %3d tiles %2d", (int)radar::range(), radar::tilesCached());
 	line(13, "sim x%d.%02d %s  vbl %lu", dbg::opts.simSpeedQ / 4, dbg::opts.simSpeedQ % 4 * 25,
 	     dbg::opts.fixedStep ? "fixed" : "frame", timing::vblanks());
-	blank(14, 23);
+	blank(15, 23);
 }
 
 static void regionRow(int row, const char* name, mem::Region r) {
