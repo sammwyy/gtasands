@@ -146,8 +146,11 @@ in hot paths, replace RW with our formats/renderer, keep memory pools small and 
 Profile constantly with the HUD stats (CPU us/frame, polys/verts) and tune resources.toml to fit.
 
 ## Bottom-screen game HUD (current milestone)
-`SELECT` toggles the bottom screen between the debug console and a real
-software-rendered GTA HUD (`hud::Screen::DEBUG/GAME`, `hud::toggleScreen()`).
+The bottom screen boots into a real software-rendered GTA HUD (default
+`hud::Screen::GAME`); `SELECT` toggles to the debug console and back
+(`hud::toggleScreen()`). `chud::init` waits for `g_models` to be open
+(opened by the loadscreen) before latching — until then the screen is a
+flat sky clear.
 - `src/game/hud/subfb.*`: CPU renderer into a 96KB RAM backbuffer that is
   DMA'd to the sub engine's B16 bitmap BG3 (VRAM C, MODE_5_2D) inside vblank
   (`subfb::present` — DC_FlushRange + dmaCopy). CPU never touches VRAM, so
@@ -165,7 +168,9 @@ software-rendered GTA HUD (`hud::Screen::DEBUG/GAME`, `hud::toggleScreen()`).
   heading). ALL 144 radarNN.txd tiles are decoded+box-filtered at init
   into a 1.15MB static arena — zero runtime file I/O/decoding (a tile
   miss on FAT costs ms and tanks fps). Incremental world-coord marching
-  (no per-pixel divides), dynamic range 180-350, north marker, blips
+  (no per-pixel divides; kQ is world-units-per-pixel, offsets stay in
+  screen px — do NOT divide by R again). Dynamic range 300-900 with a
+  32px mip per tile for range>MIP_RANGE, north marker, blips
   (`radar::setBlip`), `radar_centre` player arrow.
 - `src/game/hud/chud.*`: CHud port — clock, money, wanted stars (font2 `]`
   glyph + flash), weapon icon (`*icon` tex from weapon dspk txds, fist

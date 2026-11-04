@@ -20,8 +20,10 @@ struct State {
 	float speed;          // world units/sec -> radar zoom
 	float health;         // 0..maxHealth
 	float maxHealth;
-	float armour;         // 0..100
-	float breath;         // 0..~212, only relevant < ~212
+	float armour;         // 0..maxArmour
+	float maxArmour;
+	float breath;         // 0..maxBreath, only relevant < maxBreath
+	float maxBreath;
 	int money;
 	int wantedLevel;      // 0..6
 	Weapon weapon;

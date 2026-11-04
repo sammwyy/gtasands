@@ -24,6 +24,7 @@ static int16_t* ima_decode(const u8* data, u32 bytes, u32* outSamples) {
 	int idx = data[2];
 	u32 n = (bytes - 4) * 2;
 	int16_t* out = (int16_t*)malloc((n + 2) * 2);
+	if (!out) { *outSamples = 0; return nullptr; }
 	u32 w = 0;
 	out[w++] = pred;
 	for (u32 i = 4; i < bytes; i++) {
@@ -67,17 +68,20 @@ static bool loadSnd(FILE* f, long pos, Snd& out) {
 	u32 want = hdr[8] | (hdr[9] << 8) | (hdr[10] << 16) | (hdr[11] << 24); // numSamples
 	u32 dataBytes = hdr[20] | (hdr[21] << 8) | (hdr[22] << 16) | (hdr[23] << 24);
 	u8* raw = (u8*)malloc(dataBytes);
+	if (!raw) { hud::log("\x1b[31msfx: oom raw=%u\x1b[39m", (unsigned)dataBytes); return false; }
 	if (fread(raw, 1, dataBytes, f) != dataBytes) { free(raw); return false; }
 	int16_t* pcm = nullptr;
 	u32 ns = 0;
 	if (fmt == 2) {
 		pcm = ima_decode(raw, dataBytes, &ns);
+		if (!pcm) { free(raw); hud::log("\x1b[31msfx: oom pcm %u\x1b[39m", (unsigned)(dataBytes * 4)); return false; }
 	} else if (fmt == 1) {
 		pcm = (int16_t*)raw;
 		ns = dataBytes / 2;
 		raw = nullptr;
 	} else {
 		pcm = (int16_t*)malloc(dataBytes * 2);
+		if (!pcm) { free(raw); hud::log("\x1b[31msfx: oom pcm8 %u\x1b[39m", (unsigned)dataBytes); return false; }
 		for (u32 j = 0; j < dataBytes; j++) pcm[j] = (int16_t)((raw[j] ^ 0x80) << 8);
 		ns = dataBytes;
 	}

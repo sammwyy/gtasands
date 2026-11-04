@@ -42,6 +42,7 @@ void blitScaled(const Sprite& s, int x, int y, int w, int h); // nearest-sample 
 void blitRot(const Sprite& s, int cx, int cy, int brad);  // rotated around center, brad = -32768..32767 (128 = 45deg)
 
 // Coverage text: glyph masks (u8, 0..255) blended toward a color.
-void mask(int x, int y, int w, int h, const u8* cov, int pitch, u16 c);
+// ga multiplies the coverage (0..255, 255 = full alpha).
+void mask(int x, int y, int w, int h, const u8* cov, int pitch, u16 c, u8 ga = 255);
 
 }

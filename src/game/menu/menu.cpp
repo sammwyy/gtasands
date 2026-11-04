@@ -58,31 +58,57 @@ static const tex::Texture* s_sprites[FRONTEND_SPRITE_COUNT];
 static const tex::Texture* s_font2 = nullptr;
 static const tex::Texture* s_font1 = nullptr;
 
-static void* loadBlob(const char* name) {
-	// loose DTXD files at nitro:/models/<name>.txd (converted by the pipeline)
+// Streams a single DTEX entry out of a loose TXD. The whole file is never
+// held in RAM: fronten2.txd is ~484KB and the 4MB heap (streaming TOCs +
+// decoded SFX + HUD arena) cannot spare that anymore - one entry is <=66KB.
+static FILE* openTxd(const char* name, ds::TxdEntry** entriesOut, int* countOut) {
 	char path[96];
 	snprintf(path, sizeof path, "nitro:/models/%s.txd", name);
 	FILE* f = fopen(path, "rb");
-	if (!f) return nullptr;
-	fseek(f, 0, SEEK_END);
-	long n = ftell(f);
-	fseek(f, 0, SEEK_SET);
-	void* b = malloc(n);
-	if (b && fread(b, 1, n, f) != (size_t)n) { free(b); b = nullptr; }
-	fclose(f);
-	return b;
+	if (!f) { hud::log("fe: %s.txd missing", name); return nullptr; }
+	ds::TxdHeader th;
+	ds::TxdEntry* e = nullptr;
+	if (fread(&th, 1, sizeof th, f) == sizeof th && th.magic == DS_FOURCC('D', 'T', 'X', 'D'))
+		e = (ds::TxdEntry*)malloc(th.count * sizeof(ds::TxdEntry));
+	if (!e || fread(e, sizeof(ds::TxdEntry), th.count, f) != (size_t)th.count) {
+		free(e);
+		fclose(f);
+		return nullptr;
+	}
+	*entriesOut = e;
+	*countOut = th.count;
+	return f;
+}
+
+static const tex::Texture* loadTxdEntry(FILE* f, const ds::TxdEntry* e, int count, const char* name) {
+	for (int i = 0; i < count; i++) {
+		if (strcmp(e[i].name, name)) continue;
+		void* buf = malloc(e[i].size);
+		if (!buf) { hud::log("fe: oom %s (%lu)", name, (unsigned long)e[i].size); return nullptr; }
+		fseek(f, e[i].offset, SEEK_SET);
+		const tex::Texture* t =
+			fread(buf, 1, e[i].size, f) == e[i].size ? tex::load(buf) : nullptr;
+		free(buf);
+		return t;
+	}
+	hud::log("fe: %s not in txd", name);
+	return nullptr;
 }
 
 static const tex::Texture* spriteTex(eFrontend id) { return s_sprites[(int)id]; }
 
 static const tex::Texture* loadSpriteFile(const char* file, int first, int last) {
-	void* dtxd = loadBlob(file);
-	if (!dtxd) return nullptr;
+	ds::TxdEntry* entries;
+	int count;
+	FILE* f = openTxd(file, &entries, &count);
+	if (!f) return nullptr;
 	const tex::Texture* firstTex = nullptr;
 	for (int i = first; i < last; i++) {
-		s_sprites[i] = tex::loadFromTxd(dtxd, FrontEndFilenames[i].name);
+		s_sprites[i] = loadTxdEntry(f, entries, count, FrontEndFilenames[i].name);
 		if (!firstTex) firstTex = s_sprites[i];
 	}
+	free(entries);
+	fclose(f);
 	return firstTex;
 }
 
@@ -106,14 +132,20 @@ void CMenuManager::loadAllTextures() {
 	loadSpriteFile("fronten2", FRONTEND_SPRITE_BACK8, FRONTEND_SPRITE_MAP + 1);
 	loadSpriteFile("fronten3", FRONTEND3_START, FRONTEND4_START);
 	loadSpriteFile("fronten_pc", FRONTEND4_START, FRONTEND_SPRITE_COUNT);
-	void* fd = loadBlob("fonts");
-	if (fd) {
-		s_font2 = tex::loadFromTxd(fd, "font2");
-		s_font1 = tex::loadFromTxd(fd, "font1");
+	ds::TxdEntry* fentries;
+	int fcount;
+	FILE* ff = openTxd("fonts", &fentries, &fcount);
+	if (ff) {
+		s_font2 = loadTxdEntry(ff, fentries, fcount, "font2");
+		s_font1 = loadTxdEntry(ff, fentries, fcount, "font1");
+		free(fentries);
+		fclose(ff);
 	}
 	m_bTexturesLoaded = s_font1 && s_font2;
 	int f1 = s_font1 ? s_font1->id : 0, f2 = s_font2 ? s_font2->id : 0;
-	hud::log("fe tex: %d loaded, font1=%d font2=%d", tex::loadedCount(), f1, f2);
+	hud::log("fe tex: %d loaded, font1=%d font2=%d map=%d back8=%d", tex::loadedCount(), f1, f2,
+	         s_sprites[FRONTEND_SPRITE_MAP] ? (int)s_sprites[FRONTEND_SPRITE_MAP]->id : -1,
+	         s_sprites[FRONTEND_SPRITE_BACK8] ? (int)s_sprites[FRONTEND_SPRITE_BACK8]->id : -1);
 }
 
 void CMenuManager::unloadTextures() { tex::clear(); }

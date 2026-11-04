@@ -2,6 +2,7 @@
 #include <stdlib.h>
 
 #include "assets/pack.h"
+#include "assets/texture.h"
 #include "game/intro.h"
 #include "game/loadscreen.h"
 #include "game/player.h"
@@ -46,6 +47,7 @@ static void boot() {
 }
 
 int main() {
+	defaultExceptionHandler();
 	boot();
 #ifdef GTASADS_QUICKTEST
 	FrontEndMenuManager.m_WantsStartGame = true;

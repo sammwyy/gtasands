@@ -27,8 +27,13 @@ Texture* load(const void* blob) {
 		t->id = 0;
 		return nullptr;
 	}
-	if (h->numColors)
-		glColorTableEXT(0, 0, h->numColors, 0, 0, (const u16*)pal);
+	if (h->numColors) {
+		// palettes are stored without the alpha bit; opaque texels need it set
+		u16 pal16[256];
+		const int n = h->numColors < 256 ? h->numColors : 256;
+		for (int i = 0; i < n; i++) pal16[i] = ((const u16*)pal)[i] | BIT(15);
+		glColorTableEXT(0, 0, n, 0, 0, pal16);
+	}
 	t->format = (GL_TEXTURE_TYPE_ENUM)h->format;
 	t->w = h->width;
 	t->h = h->height;

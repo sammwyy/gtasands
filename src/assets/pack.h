@@ -14,6 +14,7 @@ public:
 	void close();
 
 	uint32_t count() const { return m_count; }
+	bool isOpen() const { return m_file != nullptr; }
 	const ds::PackEntry* find(const char* name) const;
 	// Reads an entry into a malloc'd buffer (caller frees). Returns NULL on failure.
 	void* load(const ds::PackEntry* e) const;

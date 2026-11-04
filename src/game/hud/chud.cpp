@@ -29,9 +29,17 @@ static u16 c_bg;                        // backdrop, matches glClearColor
 static const int RCOL = 248;            // right-aligned column edge
 static const int CLOCK_Y = 4;
 static const int MONEY_Y = 32;
-static const int BARS_X = 186, BARS_W = 60, BAR_H = 6;
-static const int HEALTH_Y = 58, ARMOR_Y = 66, BREATH_Y = 74;
-static const int STAR_Y = 84, STAR_W = 16, N_STARS = 6;
+// the stat column: clock/money right-align on RCOL; the bar stack's left
+// edge tracks the money text's left edge (measured per frame — the block
+// width moves with the digit count)
+static const float MONEY_SW = 0.72f, MONEY_SH = 1.35f;
+static const int BAR_H = 6;
+static const int HEALTH_Y = 66, BAR_PITCH = 10;
+static const int N_STARS = 6;
+// star glyph "]" draws a 32*sw px quad; at sw=0.5 that's 16px, slots 19px
+// apart -> real gaps between stars instead of the overlap we had at 22/16
+static const int STAR_W = 19;
+static const float STAR_SW = 0.5f, STAR_SH = 1.0f;
 static const int ICON_X = 8, ICON_Y = 8, ICON_S = 46;       // weapon icon box
 static const int AMMO_Y = 56;
 static const int VEHICLE_Y = 158, ZONE_Y = 170;
@@ -135,6 +143,8 @@ static void drawClock() {
 	               0.72f, 1.35f, c_lightGray, hudfont::RIGHT, 2, c_black);
 }
 
+static int s_barsX = RCOL - 108;   // left edge for the bar stack, set by drawMoney
+
 static void drawMoney() {
 	char s[16];
 	const int m = player::g.money;
@@ -142,22 +152,26 @@ static void drawMoney() {
 	if (m < 0) snprintf(s, sizeof s, "-$%07d", -m);
 	else snprintf(s, sizeof s, "$%08d", m);
 	hudfont::print(hudfont::STYLE_PRICEDOWN, RCOL, MONEY_Y, (const GxtChar*)s,
-	               0.72f, 1.35f, c, hudfont::RIGHT, 2, c_black);
+	               MONEY_SW, MONEY_SH, c, hudfont::RIGHT, 2, c_black);
+	s_barsX = RCOL - (int)hudfont::rwidth(hudfont::STYLE_PRICEDOWN,
+	                                    (const GxtChar*)s, MONEY_SW);
 }
 
-static void drawWanted() {
+static void drawWanted(int y) {
 	const int lvl = player::g.wantedLevel;
+	if (lvl == 0) { s_wantedShown = 0; return; } // PC: no stars at all at 0
 	if (lvl != s_wantedShown) {
 		if (lvl > s_wantedShown) s_wantedFlash = 0;
 		s_wantedShown = lvl;
 	}
 	s_wantedFlash++;
-	// 6 stars under the bars. Each glyph quad is 32*sw=22px wide but the
-	// advance is much smaller — space slots by STAR_W and pin the last
-	// quad's right edge to RCOL so nothing spills offscreen; the newest
-	// star flashes ~5x like the original DrawWanted
+	// 6 stars under the bars, evenly spaced STAR_W apart with the last
+	// quad's right edge pinned to RCOL; the newest star flashes ~5x like
+	// the original DrawWanted. y tracks the bottom of the bar block, so
+	// the row slides up when armour/breath aren't being drawn
+	const int starQW = (int)(32 * STAR_SW);
 	for (int i = 0; i < N_STARS; i++) {
-		const int x = RCOL - 24 - (N_STARS - 1 - i) * STAR_W;
+		const int x = RCOL - starQW - (N_STARS - 1 - i) * STAR_W;
 		u16 c = c_black;
 		if (i < lvl) {
 			c = c_gold;
@@ -165,8 +179,8 @@ static void drawWanted() {
 		} else {
 			c = c_darkGray;
 		}
-		hudfont::print(hudfont::STYLE_MENU, x, STAR_Y, (const GxtChar*)"]",
-		               0.7f, 1.05f, c, hudfont::LEFT, 1, c_black);
+		hudfont::print(hudfont::STYLE_MENU, x, y, (const GxtChar*)"]",
+		               STAR_SW, STAR_SH, c, hudfont::LEFT, 1, c_black);
 	}
 }
 
@@ -200,13 +214,28 @@ static void drawWeapon() {
 	}
 }
 
-static void drawBars() {
+// Stack the bars from HEALTH_Y skipping hidden slots, return where the
+// wanted-stars row hangs (block bottom + a small gap). PC layout scaled to
+// the money column: health is the wide bar — its width is proportional to
+// maxHealth (109 units at max=100, so it reaches further left as max health
+// grows); armour/breath are the small fixed 62-unit bars. All right-anchored.
+static int drawBars() {
 	const player::State& p = player::g;
-	if (p.breath < 200.0f)
-		barChart(BARS_X, BREATH_Y, BARS_W, BAR_H, p.breath * 100.0f / 212.0f, c_lightBlue);
-	if (p.armour > 1.0f)
-		barChart(BARS_X, ARMOR_Y, BARS_W, BAR_H, p.armour, c_lightGray);
-	barChart(BARS_X, HEALTH_Y, BARS_W, BAR_H, p.health * 100.0f / p.maxHealth, c_red);
+	const int W = RCOL - s_barsX;
+	const int wSmall = W * 62 / 109;
+	int y = HEALTH_Y;
+	const int wh = W * (int)p.maxHealth / 100;
+	barChart(RCOL - wh, y, wh, BAR_H, p.health * 100.0f / p.maxHealth, c_red);
+	y += BAR_PITCH;
+	if (p.armour > 1.0f) {
+		barChart(RCOL - wSmall, y, wSmall, BAR_H, p.armour * 100.0f / p.maxArmour, c_lightGray);
+		y += BAR_PITCH;
+	}
+	if (p.breath < p.maxBreath) {
+		barChart(RCOL - wSmall, y, wSmall, BAR_H, p.breath * 100.0f / p.maxBreath, c_lightBlue);
+		y += BAR_PITCH;
+	}
+	return y + 4;
 }
 
 static void drawNames() {
@@ -230,7 +259,11 @@ static void drawNames() {
 
 bool init() {
 	if (s_ok) return true;
-	c_bg = rgb(10, 14, 22);
+	// the GAME screen is the default now, so init runs while the frontend is
+	// still up — wait for the pack (the loadscreen opens it) or the radar
+	// would latch an empty tile cache forever
+	if (!streaming::g_models.isOpen()) return false;
+	c_bg = RGB15(10, 14, 22) | BIT(15);
 	c_red = rgb(180, 25, 29);
 	c_green = rgb(54, 104, 44);
 	c_lightBlue = rgb(172, 203, 241);
@@ -258,10 +291,16 @@ void draw() {
 	radar::draw();
 	drawClock();
 	drawMoney();
-	drawBars();
-	drawWanted();
+	drawWanted(drawBars());
 	drawWeapon();
 	drawNames();
+#ifdef GTASADS_QUICKTEST
+	// fps probe so emulator screenshots can verify HUD render cost
+	char fb[8];
+	snprintf(fb, sizeof fb, "%lu", timing::fps());
+	hudfont::print(hudfont::STYLE_GOTHIC, 5, 178, (const GxtChar*)fb,
+	               0.5f, 0.8f, c_lightGray, hudfont::LEFT, 1, c_black);
+#endif
 }
 
 void stats(char* buf, int n) {

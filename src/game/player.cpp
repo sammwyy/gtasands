@@ -31,7 +31,9 @@ void init() {
 	g.x = 1800.0f; g.y = -1650.0f; g.z = 13.5f;
 	g.health = g.maxHealth = 100.0f;
 	g.armour = 50.0f;
+	g.maxArmour = 100.0f;
 	g.breath = 300.0f;      // not drowning
+	g.maxBreath = 212.0f;
 	g.money = 350;
 	g.wantedLevel = 0;
 	g.weapon = k_weapons[0];
@@ -62,9 +64,16 @@ static void updateDemo() {
 	// vehicle name every ~20s for ~5s (LANDSTALKER is a real GXT key)
 	g.vehicleName = (v % 1200) < 300 ? (const GxtChar*)"LANDSTALKER" : nullptr;
 
-	// health/armour/breath slowly wiggle so bars feel alive
+	// health/armour slowly wiggle so bars feel alive
 	g.health = g.maxHealth * (0.55f + 0.45f * sinf((float)v / 300.0f));
 	g.armour = 50.0f + 45.0f * sinf((float)v / 200.0f + 1.0f);
+
+	// oxygen: ~40s dive cycle — 15s underwater drains 212->0, then a fast
+	// surface refill; the HUD hides the bar while full like the PC
+	const int ph = (int)(v % 2400);
+	g.breath = ph < 900 ? 212.0f * (1.0f - (float)ph / 900.0f)
+	                    : 212.0f + (float)(ph - 900) * 0.4f;
+	if (g.breath > 300.0f) g.breath = 300.0f;
 
 	// game clock: 1 min per real second
 	const u32 mins = v / 60;

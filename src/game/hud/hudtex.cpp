@@ -30,6 +30,10 @@ const ds::TexHeader* find(const void* dtxd, const char* name) {
 
 struct Pix { u16 c; u8 a; };
 
+// Palette entries are stored as plain rgb15 (no alpha bit); the opaque flag is
+// part of the pixel, not the file format, so it gets set at decode time.
+static inline u16 palc(const u16* pal, int i) { return (u16)(pal[i] | BIT(15)); }
+
 // Per-texel decode of every supported DS format into (color, alpha).
 static inline Pix px(const ds::TexHeader* h, const u8* tex, const u16* pal, int i) {
 	switch (h->format) {
@@ -39,23 +43,23 @@ static inline Pix px(const ds::TexHeader* h, const u8* tex, const u16* pal, int 
 	}
 	case 1: { // A3I5: 5-bit palette index, 3-bit alpha
 		u8 v = tex[i];
-		return { pal[v & 31], (u8)((v >> 5) * 255 / 7) };
+		return { palc(pal, v & 31), (u8)((v >> 5) * 255 / 7) };
 	}
 	case 6: { // A5I3: 3-bit palette index, 5-bit alpha
 		u8 v = tex[i];
-		return { pal[v & 7], (u8)((v >> 3) * 255 / 31) };
+		return { palc(pal, v & 7), (u8)((v >> 3) * 255 / 31) };
 	}
 	case 2: { // PAL4: 2bpp, index 0 transparent
 		u8 v = (tex[i / 4] >> ((i % 4) * 2)) & 3;
-		return { pal[v], (u8)((v == 0 && (h->flags & ds::TEX_COLOR0_TRANSPARENT)) ? 0 : 255) };
+		return { palc(pal, v), (u8)((v == 0 && (h->flags & ds::TEX_COLOR0_TRANSPARENT)) ? 0 : 255) };
 	}
 	case 3: { // PAL16: 4bpp
 		u8 v = (tex[i / 2] >> ((i % 2) * 4)) & 15;
-		return { pal[v], (u8)((v == 0 && (h->flags & ds::TEX_COLOR0_TRANSPARENT)) ? 0 : 255) };
+		return { palc(pal, v), (u8)((v == 0 && (h->flags & ds::TEX_COLOR0_TRANSPARENT)) ? 0 : 255) };
 	}
 	case 4: { // PAL256: 8bpp
 		u8 v = tex[i];
-		return { pal[v], (u8)((v == 0 && (h->flags & ds::TEX_COLOR0_TRANSPARENT)) ? 0 : 255) };
+		return { palc(pal, v), (u8)((v == 0 && (h->flags & ds::TEX_COLOR0_TRANSPARENT)) ? 0 : 255) };
 	}
 	}
 	return { 0, 0 };

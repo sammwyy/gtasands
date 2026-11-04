@@ -20,5 +20,8 @@ bool init();   // loads fonts.txd coverage + fonts.dat; returns success
 void print(Style st, int x, int y, const GxtChar* s, float sw, float sh,
            u16 color, Align a = LEFT, int edge = 0, u16 drop = 0, u8 alpha = 255);
 float width(Style st, const GxtChar* s, float sw);
+// visible pixel width when right-anchored (advance sum minus last advance
+// plus the last glyph's 32*sw quad) — i.e. the box print(RIGHT) inks
+float rwidth(Style st, const GxtChar* s, float sw);
 
 }

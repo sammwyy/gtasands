@@ -21,8 +21,11 @@ namespace radar {
 // radar disc geometry on the 256x192 screen
 static const int CX = 58, CY = 136, R = 50;
 
-// world units per radar pixel ~= range/R; 20.12 fixed point everywhere here
-static const int RMIN = 180, RMAX = 350;
+// world units per radar pixel ~= range/R; 20.12 fixed point everywhere here.
+// The 64px tiles sample 1:1 at range~390 (7.8 u/texel); past that a 32px mip
+// keeps the zoomed-out view coherent instead of aliased.
+static const int RMIN = 300, RMAX = 900;
+static const int MIP_RANGE = 390;         // range > this -> 32px mip tiles
 
 struct Blip {
 	bool on;
@@ -42,6 +45,9 @@ static subfb::Sprite s_arrow, s_north;
 static const int TILES = 12;
 static const int TILE_PX = 64 * 64;
 static u16 s_tiles[TILES * TILES][TILE_PX];
+// quarter-res mip (32x32) for zoomed-out ranges: at >420 range the 64px
+// source under-samples and streets alias into noise
+static u16 s_tiles32[TILES * TILES][32 * 32];
 static u8 s_tok[TILES * TILES];
 
 static float s_range = 180.0f;
@@ -99,6 +105,19 @@ void init() {
 		    hudtex::decodeRgbInto((const ds::TexHeader*)((const u8*)blob + e->offset),
 		                          s_tiles[k])) {
 			smooth(s_tiles[k]);
+			// 32px mip: 2x2 box over the smoothed 64px tile
+			const u16* t = s_tiles[k];
+			for (int y = 0; y < 32; y++)
+				for (int x = 0; x < 32; x++) {
+					const u16 c00 = t[(y << 7) | (x << 1)],     c01 = t[(y << 7) | (x << 1) | 1];
+					const u16 c10 = t[((y << 7) | 64) | (x << 1)], c11 = t[((y << 7) | 64) | (x << 1) | 1];
+					const int r  = ((c00 & 31) + (c01 & 31) + (c10 & 31) + (c11 & 31)) >> 2;
+					const int gg = (((c00 >> 5) & 31) + ((c01 >> 5) & 31) +
+					                ((c10 >> 5) & 31) + ((c11 >> 5) & 31)) >> 2;
+					const int b  = (((c00 >> 10) & 31) + ((c01 >> 10) & 31) +
+					                ((c10 >> 10) & 31) + ((c11 >> 10) & 31)) >> 2;
+					s_tiles32[k][(y << 5) | x] = (u16)(BIT(15) | r | (gg << 5) | (b << 10));
+				}
 			s_tok[k] = 1;
 		}
 		free(blob);
@@ -106,22 +125,30 @@ void init() {
 	s_range = RMIN;
 }
 
-// Returns rgb15 tile data (64x64) for tile key, or nullptr when unavailable.
-static const u16* tile(int tx, int ty) {
+// Returns tile data for tile key — 64x64 close range, 32x32 mip zoomed out —
+// or nullptr when the tile wasn't decoded.
+static const u16* tile(int tx, int ty, bool mip) {
 	if ((unsigned)tx >= (unsigned)TILES || (unsigned)ty >= (unsigned)TILES) return nullptr;
 	const int key = ty * TILES + tx;
-	return s_tok[key] ? s_tiles[key] : nullptr;
+	if (!s_tok[key]) return nullptr;
+	return mip ? s_tiles32[key] : s_tiles[key];
 }
 
 // The map proper: for each fb row of the disc, march across in world space.
 static void drawMap() {
 	const player::State& p = player::g;
 
-	// dynamic zoom toward speed-based target (DrawMap's range easing)
-	float target = p.speed * 0.6666f + 120.0f;
+	// dynamic zoom toward speed-based target (DrawMap's range easing);
+	// ~360 at rest — a bit wider than PC's 180 so a couple of blocks show
+	float target = p.speed * 0.6666f + 340.0f;
 	if (target < RMIN) target = RMIN;
 	if (target > RMAX) target = RMAX;
 	s_range += (target - s_range) * 0.06f;
+
+	// mip when a texel would cover more than ~1.4 fb pixels
+	const bool mip = s_range > (float)MIP_RANGE;
+	const int tileShift = mip ? 5 : 6;
+	const int fracScale = mip ? 268435 : 536896;    // tilePx * 2^22 / 500
 
 	// heading -> rotation (radar->world): wx = ox + k*(c*u + s*v)
 	// (libnds brads: 32768 = full circle)
@@ -132,22 +159,23 @@ static void drawMap() {
 	const int pxQ = (int)(p.x * 4096.0f), pyQ = (int)(p.y * 4096.0f);
 	u16* fb = subfb::frame();
 
-	// incremental marching: world coords step by (dwx,dwy) per screen pixel
-	const int invR = (1 << 12) / R;                         // Q12
-	const int dwx = (int)(((s64)kQ * c * invR) >> 24);      // world step/px, Q12
-	const int dwy = (int)(((s64)kQ * s * invR) >> 24);
+	// incremental marching: world coords step by (dwx,dwy) per screen pixel.
+	// u,v are raw px offsets from the disc centre; kQ is already units/px —
+	// normalizing by R once more put the radar ~50x too zoomed in (flat map).
+	const int dwx = (int)(((s64)kQ * c) >> 12);             // world step/px, Q12
+	const int dwy = (int)(((s64)kQ * s) >> 12);
 
 	for (int j = CY - R; j <= CY + R; j++) {
 		if ((unsigned)j >= (unsigned)subfb::H) continue;
-		const int v = ((CY - j) << 12) / R;                // radar v, Q12
-		if (v * v > (1 << 24)) continue;
-		const int umax = isqrt((1 << 24) - v * v);         // Q12
+		const int vN = ((CY - j) << 12) / R;                // normalized v, Q12
+		if (vN * vN > (1 << 24)) continue;
+		const int umax = isqrt((1 << 24) - vN * vN);        // Q12
 		const int xs = CX - ((umax * R) >> 12) < 0 ? 0 : CX - ((umax * R) >> 12);
 		const int x1 = CX + ((umax * R) >> 12);
 		// world coords at the row's left edge (radar -> world by heading)
-		const int u0 = (xs - CX) * invR;
-		int wx = pxQ + ((kQ * ((c * u0 - s * v) >> 12)) >> 12);
-		int wy = pyQ + ((kQ * ((s * u0 + c * v) >> 12)) >> 12);
+		const int u0 = xs - CX, v = CY - j;                 // px offsets
+		int wx = pxQ + (int)(((s64)kQ * (c * u0 - s * v)) >> 12);
+		int wy = pyQ + (int)(((s64)kQ * (s * u0 + c * v)) >> 12);
 		const u16* t = nullptr;
 		int tkey = -1;
 		for (int i = xs; i <= x1 && i < subfb::W; i++) {
@@ -156,12 +184,12 @@ static void drawMap() {
 			const int ax = wxi + 3000, ay = 3000 - wyi;
 			const int tx = (ax * 8389) >> 22, ty = (ay * 8389) >> 22;
 			const int key = ty * TILES + tx;
-			if (key != tkey) { t = tile(tx, ty); tkey = key; }
+			if (key != tkey) { t = tile(tx, ty, mip); tkey = key; }
 			u16 col = s_sea;
 			if (t) {
-				const int lx = ((ax - tx * 500) * 536896) >> 22;
-				const int ly = ((ay - ty * 500) * 536896) >> 22;
-				col = t[(ly << 6) | lx];
+				const int lx = ((ax - tx * 500) * fracScale) >> 22;
+				const int ly = ((ay - ty * 500) * fracScale) >> 22;
+				col = t[(ly << tileShift) | lx];
 			}
 			fb[j * subfb::STRIDE + i] = col;
 			wx += dwx;

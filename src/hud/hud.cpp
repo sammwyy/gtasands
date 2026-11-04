@@ -14,7 +14,7 @@
 namespace hud {
 
 static PrintConsole s_console;
-static Screen s_screen = Screen::DEBUG;
+static Screen s_screen = Screen::GAME;
 
 // last few log lines kept so they survive the debug<->game switch (the
 // console is re-initialized, and cleared, on every switch)
@@ -39,7 +39,7 @@ static void applyGame() {
 
 // rows 0..9 = stats panel, rows 10..23 = scrolling log
 void init() {
-	applyDebug();
+	applyGame();
 }
 
 void log(const char* fmt, ...) {
@@ -84,8 +84,8 @@ void draw() {
 #endif
 			return;
 		}
-		// assets unavailable yet (e.g. toggled before load): minimal note
-		subfb::clear(subfb::rgb(10, 14, 22));
+		// assets unavailable yet (before the streaming packs open): flat sky
+		subfb::clear(RGB15(10, 14, 22) | BIT(15));
 		return;
 	}
 	drawStats();

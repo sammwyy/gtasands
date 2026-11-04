@@ -108,17 +108,26 @@ void blit(const Sprite& s, int x, int y) {
 }
 
 void blitScaled(const Sprite& s, int x, int y, int w, int h) {
+	// 16.16 src stepping: adds, not per-pixel divides
+	const u32 xStep = ((u32)s.w << 16) / (u32)w;
+	const u32 yStep = ((u32)s.h << 16) / (u32)h;
+	u32 jy = 0;
 	for (int j = 0; j < h; j++) {
 		const int dy = y + j;
+		const int sy = (int)(jy >> 16);
+		jy += yStep;
 		if ((unsigned)dy >= (unsigned)H) continue;
+		const u16* crow = s.col + sy * s.w;
+		const u8* arow = s.alpha + sy * s.w;
 		u16* dst = fb() + dy * STRIDE;
-		const u16* crow = s.col + (j * s.h / h) * s.w;
-		const u8* arow = s.alpha + (j * s.h / h) * s.w;
+		u32 ix = 0;
 		for (int i = 0; i < w; i++) {
 			const int dx = x + i;
+			const int sx = (int)(ix >> 16);
+			ix += xStep;
 			if ((unsigned)dx >= (unsigned)W) continue;
-			const u8 a = arow[i * s.w / w];
-			if (a) dst[dx] = blend(dst[dx], crow[i * s.w / w], a);
+			const u8 a = arow[sx];
+			if (a) dst[dx] = blend(dst[dx], crow[sx], a);
 		}
 	}
 }
@@ -146,17 +155,18 @@ void blitRot(const Sprite& s, int cx, int cy, int brad) {
 	}
 }
 
-void mask(int x, int y, int w, int h, const u8* cov, int pitch, u16 c) {
-	for (int j = 0; j < h; j++) {
-		const int dy = y + j;
-		if ((unsigned)dy >= (unsigned)H) continue;
-		u16* dst = fb() + dy * STRIDE;
-		const u8* row = cov + j * pitch;
-		for (int i = 0; i < w; i++) {
-			const int dx = x + i;
-			if ((unsigned)dx >= (unsigned)W) continue;
-			const u8 a = row[i];
-			if (a) dst[dx] = blend(dst[dx], c, a);
+void mask(int x, int y, int w, int h, const u8* cov, int pitch, u16 c, u8 ga) {
+	// pre-clip once: the inner loop runs per glyph stamp, so no per-pixel
+	// bounds checks in here. ga multiplies the coverage (name fades reuse
+	// the cached glyph maps without re-rasterizing per alpha step)
+	const int x0 = x < 0 ? 0 : x, x1 = x + w > W ? W : x + w;
+	const int y0 = y < 0 ? 0 : y, y1 = y + h > H ? H : y + h;
+	for (int j = y0; j < y1; j++) {
+		u16* dst = fb() + j * STRIDE;
+		const u8* row = cov + (j - y) * pitch;
+		for (int i = x0; i < x1; i++) {
+			const int a = (row[i - x] * ga) >> 8;
+			if (a) dst[i] = blend(dst[i], c, (u8)a);
 		}
 	}
 }
