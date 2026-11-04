@@ -10,3 +10,8 @@
 
 # generated from game/ by tools/build_assets.sh
 /nitrofs/
+
+# FAT=1 SD staging + melonDS virtual SD image (make sdcard / DLDI folder sync)
+/sdcard/
+/dldi.bin
+/dldi.bin.idx

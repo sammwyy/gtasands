@@ -26,9 +26,10 @@ static void boot() {
 	renderer::init();
 
 	if (!fs::init()) {
-		hud::log("\x1b[31mnitroFS init failed\x1b[39m");
+		hud::log("\x1b[31mfs init failed (no nitrofs, no SD)\x1b[39m");
 		return;
 	}
+	hud::log("fs: %s", fs::backend());
 	// boot sequence: rockstar logo + SA intro cinematic (skippable)
 	intro::play("nitro:/movies/logo.dvid");
 	intro::play("nitro:/movies/gtatitles.dvid");

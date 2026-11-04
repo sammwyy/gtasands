@@ -18,11 +18,25 @@ side. No game logic ported yet. See "Roadmap" for what to do next.
 - `make -j16` -> `gtasads.nds`. Runs the asset build first if `resources.toml` or `tools/**.py` changed.
   Must stay warning-free (`-Wall -Wextra`, libnds headers are `-isystem`).
 - `make run` - build + launch melonDS. `make ASSETS=0` - skip the asset pipeline (fast code iteration).
+- `make FAT=1` - SD-backed build: assets are NOT embedded; at runtime they are read from
+  `sd:/gtasads/` (devoptab `nitro:` -> `fat:` redirect in `platform/fs.cpp`). Produces a ~350 KB
+  .nds that boots as homebrew under TWiLight Menu++ — the ~400 MB NitroFS build crashes
+  nds-bootstrap's homebrew loader ("an error occurred"). Requires `make clean` when toggling.
+- `make sdcard` - stage `sdcard/gtasads/` (full asset tree) + `sdcard/gtasads.nds`; copy both to
+  the SD root to run on hardware (DSi + TWiLight: no DLDI patch needed, DSi SD driver is used).
+- `make dldi` - patch `gtasads.nds` with `tools/dldi/r4tfv2.dldi` so melonDS's virtual flashcart
+  SD works. melonDS is configured with `[DLDI] Enable=true, FolderSync=true,
+  FolderPath=<repo>/sdcard` in `~/.config/melonDS/melonDS.toml`. NOTE: writes land in `dldi.bin`
+  (the virtual FAT image), not the host folder; FolderSync is one-way at boot.
+- DEBUG builds (`DEBUG=1`) write `fat:/gtasads_fsok.txt` on fat backend init - an observable
+  proof the SD path works when you can't see the screen (emulator or hardware).
 - `make sync` / `make assets` - wrappers for `tools/assets.py sync|build`.
 - `DEBUG=1` for `-Og -DGTASADS_DEBUG`. `make compdb` for `compile_commands.json`.
 - `make clean` / `make distclean` (also removes `nitrofs/`).
 - Smoke test: `timeout 8 melonds gtasads.nds` must not crash (exit 124 = still running = good). You
   can't see the screen from the agent; ask the user for a screenshot/HUD log when visuals matter.
+- Fat-backend test: `make FAT=1 DEBUG=1 && make sdcard && make dldi && timeout 12 melonds
+  gtasads.nds`, then `strings dldi.bin | grep "probe"` -> `probe ok` means the whole chain works.
 
 ## Layout
 - `src/` engine code; every subdir is auto-discovered by the Makefile. Objects are flattened into

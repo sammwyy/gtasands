@@ -33,6 +33,12 @@ NITRO    := nitrofs
 
 EMU      ?= melonds
 DEBUG    ?= 0
+# FAT=1: don't embed the assets in the ROM; they're read from sd:/gtasads/ at
+# runtime instead, so the .nds stays small (a ~400MB NitroFS homebrew crashes
+# nds-bootstrap/TWiLight's homebrew loader on real hardware).
+FAT      ?= 0
+SDROOT   ?= sdcard
+DLDI     ?= $(CURDIR)/tools/dldi/r4tfv2.dldi
 
 #---------------------------------------------------------------------------------
 # code generation
@@ -45,6 +51,10 @@ else
 OPT := -O2
 endif
 
+ifeq ($(FAT),1)
+OPT += -DGTASADS_FAT
+endif
+
 CFLAGS   := -g -Wall -Wextra $(OPT) -ffunction-sections -fdata-sections \
             $(ARCH) $(INCLUDE) -DARM9
 CXXFLAGS := $(CFLAGS) -std=gnu++17 -fno-rtti -fno-exceptions
@@ -53,8 +63,11 @@ LDFLAGS   = -specs=ds_arm9.specs -g $(ARCH) -Wl,--gc-sections -Wl,-Map,$(notdir 
 
 LIBS := -lnds9
 ifneq ($(strip $(NITRO)),)
-LIBS := -lfilesystem -lfat $(LIBS)
+ifeq ($(FAT),0)
+LIBS := -lfilesystem $(LIBS)
 endif
+endif
+LIBS := -lfat $(LIBS)
 ifneq ($(strip $(AUDIO)),)
 LIBS := -lmm9 $(LIBS)
 endif
@@ -86,7 +99,14 @@ $(error Duplicate source basenames (objects are flattened into build/): $(DUPES)
 endif
 
 ifneq ($(strip $(NITRO)),)
+ifeq ($(FAT),0)
   export NITRO_FILES := $(CURDIR)/$(NITRO)
+else
+  # a parent make may have exported this (e.g. `make sd` top level) - clear it
+  # so FAT=1 sub-makes really get a bare .nds
+  NITRO_FILES :=
+  unexport NITRO_FILES
+endif
 endif
 
 ifneq ($(strip $(AUDIO)),)
@@ -132,7 +152,7 @@ else
   endif
 endif
 
-.PHONY: $(BUILD) all clean run assets sync distclean compdb
+.PHONY: $(BUILD) all clean run sdcard dldi sd assets sync distclean compdb
 
 all: $(BUILD)
 
@@ -160,6 +180,24 @@ sync:
 run: $(BUILD)
 	$(EMU) $(OUTPUT).nds
 
+# stage everything the SD card needs: sdcard/gtasads/ -> copy to the SD root
+sdcard: $(BUILD)
+	@mkdir -p $(SDROOT)/gtasads
+	@cp -au $(NITRO)/. $(SDROOT)/gtasads/
+	@cp -u $(TARGET).nds $(SDROOT)/
+	@echo "SD staging at $(SDROOT)/ - copy gtasads/ and $(TARGET).nds to the SD root"
+
+# patch the .nds with a DLDI driver so it can read melonDS's virtual SD card
+dldi: $(BUILD)
+	$(DEVKITARM)/../tools/bin/dlditool $(DLDI) $(TARGET).nds
+	@[ -d $(SDROOT) ] && cp -u $(TARGET).nds $(SDROOT)/ || true
+
+# one-shot SD build: clean rebuild with FAT=1 + stage sdcard/ + dldi patch.
+# After this: `make run` tests it in melonDS; copy $(SDROOT)/* to the SD for hardware.
+sd: clean
+	@$(MAKE) --no-print-directory FAT=1 sdcard
+	@$(MAKE) --no-print-directory FAT=1 dldi
+
 compdb:
 	@$(MAKE) clean
 	@generate_compile_commands $(MAKE) -j$$(nproc)
@@ -176,8 +214,11 @@ else
 #---------------------------------------------------------------------------------
 
 # repack when any nitrofs file changes (dir mtime alone doesn't track contents);
-# NITRO_FILES is the abs path exported from the top half (cwd is build/ here)
+# NITRO_FILES is the abs path exported from the top half (cwd is build/ here);
+# unset under FAT=1 -> bare .nds without embedded fs
+ifneq ($(strip $(NITRO_FILES)),)
 NITRO_DEPS := $(shell find $(NITRO_FILES) -type f 2>/dev/null)
+endif
 $(OUTPUT).nds: $(OUTPUT).elf $(NITRO_FILES) $(NITRO_DEPS) $(GAME_ICON)
 $(OUTPUT).elf: $(OFILES)
 
