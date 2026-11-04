@@ -146,3 +146,15 @@ The DS boots into a *port* of the PC frontend, not a recreation:
 - Gaps vs the PC frontend: pano strip drawn only on the title screen, radio station list is text
   (no logo sprites yet), Stats/Brief empty, no mouse, no settings persistence, controls-redefine
   screen stub, no radar map zooming, fonts are a3i5 256px (font text slightly less crisp).
+
+## Intro video + SFX (movies milestone)
+- `tools/gtasa/intro.py`: .mpg -> DVID (256x192 pal8 frames @10fps + PCM16 22050Hz audio
+  interleaved per-frame). Section `[movies]` in resources.toml (`fps`, `audio_rate` knobs).
+- `src/game/intro.cpp`: plays DVID on MODE_5_2D bitmap bg + PCM16 ring-buffer channel
+  (raw SCHANNEL0 regs), skippable with any key after warmup, restores MODE_0_3D after.
+- `src/game/sfx.cpp`: reads bank 60 of `nitro:/audio/sfx/genrl.dsfx` (frontend menu SFX),
+  decodes DSND IMA-ADPCM -> PCM16, plays L/R pairs panned like the original.
+- Boot order: Logo.mpg -> GTAtitles.mpg -> main menu. Menu nav/enter/back play the
+  real frontend sounds (highlight 4/5, select 6/7, back 0/1).
+- Caveat: video shows via bitmap BG, audio via PCM16 ring (not compressed ADPCM);
+  if the intro runs too fast in melonDS, swiWaitForVBlank cadence may need rework.

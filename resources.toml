@@ -206,3 +206,10 @@ audio = { sample_rate = 16000, format = "adpcm" }
 # match = "MH"
 # remove = false
 # audio = { sample_rate = 11025, max_tracks = 10 }
+
+[movies]                  # intro/logo videos -> DVID frames + PCM16 audio
+kind = "intro"
+src = ["movies/Logo.mpg", "movies/GTAtitles.mpg"]
+fps = 10
+audio_rate = 22050
+out = "movies"

@@ -12,7 +12,7 @@ from fnmatch import fnmatchcase
 from multiprocessing import Pool
 from pathlib import Path
 
-from . import audio, ds_mesh, ds_misc, ds_texture, img
+from . import audio, ds_mesh, ds_misc, ds_texture, img, intro
 from .dsfmt import name as fname, write_pack
 
 HANDLERS = {
@@ -288,6 +288,30 @@ class Builder:
             st['out'] += n
             st['files'] += 1
 
+    def do_intro(self, name, sec, st):
+        """movies/*.mpg -> DVID (paletted frames + interleaved PCM16)."""
+        fps = int(sec.get('fps', 10))
+        rate = int(sec.get('audio_rate', 22050))
+        for rel, p in sorted(self._globs(self.cfg.game, sec['src']).items()):
+            dst = Path(sec.get('out', '')) / (p.stem.lower() + '.dvid')
+            outp = self.cfg.out / dst
+            code = str(fps) + str(rate) + str(p.stat().st_size)
+            key = hashlib.sha1(code.encode()).hexdigest()
+            kf = outp.with_suffix('.key')
+            if outp.exists() and kf.exists() and kf.read_text() == key and not self.force:
+                st['files'] += 1
+                st['out'] += outp.stat().st_size
+                st['in'] += p.stat().st_size
+                continue
+            outp.parent.mkdir(parents=True, exist_ok=True)
+            n = intro.convert(str(p), str(outp), fps, rate)
+            kf.write_text(key)
+            self.outputs.append(str(dst))
+            self._account(st, rel.name, p.stat().st_size, outp.stat().st_size, {'frames': n})
+            st['files'] += 1
+            st['out'] += 0
+            print(f'  {rel.name} -> {n} frames', file=sys.stderr)
+
     def do_sfx(self, name, sec, st):
         root = self.cfg.game / sec.get('src', 'audio')
         cfgdir = root / 'CONFIG'
@@ -403,7 +427,7 @@ def sync(cfg, dry=False):
         k = sec['kind']
         if k == 'img':
             want.add(Path(sec['src']))
-        elif k in ('files', 'copy'):
+        elif k in ('files', 'copy', 'intro'):
             rm = sec.get('remove', [])
             for pat in sec['src']:
                 want |= {r for p in src.glob(pat, case_sensitive=False) if p.is_file()

@@ -2,6 +2,7 @@
 #include <stdlib.h>
 
 #include "assets/pack.h"
+#include "game/intro.h"
 #include "game/menu/menu.h"
 #include "game/text/gxt.h"
 #include "hud/hud.h"
@@ -26,6 +27,9 @@ static void boot() {
 		hud::log("\x1b[31mnitroFS init failed\x1b[39m");
 		return;
 	}
+	// boot sequence: rockstar logo + SA intro cinematic (skippable)
+	intro::play("nitro:/movies/logo.dvid");
+	intro::play("nitro:/movies/gtatitles.dvid");
 	if (!TheText.load("nitro:/text/american.gxt")) {
 		hud::log("\x1b[31mamerican.gxt missing (make assets)\x1b[39m");
 		return;

@@ -12,6 +12,7 @@
 #include "game/text/gxt.h"
 #include "platform/fs.h"
 #include "platform/input.h"
+#include "game/sfx.h"
 #include "hud/hud.h"
 #include "platform/timing.h"
 #include "render/sprite2d.h"
@@ -71,6 +72,7 @@ void CMenuManager::initialise() {
 	m_bMenuActive = true;
 	m_bMainMenuSwitch = true;
 	for (auto& s : m_Slots) s = eSlotState::SLOT_FREE;
+	sfx::init();
 	loadAllTextures();
 	font::init();
 	font::attachFontTextures(s_font2, s_font1);
@@ -207,12 +209,14 @@ void CMenuManager::processUserInput(bool down, bool up, bool enter, bool back, i
 	auto& scr = aScreens[m_nCurrentScreen];
 
 	if (getNumberOfMenuOptions() > 1 && down) {
+		sfx::highlight();
 		m_nCurrentScreenItem++;
 		for (; scr.m_aItems[m_nCurrentScreenItem].m_nActionType == MENU_ACTION_SKIP; m_nCurrentScreenItem++);
 		if (m_nCurrentScreenItem >= TI_OPTION || !scr.m_aItems[m_nCurrentScreenItem].m_nActionType)
 			m_nCurrentScreenItem = scr.m_aItems[0].m_nActionType == MENU_ACTION_TEXT ? 1 : 0;
 	}
 	if (getNumberOfMenuOptions() > 1 && up) {
+		sfx::highlight();
 		auto firstSpecial = scr.m_aItems[0].m_nActionType == 1;
 		if (m_nCurrentScreenItem <= (firstSpecial ? 1 : 0)) {
 			for (; m_nCurrentScreenItem < TI_ENTER && scr.m_aItems[m_nCurrentScreenItem + 1].m_nActionType; m_nCurrentScreenItem++);
@@ -223,13 +227,17 @@ void CMenuManager::processUserInput(bool down, bool up, bool enter, bool back, i
 		}
 	}
 	if (enter) {
+		sfx::select_();
 		processMenuOptions(0, back, enter);
 	}
 	if (lr && scr.m_aItems[m_nCurrentScreenItem].m_nType == TI_OPTION) {
 		processMenuOptions(lr, back, 0);
 		checkSliderMovement(lr);
 	}
-	if (back && m_RadioAvailable) switchToNewScreen(SCREEN_GO_BACK);
+	if (back && m_RadioAvailable) {
+		sfx::back();
+		switchToNewScreen(SCREEN_GO_BACK);
+	}
 }
 
 void CMenuManager::checkSliderMovement(int8_t lr) {
