@@ -19,7 +19,9 @@ Texture* load(const void* blob) {
 	glBindTexture(0, t->id);
 	const u8* texels = (const u8*)h + sizeof(ds::TexHeader);
 	const u8* pal = texels + ((h->texelBytes + 3) & ~3);
-	if (glTexImage2D(0, 0, (GL_TEXTURE_TYPE_ENUM)h->format, h->width, h->height, 0,
+	// glTexImage2D takes TEXTURE_SIZE_ENUM indices (8,16,32..1024), not pixels
+	auto sizeIdx = [](u16 n) { int i = 0; while (n > 8) { n >>= 1; i++; } return i; };
+	if (glTexImage2D(0, 0, (GL_TEXTURE_TYPE_ENUM)h->format, sizeIdx(h->width), sizeIdx(h->height), 0,
 	                 TEXGEN_TEXCOORD | (h->flags & ds::TEX_COLOR0_TRANSPARENT ? GL_TEXTURE_COLOR0_TRANSPARENT : 0), texels) == 0) {
 		glDeleteTextures(1, &t->id);
 		t->id = 0;

@@ -77,8 +77,10 @@ void CMenuManager::initialise() {
 }
 
 void CMenuManager::loadAllTextures() {
-	loadSpriteFile("fronten1", FRONTEND1_START, FRONTEND2_START);
-	loadSpriteFile("fronten2", FRONTEND2_START, FRONTEND3_START);
+	// Only the always-needed sprites up front; per-screen art loads lazily
+	// on SwitchToNewScreen so VRAM is never exhausted.
+	loadSpriteFile("fronten1", FRONTEND_SPRITE_ARROW, FRONTEND_SPRITE_ARROW + 1);
+	loadSpriteFile("fronten2", FRONTEND_SPRITE_BACK8, FRONTEND_SPRITE_MAP + 1);
 	loadSpriteFile("fronten3", FRONTEND3_START, FRONTEND4_START);
 	loadSpriteFile("fronten_pc", FRONTEND4_START, FRONTEND_SPRITE_COUNT);
 	void* fd = loadBlob("fonts");

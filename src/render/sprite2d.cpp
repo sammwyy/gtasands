@@ -2,15 +2,15 @@
 
 namespace sprite {
 
-// quads are drawn at decreasing depth so later primitives always win the depth
-// test (all 2D art shares one layer otherwise and text/rects get rejected)
+// 2D art goes through an identity projection; quads emit NDC directly
+// (virtual 640x480 -> [-1,1]x[+1,-1]). Each quad is drawn slightly nearer so
+// later primitives always win the depth test on the same layer.
 static float s_z;
 
 void beginFrame() {
 	s_z = 0.0f;
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
-	glOrtho(0.0f, 640.0f, 480.0f, 0.0f, -1.0f, 1.0f);
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
 	glPolyFmt(POLY_ALPHA(31) | POLY_CULL_NONE);
@@ -26,14 +26,17 @@ void endFrame() {
 
 static inline u16 rgb(const RGBA& c) { return RGB15(c.r >> 3, c.g >> 3, c.b >> 3); }
 
+static inline float nx(float x) { return x * (2.0f / 640.0f) - 1.0f; }
+static inline float ny(float y) { return 1.0f - y * (2.0f / 480.0f); }
+
 static void quad(const Rect& rt, float u1, float v1, float u2, float v2, u16 c) {
-	s_z += 0.001f; // z=+1 is nearest in this ortho; each quad slightly nearer
+	s_z -= 0.001f; // -z is forward here
 	glColor(c);
 	glBegin(GL_QUADS);
-	glTexCoord2f(u1, v2); glVertex3f(rt.left, rt.bottom, s_z);
-	glTexCoord2f(u2, v2); glVertex3f(rt.right, rt.bottom, s_z);
-	glTexCoord2f(u2, v1); glVertex3f(rt.right, rt.top, s_z);
-	glTexCoord2f(u1, v1); glVertex3f(rt.left, rt.top, s_z);
+	glTexCoord2f(u1, v1); glVertex3f(nx(rt.left), ny(rt.bottom), s_z);
+	glTexCoord2f(u2, v1); glVertex3f(nx(rt.right), ny(rt.bottom), s_z);
+	glTexCoord2f(u2, v2); glVertex3f(nx(rt.right), ny(rt.top), s_z);
+	glTexCoord2f(u1, v2); glVertex3f(nx(rt.left), ny(rt.top), s_z);
 	glEnd();
 }
 
