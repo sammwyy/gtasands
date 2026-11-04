@@ -45,6 +45,12 @@ void setManualSort(bool on);
 int depth15(float dist);
 float distForDepth15(int depth);
 
+// glTexImage2D / glColorTableEXT map the texture banks to LCD while they copy,
+// so an upload must end before the 3D engine starts rendering the next frame
+// (line ~214). True while another texture upload can still start in this
+// vblank; callers keep the rest for the next one.
+bool textureUploadWindow();
+
 #ifdef GTASADS_DEBUG
 // Headless screenshot: the next displayed 3D frame is captured into VRAM D
 // (borrowed from the texture allocator: whatever texture lives in D is

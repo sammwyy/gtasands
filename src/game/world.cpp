@@ -15,6 +15,7 @@
 #include "hud/hud.h"
 #include "mem/mem.h"
 #include "platform/timing.h"
+#include "platform/video.h"
 #include "render/gxlist.h"
 
 namespace world {
@@ -245,6 +246,7 @@ void vblank() {
 	for (int i = 0; i < WORLD_TEX_ENTRIES && spent < UPLOAD_BYTES; i++) {
 		TexEntry& te = s_tex[i];
 		if (te.state != TEX_STAGED) continue;
+		if (!video::textureUploadWindow()) break;
 		const ds::TexHeader* h = (const ds::TexHeader*)te.staging;
 		const u32 bytes = h->texelBytes + h->numColors * 2u;
 		while (s_texVram + bytes > WORLD_TEX_VRAM) {
@@ -257,6 +259,7 @@ void vblank() {
 			freeTex(s_tex[v]);
 			t = tex::load(h, tex::GROUP_WORLD);
 		}
+		const bool paletted = h->numColors != 0;   // h dies with the staging buffer
 		mem::free(te.staging);
 		te.staging = nullptr;
 		spent += bytes;
@@ -273,7 +276,7 @@ void vblank() {
 		glBindTexture(0, t->id);
 		te.param = glGetTexParameter() | GL_TEXTURE_WRAP_S | GL_TEXTURE_WRAP_T;
 		int pal = -1;
-		if (h->numColors) glGetColorTableParameterEXT(0, GL_COLOR_TABLE_FORMAT_EXT, &pal);
+		if (paletted) glGetColorTableParameterEXT(0, GL_COLOR_TABLE_FORMAT_EXT, &pal);
 		te.hasPal = pal >= 0;
 		te.pal = pal < 0 ? 0 : (uint32_t)pal;
 	}

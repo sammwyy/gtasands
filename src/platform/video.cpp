@@ -104,6 +104,11 @@ void endFrame() {
 #endif
 }
 
+bool textureUploadWindow() {
+	const u16 vc = REG_VCOUNT;
+	return vc >= 192 && vc < 202;   // the last copy can take ~8 lines (DEBUG, map textures)
+}
+
 // z/w of the libnds frustum: (f+n)/(f-n) - 2fn / ((f-n) d); depth = z/w*0x4000 + 0x3FFF
 int depth15(float dist) {
 	constexpr float F = FAR_PLANE, N = NEAR_PLANE;

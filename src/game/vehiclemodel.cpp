@@ -14,6 +14,7 @@
 #include "hud/hud.h"
 #include "mem/mem.h"
 #include "platform/timing.h"
+#include "platform/video.h"
 #include "render/gxlist.h"
 
 namespace vehmdl {
@@ -140,11 +141,13 @@ void vblank() {
 	for (int i = 0; i < MAX_TEX && spent < UPLOAD_BYTES; i++) {
 		TexEntry& te = s_tex[i];
 		if (te.state != TEX_STAGED) continue;
+		if (!video::textureUploadWindow()) break;
 		const ds::TexHeader* h = (const ds::TexHeader*)te.staging;
 		tex::Texture* t = tex::load(h, tex::GROUP_GAME);
 		// VRAM full / fragmented: the map gives up its oldest unused textures
 		for (int n = 0; !t && n < 16 && world::evictTexture(); n++) t = tex::load(h, tex::GROUP_GAME);
 		spent += h->texelBytes + h->numColors * 2u;
+		const bool paletted = h->numColors != 0;   // h dies with the staging buffer
 		mem::free(te.staging);
 		te.staging = nullptr;
 		if (!t) {
@@ -156,7 +159,7 @@ void vblank() {
 		glBindTexture(0, t->id);
 		te.param = glGetTexParameter() | GL_TEXTURE_WRAP_S | GL_TEXTURE_WRAP_T;
 		int pal = -1;
-		if (h->numColors) glGetColorTableParameterEXT(0, GL_COLOR_TABLE_FORMAT_EXT, &pal);
+		if (paletted) glGetColorTableParameterEXT(0, GL_COLOR_TABLE_FORMAT_EXT, &pal);
 		te.hasPal = pal >= 0;
 		te.pal = pal < 0 ? 0 : (uint32_t)pal;
 	}

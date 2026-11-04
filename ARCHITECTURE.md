@@ -141,6 +141,10 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
   max channel and normalised vertex colour (`sky.cpp additive()`), ~ dst + c over dark skies.
 - A triangle with a repeated vertex renders as a 1-px line (skeleton overlay, rain, streaks);
   polygon alpha 0 = wireframe (collision overlay: one polygon per outlined triangle/quad).
+- Palettes: `tex::load` pads every palette to 8 colours (4 for PAL4) = the 16 B / 8 B palette
+  alignment. libnds 2.0 `vramBlock_examineSpecial` underflows on a free gap smaller than the
+  alignment padding and returns an address on top of a live palette (streamed map textures then
+  overwrite each other's colours). A texture whose palette can't be allocated fails to load.
 - Budget: 2048 polys / 6144 verts per frame. Grove Street spawn: sky ~100 + CJ ~450, map up to
   `dbg::opts.worldPolys` (1800 total), weather FX after it.
 
@@ -224,7 +228,9 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
 - **Model streaming** (`world::update`, ~3 ms budget, 2 starts/frame): `startLoad` reads the DMDL
   into STREAM and requests its textures; textures are found in the model TXD or its txdp parents
   (4-entry TXD directory cache, entries read alone) and staged in RAM; `world::vblank` uploads
-  <= 24 KB per vblank (evicting unreferenced textures LRU over `WORLD_TEX_VRAM`) and records
+  <= 24 KB per vblank, only while `video::textureUploadWindow()` (VCOUNT 192..201: libnds maps the
+  banks to LCD during the copy, the 3D engine starts the next frame at ~214; the rest waits a
+  vblank), evicting unreferenced textures LRU over `WORLD_TEX_VRAM`, and records
   TEXIMAGE_PARAM (+repeat) / PLTT_BASE. Once all textures are in, `compile()` builds one GX list.
 - **compile()**: model-wide s16 positions (scale 2^e folded into the instance matrix), per
   material POLY_ATTR (alpha, cull back, fog, light0) + texture registers, triangle list with
