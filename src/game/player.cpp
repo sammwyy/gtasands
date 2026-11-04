@@ -420,20 +420,20 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 		const float ph = cj::clipPhase(name);
 		if (attackDown && melee && ph >= 0.45f && s_combo < 2) {
 			s_combo++;
-			// Fight clips carry a sizeable root translation (the authored lunge).
-			// There is no collision/target system yet to consume it, so extracting
-			// it moves the whole ped a metre or two when the clip finishes.
-			poseOne(k_punch[s_combo], false, false, true);
+			// Fight clips carry the authored lunge on the root (FIGHT_* are
+			// CAN_EXTRACT_VELOCITY). Extracting it moves the ped for real.
+			poseOne(k_punch[s_combo], false, true, true);
 		} else if (ph < 0.0f || cj::clipEnded(name)) {
 			s_action = ACT_NONE;
 		} else {
-			poseOne(name, false, false, false);
+			poseOne(name, false, true, false);
 		}
 		return;
 	}
 	if (s_action == ACT_LAUNCH) {
-		g.x += s_jumpVX * DT;
-		g.y += s_jumpVY * DT;
+		// No horizontal physics yet: the launch's root motion IS the takeoff
+		// carry (CAN_EXTRACT_VELOCITY), consumed below via rootDelta. s_jumpVX
+		// only drives the glide once the launch clip ends.
 		g.z += s_jumpVZ * DT;
 		s_jumpVZ -= JUMP_GRAVITY * DT;
 		// Let go of the stick without making the jump stop dead in mid-air.
@@ -444,7 +444,7 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 			s_action = ACT_GLIDE;
 			poseOne("JUMP_glide", true, false, true);
 		} else {
-			poseOne("JUMP_launch", false, false, false);
+			poseOne("JUMP_launch", false, true, false);
 		}
 		return;
 	}
@@ -459,10 +459,10 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 			s_action = ACT_LAND;
 			g.z = groundZ();
 			s_jumpVX = s_jumpVY = s_jumpVZ = 0.0f;
-			// The horizontal jump carry above is authoritative. JUMP_land itself
-			// has almost one world unit of authored root motion; extracting both
-			// was the abrupt extra step at the end of every jump.
-			poseOne("JUMP_land", false, false, true);
+			// JUMP_land's ~1 unit of root motion is the authored follow-through
+			// (CAN_EXTRACT_VELOCITY): the ped steps it out instead of the mesh
+			// sliding ahead and warping back when the clip ends.
+			poseOne("JUMP_land", false, true, true);
 		} else {
 			poseOne("JUMP_glide", true, false, false);
 		}
@@ -471,7 +471,7 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 	if (s_action == ACT_LAND) {
 		g.z = groundZ();
 		if (cj::clipEnded("JUMP_land") || cj::clipPhase("JUMP_land") < 0.0f) s_action = ACT_NONE;
-		else poseOne("JUMP_land", false, false, false);
+		else poseOne("JUMP_land", false, true, false);
 		return;
 	}
 
@@ -486,13 +486,13 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 		} else {
 			s_jumpVX = s_jumpVY = 0.0f;
 		}
-		poseOne("JUMP_launch", false, false, true);
+		poseOne("JUMP_launch", false, true, true);
 		return;
 	}
 	if (attackDown && melee) {
 		s_action = ACT_PUNCH;
 		s_combo = 0;
-		poseOne(k_punch[0], false, false, true);
+		poseOne(k_punch[0], false, true, true);
 	}
 }
 
@@ -581,9 +581,10 @@ static void updateMove() {
 		g.x += wx;
 		g.y += wy;
 		// Jump displacement is physics-driven (not root motion), so retain it
-		// in the speed snapshot the radar uses while CJ is airborne.
-		const float vx = wx / DT + s_jumpVX;
-		const float vy = wy / DT + s_jumpVY;
+		// in the speed snapshot the radar uses while CJ is airborne. Only the
+		// glide still integrates s_jumpVX; the launch's carry is root motion.
+		const float vx = wx / DT + (s_action == ACT_GLIDE ? s_jumpVX : 0.0f);
+		const float vy = wy / DT + (s_action == ACT_GLIDE ? s_jumpVY : 0.0f);
 		g.speed = sqrtf(vx * vx + vy * vy);
 		if (!looking && !g.aiming) followCam(g.heading);
 		else { s_betaSpeed = 0.0f; s_betaSign = 0; }
@@ -677,7 +678,9 @@ static void updateMove() {
 		} else if (!melee) {
 			pose = "Gun_stand";
 		}
-		poseOne(pose, true, moving, false);
+		// The aim shuffles and FIGHTIDLE all carry CAN_EXTRACT_VELOCITY; the
+		// gun idles (Gun_stand / IDLE_armed) do not.
+		poseOne(pose, true, moving || melee, false);
 	}
 
 	cj::advance(1);

@@ -271,7 +271,11 @@ void advance(int dt60) {
 		if (!take || !anim::rootTranslation(sl.anim, m, sl.anim.time, after)) continue;
 		s32 ddx = after[0] - before[0];
 		s32 ddy = after[1] - before[1];
-		if (wrapped && anim::rootEndTranslation(sl.anim, m, end)) {
+		// The end key closes the seam only when a loop wraps (I_NextKeyFrame's
+		// `looped` is IsLooped-only). A non-looping clip clamped on its last key
+		// makes advance() return true as well; adding `end` again there moved
+		// the ped a whole clip-length on the final frame.
+		if (wrapped && sl.anim.loop && anim::rootEndTranslation(sl.anim, m, end)) {
 			ddx += end[0];
 			ddy += end[1];
 		}
