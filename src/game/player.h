@@ -102,4 +102,12 @@ float groundZ();          // flat ground until collision exists; jump lifts g.z
 // and is selected. Melee has no ammo count.
 void giveWeapon(int type, int ammo);
 
+// Debug quick actions (hud/debugui GAME tab).
+void clearWeapons();               // back to fists only
+void giveAllWeapons();             // one weapon per slot, generous ammo
+int weaponTypeAt(int index);       // weapon.dat table walk (-1 past the end)
+void setBodyStats(float fat, float muscle);  // STAT_FAT / STAT_MUSCLE (0..1000)
+void refillSprint();
+void respawn();                    // back to the Grove Street spawn
+
 }

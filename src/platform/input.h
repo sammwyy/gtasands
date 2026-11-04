@@ -7,6 +7,7 @@ namespace input {
 struct State {
 	u32 held, down, up;
 	bool touching;
+	bool tapped;          // touch went down this frame (survives consumeEdges, for UI)
 	int touchX, touchY;
 };
 

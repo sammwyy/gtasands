@@ -8,10 +8,10 @@
 #include "assets/texture.h"
 #include "game/hud/chud.h"
 #include "game/hud/subfb.h"
+#include "hud/debugui.h"
 #include "mem/mem.h"
 #include "platform/input.h"
 #include "platform/timing.h"
-#include "render/renderer.h"
 
 namespace hud {
 
@@ -19,28 +19,25 @@ static PrintConsole s_console;
 static Screen s_screen = Screen::GAME;
 static bool s_gameActive, s_cleared;
 
-// last few log lines kept so they survive the debug<->game switch (the
-// console is re-initialized, and cleared, on every switch)
-static const int LOG_LINES = 14, LOG_LEN = 64;
+// log ring: survives screen switches, shown by the debug UI's LOG tab
+static const int LOG_LINES = 32, LOG_LEN = 64;
 static char s_log[LOG_LINES][LOG_LEN];
-static int s_logHead; // next slot to write
+static int s_logHead;   // next slot to write
+static int s_logCount;
+static unsigned s_logSeq;
 
 static void applyDebug() {
 	videoSetModeSub(MODE_0_2D);
 	consoleInit(&s_console, 0, BgType_Text4bpp, BgSize_T_256x256, 31, 0, false, true);
 	consoleSelect(&s_console);
-	consoleSetWindow(&s_console, 0, 10, 32, 14);
-	for (int i = 0; i < LOG_LINES; i++) {
-		const char* l = s_log[(s_logHead + i) % LOG_LINES];
-		if (*l) printf("%s\n", l);
-	}
+	consoleSetWindow(&s_console, 0, 0, 32, 24);
+	dbgui::enter();
 }
 
 static void applyGame() {
 	subfb::init();
 }
 
-// rows 0..9 = stats panel, rows 10..23 = scrolling log
 void init() {
 	applyGame();
 }
@@ -53,34 +50,19 @@ void log(const char* fmt, ...) {
 	va_end(ap);
 	memcpy(s_log[s_logHead], buf, LOG_LEN); // vsnprintf already NUL-terminated
 	s_logHead = (s_logHead + 1) % LOG_LINES;
-	if (s_screen == Screen::DEBUG) printf("%s\n", buf);
+	if (s_logCount < LOG_LINES) s_logCount++;
+	s_logSeq++;
 }
 
-void drawStats() {
-	const input::State& in = input::get();
-	PrintConsole* prev = consoleSelect(&s_console);
-	consoleSetWindow(&s_console, 0, 0, 32, 10);
-	printf("\x1b[0;0H\x1b[33mGTA:SA DS\x1b[39m  ---------------------");
-	printf("\x1b[1;0Hfps %3lu  cpu %6lu us (%3lu%%)  ", timing::fps(), timing::frameUs(), timing::frameUs() * 100 / 16715);
-	printf("\x1b[2;0H3d %5lu sim %5lu hud %5lu us ", timing::sectionUs(timing::SEC_3D),
-	       timing::sectionUs(timing::SEC_SIM), timing::sectionUs(timing::SEC_HUD));
-	printf("\x1b[3;0Hpolys %4d/2048  verts %4d/6144 ", renderer::polyCount(), renderer::vertCount());
-	printf("\x1b[4;0Htouch %s %3d,%3d   ", in.touching ? "on " : "off", in.touchX, in.touchY);
-	// memory: STREAM used/capacity + largest free block (fragmentation
-	// shows as lf << free), PERM, SYS (libc), SCRATCH peak, VRAM textures
-	const mem::RegionStats st = mem::stats(mem::REGION_STREAM), pm = mem::stats(mem::REGION_PERM);
-	const mem::RegionStats sy = mem::stats(mem::REGION_SYS), sc = mem::stats(mem::REGION_SCRATCH);
-	printf("\x1b[5;0Hstr %4u/%4uK lf %4uK pk %4uK", (unsigned)(st.used >> 10), (unsigned)(st.capacity >> 10),
-	       (unsigned)(st.largestFree >> 10), (unsigned)(st.peak >> 10));
-	printf("\x1b[6;0Hperm %3u/%3uK sys %3u/%3uK scr %3uK", (unsigned)(pm.used >> 10), (unsigned)(pm.capacity >> 10),
-	       (unsigned)(sy.used >> 10), (unsigned)(sy.capacity >> 10), (unsigned)(sc.peak >> 10));
-	printf("\x1b[7;0Hmdl %3uK anim %3uK rad %3uK vram %3uK ", (unsigned)(mem::tagBytes(mem::TAG_MODEL) >> 10),
-	       (unsigned)(mem::tagBytes(mem::TAG_ANIM) >> 10), (unsigned)(mem::tagBytes(mem::TAG_RADAR) >> 10),
-	       (unsigned)(tex::vramBytes() >> 10));
-	printf("\x1b[8;0H\x1b[36mDPad move B sprint X jump SELECT hud\x1b[39m");
-	printf("\x1b[9;0H--------------------------------");
-	consoleSetWindow(&s_console, 0, 10, 32, 14);
-	consoleSelect(prev);
+int logCount() { return s_logCount; }
+const char* logLine(int newest) {
+	if (newest < 0 || newest >= s_logCount) return "";
+	return s_log[(s_logHead - 1 - newest + LOG_LINES) % LOG_LINES];
+}
+unsigned logSeq() { return s_logSeq; }
+void logClear() {
+	s_logCount = 0;
+	s_logSeq++;
 }
 
 void draw() {
@@ -120,7 +102,7 @@ void draw() {
 		s_cleared = true;
 		return;
 	}
-	drawStats();
+	dbgui::frame(input::get(), s_gameActive);
 }
 
 // After endFrame()'s vblank wait: DMA the software-rendered HUD into VRAM C.

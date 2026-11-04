@@ -7,6 +7,7 @@
 #include "assets/texture.h"
 #include "game/anim.h"
 #include "game/animstore.h"
+#include "game/debugopts.h"
 #include "game/hud/hudtex.h"
 #include "game/streaming.h"
 #include "hud/hud.h"
@@ -24,18 +25,52 @@ namespace cj {
 // the same composite (BODY_PART_TEX_NAMES[2] = "torso"). txd == nullptr marks
 // a part that uses that composite.
 struct PartDef { const char* dff; const char* txd; const char* tex; };
-static const PartDef k_parts[] = {
-	{ "vest.dff",    nullptr,              nullptr },
-	{ "head.dff",    "player_face.txd",    "face" },
-	{ "hands.dff",   nullptr,              nullptr },
-	{ "jeans.dff",   "jeansdenim.txd",     "legs" },
-	{ "sneaker.dff", "sneakerbincblk.txd", "sneakerbincblk" },
-};
 static constexpr const char* TORSO_BASE_TXD = "player_torso.txd";
 static constexpr const char* TORSO_BASE_TEX = "torso";
-static constexpr const char* TORSO_TOP_TXD = "vest.txd";
-static constexpr const char* TORSO_TOP_TEX = "vest";
-static constexpr int NUM_PARTS = sizeof(k_parts) / sizeof(k_parts[0]);
+static constexpr int NUM_PARTS = 5;
+
+// Debug outfits (player.img items). Index 0 is the SCM default. A clothing
+// txd holds one texture; when its name differs from `tex` the first texture
+// is used. topTxd == nullptr = bare torso (player_torso skin only).
+struct Outfit {
+	const char* name;
+	const char* torso; const char* topTxd; const char* topTex;
+	const char* legs; const char* legsTxd; const char* legsTex;
+	const char* feet; const char* feetTxd; const char* feetTex;
+};
+static const Outfit k_outfits[] = {
+	{ "vest+jeans", "vest.dff", "vest.txd", "vest", "jeans.dff", "jeansdenim.txd", "legs",
+	  "sneaker.dff", "sneakerbincblk.txd", "sneakerbincblk" },
+	{ "tshirt", "tshirt.dff", "tshirtwhite.txd", "tshirtwhite", "chinos.dff", "chinoskhaki.txd", "chinoskhaki",
+	  "shoe.dff", "shoedressblk.txd", "shoedressblk" },
+	{ "hoodie", "hoodya.dff", "hoodyablack.txd", "hoodyablack", "tracktr.dff", "tracktrgang.txd", "tracktrgang",
+	  "sneaker.dff", "sneakerheatwht.txd", "sneakerheatwht" },
+	{ "suit", "suit1.dff", "suit1blk.txd", "suit1blk", "suit1tr.dff", "suit1trblk.txd", "suit1trblk",
+	  "shoe.dff", "shoedressbrn.txd", "shoedressbrn" },
+	{ "bare", "torso.dff", nullptr, nullptr, "legs.dff", "player_legs.txd", "legs",
+	  "feet.dff", "player_feet.txd", "feet" },
+};
+static constexpr int NUM_OUTFITS = sizeof(k_outfits) / sizeof(k_outfits[0]);
+static int s_outfit;
+static PartDef s_defs[NUM_PARTS];
+
+static void buildDefs() {
+	const Outfit& o = k_outfits[s_outfit];
+	s_defs[0] = { o.torso, nullptr, nullptr };              // torso composite
+	s_defs[1] = { "head.dff", "player_face.txd", "face" };
+	s_defs[2] = { "hands.dff", nullptr, nullptr };           // samples the torso composite
+	s_defs[3] = { o.legs, o.legsTxd, o.legsTex };
+	s_defs[4] = { o.feet, o.feetTxd, o.feetTex };
+}
+
+// Named texture, or the txd's first one.
+static const ds::TexHeader* findOrFirst(const void* txd, const char* name) {
+	const ds::TexHeader* t = hudtex::find(txd, name);
+	if (t || !txd) return t;
+	const ds::TxdHeader* th = (const ds::TxdHeader*)txd;
+	if (th->magic != DS_FOURCC('D', 'T', 'X', 'D') || !th->count) return nullptr;
+	return (const ds::TexHeader*)((const u8*)txd + ((const ds::TxdEntry*)(th + 1))->offset);
+}
 
 // GX skinning: every part is compiled once into a display list in which each
 // vertex is preceded (when its bone changes) by MTX_RESTORE of that bone's
@@ -107,8 +142,9 @@ static void* loadTemp(mem::Scratch& scratch, const char* name) {
 // but the VRAM upload lives in scratch.
 static tex::Texture* buildTorsoTexture() {
 	mem::Scratch scratch;
-	const ds::TexHeader* base = hudtex::find(loadTemp(scratch, TORSO_BASE_TXD), TORSO_BASE_TEX);
-	const ds::TexHeader* top = hudtex::find(loadTemp(scratch, TORSO_TOP_TXD), TORSO_TOP_TEX);
+	const Outfit& o = k_outfits[s_outfit];
+	const ds::TexHeader* base = findOrFirst(loadTemp(scratch, TORSO_BASE_TXD), TORSO_BASE_TEX);
+	const ds::TexHeader* top = o.topTxd ? findOrFirst(loadTemp(scratch, o.topTxd), o.topTex) : nullptr;
 	if (!base && !top) return nullptr;
 	const int w = base ? base->width : top->width, h = base ? base->height : top->height;
 	const int tw = top ? top->width : 0, th = top ? top->height : 0;
@@ -242,7 +278,7 @@ static s32 s_minZ;
 
 static bool loadPart(int i) {
 	Part& p = s_parts[i];
-	p.def = &k_parts[i];
+	p.def = &s_defs[i];
 	p.tex = p.def->txd ? nullptr : s_torsoTex;
 	if (p.def->txd) {
 		mem::Scratch scratch;
@@ -290,6 +326,7 @@ static constexpr int STEP_FINAL = STEP_PIN + NUM_RESIDENT;
 bool initStep() {
 	if (s_loadStep == 0) {
 		shutdown();
+		buildDefs();
 		s_minZ = 0;
 		s_torsoTex = buildTorsoTexture();
 		hud::log("cj torso tex: %s", s_torsoTex ? "ok" : "FAILED");
@@ -324,6 +361,18 @@ bool init() {
 	s_loadStep = 0;
 	while (!initStep()) {}
 	return s_skel != nullptr;
+}
+
+int outfitCount() { return NUM_OUTFITS; }
+int outfit() { return s_outfit; }
+const char* outfitName(int i) { return (unsigned)i < (unsigned)NUM_OUTFITS ? k_outfits[i].name : "?"; }
+
+void setOutfit(int i) {
+	if ((unsigned)i >= (unsigned)NUM_OUTFITS) return;
+	const float f = s_fat, m = s_muscle;
+	s_outfit = i;
+	init();   // a few small reads; pinned clips are cache hits
+	setStats(f, m);
 }
 
 static bool nameEq(const char* a, const char* b) {
@@ -700,7 +749,7 @@ void draw(float x, float y, float z, float heading) {
 	glRotatef(-90.0f, 1.0f, 0.0f, 0.0f);
 	glStoreMatrix(SLOT_BASE);
 	s_vertCount = 0;
-	for (int i = 0; i < NUM_PARTS; i++) {
+	for (int i = 0; i < NUM_PARTS && dbg::opts.drawCj; i++) {
 		const Part& p = s_parts[i];
 		if (!p.list) continue;
 		// slot = entity * world[node] * invBone (GX: current = M * current)
@@ -713,6 +762,26 @@ void draw(float x, float y, float z, float heading) {
 		glBindTexture(GL_TEXTURE_2D, p.tex ? p.tex->id : 0);
 		gx::callList(p.list);
 		s_vertCount += p.verts;
+	}
+	if (dbg::opts.skeleton) {
+		// bone overlay: one line per parent->child (a triangle with two equal
+		// vertices is rasterized as a line by the GE), in entity space
+		glRestoreMatrix(SLOT_BASE);
+		glBindTexture(GL_TEXTURE_2D, 0);
+		glPolyFmt(POLY_ALPHA(31) | POLY_CULL_NONE);
+		glBegin(GL_TRIANGLES);
+		for (int b = 0; b < skel->numBones; b++) {
+			const int par = skel->nodes[b].parent;
+			if (par < 0) continue;
+			const s32* a = s_world + par * 12 + 9;
+			const s32* c = s_world + b * 12 + 9;
+			glColor(skel->nodes[b].boneId >= 300 ? RGB15(31, 8, 8) : RGB15(31, 31, 0));
+			glVertex3v16((v16)a[0], (v16)a[1], (v16)a[2]);
+			glVertex3v16((v16)c[0], (v16)c[1], (v16)c[2]);
+			glVertex3v16((v16)c[0], (v16)c[1], (v16)c[2]);
+		}
+		glEnd();
+		glColor(RGB15(31, 31, 31));
 	}
 	glPopMatrix(1);
 	glBindTexture(GL_TEXTURE_2D, 0);

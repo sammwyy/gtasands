@@ -87,9 +87,9 @@ int main() {
 			hud::setGameActive(true);
 			s_state = AppState::INGAME;
 		}
+		// SELECT toggles the bottom screen: debug UI <-> real game HUD (any state)
+		if (in.down & KEY_SELECT) hud::toggleScreen();
 		if (s_state == AppState::INGAME) {
-			// SELECT toggles bottom screen: debug console <-> real game HUD
-			if (in.down & KEY_SELECT) hud::toggleScreen();
 			if (in.down & KEY_START) {
 				sfx::start(); // AE_FRONTEND_START: whoosh on menu open/close
 				if (FrontEndMenuManager.m_bMenuActive) {

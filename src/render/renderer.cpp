@@ -4,6 +4,7 @@
 #include <math.h>
 
 #include "game/cj.h"
+#include "game/debugopts.h"
 #include "game/player.h"
 
 namespace renderer {
@@ -64,7 +65,7 @@ void draw() {
 	// north, so the eye is south of him (behind a north-facing ped). pitch is
 	// radians above the horizon, positive looking down. Player-local space
 	// keeps the view matrix inside the s20.12 range.
-	const float dist = 3.6f, lookH = 0.85f;
+	const float dist = dbg::opts.camDist, lookH = 0.85f;
 	const float horiz = cosf(pitch) * dist;
 	const float eyeH = lookH + sinf(pitch) * dist;
 	const float elx = sinf(yaw) * horiz;
@@ -78,6 +79,10 @@ void draw() {
 	// emitted unit is one ground cell (8 SA units). Anchor delta stays small.
 	const int ax = (int)floorf(px * 0.125f), ay = (int)floorf(py * 0.125f);
 	const float adx = ax * 8.0f - px, adz = -(ay * 8.0f - py);
+	if (!dbg::opts.ground) {
+		cj::draw(0.0f, 0.0f, player::g.z - player::groundZ(), player::g.heading);
+		return;
+	}
 	glPushMatrix();
 	glTranslatef(adx, 0.0f, adz);
 	glScalef(8.0f, 8.0f, 8.0f);

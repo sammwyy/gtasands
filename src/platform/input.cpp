@@ -12,6 +12,7 @@ void poll() {
 	s.down = keysDown();
 	s.up = keysUp();
 	s.touching = s.held & KEY_TOUCH;
+	s.tapped = s.down & KEY_TOUCH;
 	if (s.touching) {
 		touchPosition t;
 		touchRead(&t);

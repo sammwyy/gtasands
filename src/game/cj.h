@@ -42,6 +42,13 @@ bool initStep();
 bool init();
 void shutdown();
 
+// Debug outfits (player.img presets, 0 = SCM default). setOutfit reloads
+// the parts synchronously and keeps the fat/muscle stats.
+int outfitCount();
+int outfit();
+const char* outfitName(int i);
+void setOutfit(int i);
+
 // Replaces the pose targets with these clips. A clip already playing keeps its
 // time unless `restart` or `sync` is set. Clips not listed blend out over a
 // few frames, so action transitions do not snap through the bind pose.

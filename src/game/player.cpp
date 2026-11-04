@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "game/cj.h"
+#include "game/debugopts.h"
 #include "game/zones.h"
 #include "hud/hud.h"
 #include "platform/input.h"
@@ -223,6 +224,43 @@ void giveWeapon(int type, int ammo) {
 	}
 	// CPed::GiveWeapon selects what it just gave.
 	equip(d->slot);
+}
+
+void clearWeapons() {
+	memset(s_slots, 0, sizeof s_slots);
+	s_slots[0].type = WEAPON_UNARMED;
+	s_slots[0].melee = true;
+	equip(0);
+}
+
+void giveAllWeapons() {
+	static const int k_set[] = { WEAPON_BASEBALLBAT, WEAPON_DESERT_EAGLE, WEAPON_SPAS12, WEAPON_MP5,
+	                             WEAPON_M4, WEAPON_SNIPERRIFLE, WEAPON_RLAUNCHER, WEAPON_GRENADE,
+	                             WEAPON_SPRAYCAN, WEAPON_CAMERA, WEAPON_DETONATOR, WEAPON_PARACHUTE };
+	for (int t : k_set) giveWeapon(t, 500);
+}
+
+int weaponTypeAt(int index) {
+	return (unsigned)index < sizeof k_weps / sizeof k_weps[0] ? k_weps[index].type : -1;
+}
+
+void setBodyStats(float fat, float muscle) {
+	g.fat = fat < 0.0f ? 0.0f : fat > 1000.0f ? 1000.0f : fat;
+	g.muscle = muscle < 0.0f ? 0.0f : muscle > 1000.0f ? 1000.0f : muscle;
+	cj::setStats(g.fat, g.muscle);
+}
+
+void refillSprint() {
+	s_spent = false;
+	s_timeCanRun = energyMax();
+	g.sprint = 100.0f;
+}
+
+void respawn() {
+	g.x = SPAWN_X; g.y = SPAWN_Y; g.z = SPAWN_Z;
+	g.heading = 0.0f;
+	s_camYaw = 0.0f;
+	s_action = ACT_NONE;
 }
 
 static void nextWeapon() {
@@ -511,7 +549,8 @@ static void updateMove() {
 
 	// Touch is the right stick. A drag orbits; it does not steer CJ.
 	bool looking = false;
-	if (in.touching) {
+	// on the debug screen the touch panel drives the debug UI, not the camera
+	if (in.touching && hud::screen() == hud::Screen::GAME) {
 		if (s_camDrag) {
 			s_camYaw = wrap(s_camYaw + (float)(in.touchX - s_lastTx) * 0.012f);
 			s_camPitch += (float)(in.touchY - s_lastTy) * 0.010f;
@@ -778,7 +817,13 @@ void update() {
 	// and movement in slow motion whenever the frame rate dropped. Button
 	// edges belong to the first step only. Capped so a long stall can't
 	// spiral into more work.
-	const uint32_t steps = dv < 1 ? 1 : dv > MAX_STEPS ? MAX_STEPS : dv;
+	// Debug: sim speed scales the step count (quarter steps accumulate, so
+	// x0.25 runs one step every 4 vblanks); fixedStep off = old 1 step/frame.
+	static uint32_t s_stepAcc;
+	s_stepAcc += (dbg::opts.fixedStep ? dv : 1) * (uint32_t)dbg::opts.simSpeedQ;
+	uint32_t steps = s_stepAcc / 4;
+	s_stepAcc %= 4;
+	if (steps > MAX_STEPS) steps = MAX_STEPS;
 	for (uint32_t i = 0; i < steps; i++) {
 		updateMove();
 		if (i == 0) input::consumeEdges();

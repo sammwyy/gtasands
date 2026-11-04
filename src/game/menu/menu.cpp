@@ -212,7 +212,9 @@ void CMenuManager::userInput() {
 		else if (in.down & KEY_UP) bUp = true;
 	}
 	if (in.down & (KEY_A | KEY_START)) bEnter = true;
-	if ((in.down & (KEY_B | KEY_TOUCH)) && !contains(mainMenu, (eMenuScreen)m_nCurrentScreen)) bExit = true;
+	// a stylus tap is "back", except while the bottom screen is the debug UI
+	const u32 backKeys = hud::screen() == hud::Screen::DEBUG ? KEY_B : (KEY_B | KEY_TOUCH);
+	if ((in.down & backKeys) && !contains(mainMenu, (eMenuScreen)m_nCurrentScreen)) bExit = true;
 	if (bDown || bUp || bEnter) bExit = false;
 
 	static uint32_t lastMove;
