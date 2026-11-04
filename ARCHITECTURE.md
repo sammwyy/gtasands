@@ -170,8 +170,11 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
   `pedmove::control`, sprint energy, weapons, `updateAction` for jump/punch/land state machine,
   root motion from `cj::rootDelta` rotated by heading), clock tick, stats, zone lookup.
 - Camera (keyboard mode): touch drag orbits (yaw/pitch). `followCam` (beta speed spring) swings
-  behind CJ while he moves, but only when `camFollows()` (|heading - camYaw| < 1.9 rad, as in
-  CCam::Process_FollowPed): stick back makes CJ turn and walk at the camera, which does not spin.
+  behind CJ while he moves, but only when `camFollows()`: with stick input, only if the stick has
+  no backward component (walkUD >= 0); with no input, if |heading - camYaw| < 1.9 rad. Stick back
+  makes CJ turn and walk at the camera, which does not spin. Never decide this from CJ's heading
+  while the stick is held: the stick is camera-relative, so a turning camera drags the target
+  heading and CJ walks in circles (feedback loop).
 - Locomotion details: `pedmove.*` (blend = |stick|/60, idle/walk/run/sprint weights,
   phase-synced cycles, run_stop/R). Anim clips: `animstore` streams per clip from DANM v2
   blocks, refcounted, LRU over `budget::ANIM_CACHE_BYTES`; 27 on-foot clips are pinned (~100 KB).
