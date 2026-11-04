@@ -14,6 +14,7 @@
 #include "game/player.h"
 #include "game/timecycle.h"
 #include "game/weather.h"
+#include "game/world.h"
 #include "hud/hud.h"
 #include "mem/mem.h"
 #include "platform/timing.h"
@@ -151,7 +152,13 @@ static void pagePerf() {
 	line(14, "radar rng %3d tiles %2d", (int)radar::range(), radar::tilesCached());
 	line(13, "sim x%d.%02d %s  vbl %lu", dbg::opts.simSpeedQ / 4, dbg::opts.simSpeedQ % 4 * 25,
 	     dbg::opts.fixedStep ? "fixed" : "frame", timing::vblanks());
-	blank(15, 23);
+	const world::Stats& w = world::stats();
+	line(15, "map %3u/%3u cull f%3u b%3u", w.drawn, w.candidates, w.culledFrustum, w.culledBudget);
+	line(16, "polys %4u>%4u us u%4u d%4u", w.polysBefore, w.polysAfter, w.updateUs, w.drawUs);
+	line(17, "mdl %3u+%2u %3luK sec%2u i%4u", w.modelsReady, w.modelsLoading,
+	     (unsigned long)(w.listBytes >> 10), w.sectors, w.instances);
+	line(18, "tex %3u fail %2u vram %3luK", w.textures, w.texFailed, (unsigned long)(w.texVram >> 10));
+	blank(19, 23);
 }
 
 static void regionRow(int row, const char* name, mem::Region r) {
@@ -302,7 +309,12 @@ static void pageRend() {
 	c = 0;
 	if (button(8, c, "repaint HUD")) chud::invalidate();
 	if (button(8, c, "defaults")) o = dbg::Options();
-	blank(9, 23);
+	toggleRow(9, "map (world)", o.world);
+	line(10, "map poly budget %4d", o.worldPolys);
+	c = 22;
+	if (button(10, c, "-") && o.worldPolys > 400) o.worldPolys -= 100;
+	if (button(10, c, "+") && o.worldPolys < 2048) o.worldPolys += 100;
+	blank(11, 23);
 }
 
 // Two toggles on one row: name at col 0 / 13, buttons at col 7 / 24.

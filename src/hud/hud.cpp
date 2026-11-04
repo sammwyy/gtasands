@@ -15,6 +15,10 @@
 #ifdef GTASADS_DEBUG
 #include "game/timecycle.h"
 #include "game/weather.h"
+#include "game/debugopts.h"
+#include "game/player.h"
+#include "game/world.h"
+#include "platform/video.h"
 #include "render/renderer.h"
 #endif
 
@@ -78,7 +82,47 @@ void draw() {
 			// fat-backend smoke proof: after ~2s of game HUD, drop a marker on
 			// the SD so headless test runs can confirm the full path rendered
 			static int s_gameFrames;
-			if (++s_gameFrames == 120) {
+			++s_gameFrames;
+			// headless screenshots (tools/dsshot.py): one per compass direction
+			// (shot0 at the marker frame, then turn, give streaming 60 frames,
+			// capture), a bird's eye view (shot4), then a teleport 150 m west to
+			// exercise sector streaming + eviction (shot5, gtasads_hudok2.txt)
+			static const float k_yaw[6] = { 0.0f, 1.5708f, 3.1416f, -1.5708f, 0.0f, 3.1416f };
+			for (int k = 0; k < 6; k++) {
+				const int at = 120 + k * 90;
+				if (k == 4 && s_gameFrames == at - 60) dbg::opts.camDist = 40.0f;
+				if (k == 5 && s_gameFrames == at - 60) {
+					dbg::opts.camDist = dbg::Options().camDist;
+					player::g.x -= 150.0f;
+				}
+				if (k && s_gameFrames == at - 60) player::debugSetView(k_yaw[k], k == 4 ? 1.2f : 0.15f);
+				if (s_gameFrames == at) {
+					char path[40];
+					snprintf(path, sizeof path, "fat:/gtasads_shot%d.dscr", k);
+					video::requestCapture(path);
+				}
+			}
+			const world::Stats& ws = world::stats();
+			auto worldLine = [&](FILE* f) {
+				fprintf(f, "world: sec=%u inst=%u cand=%u drawn=%u cullF=%u cullB=%u ready=%u loading=%u "
+				        "tex=%u fail=%u lists=%luK texvram=%luK loads=%lu up=%lu polys=%u>%u upd=%uus draw=%uus scan=%uus\n",
+				        ws.sectors, ws.instances, ws.candidates, ws.drawn, ws.culledFrustum, ws.culledBudget,
+				        ws.modelsReady, ws.modelsLoading, ws.textures, ws.texFailed,
+				        (unsigned long)(ws.listBytes >> 10), (unsigned long)(ws.texVram >> 10),
+				        (unsigned long)ws.loads, (unsigned long)ws.uploads, ws.polysBefore, ws.polysAfter,
+				        ws.updateUs, ws.drawUs, ws.scanUs);
+			};
+			if (s_gameFrames == 120 + 5 * 90 + 2) {
+				char mb[128];
+				mem::summary(mb, sizeof mb);
+				FILE* f = fopen("fat:/gtasads_hudok2.txt", "w");
+				if (f) {
+					fprintf(f, "%s fps=%lu cpu=%luus heapok=%d\n", mb, timing::fps(), timing::frameUs(), (int)mem::check());
+					worldLine(f);
+					fclose(f);
+				}
+			}
+			if (s_gameFrames == 120) {
 				char buf[160], mb[128];
 				chud::stats(buf, sizeof buf);
 				mem::summary(mb, sizeof mb);
@@ -96,6 +140,7 @@ void draw() {
 					        weather::name(weather::g.oldType), weather::name(weather::g.newType),
 					        weather::g.interpolation, tc.skyTopR, tc.skyTopG, tc.skyTopB, tc.skyBotR, tc.skyBotG,
 					        tc.skyBotB, tc.farClip, tc.fogStart, timecycle::vectorToSun()[2], renderer::polyCount());
+					worldLine(f);
 					for (int i = 0; i < LOG_LINES; i++) {
 						const char* l = s_log[(s_logHead + i) % LOG_LINES];
 						if (*l) fprintf(f, "log: %s\n", l);

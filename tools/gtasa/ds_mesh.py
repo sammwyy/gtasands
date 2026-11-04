@@ -9,8 +9,9 @@ from .dsfmt import fx, fx16, name, pad4, rgb15
 VF_UV, VF_NORMAL, VF_COLOR, VF_BONE = 1, 2, 4, 8
 MF_SKINNED = 1
 
-DEFAULTS = dict(ratio=1.0, min_tris=64, max_tris=0, decimate='cluster', uvs=True, normals=False,
-                vertex_colors=True, skin=True, drop_damage=False, drop_vlo=True, drop_frames=[])
+DEFAULTS = dict(ratio=1.0, min_tris=64, max_tris=0, decimate='cluster', min_area=0.0, ground_qem=False,
+                uvs=True, normals=False, vertex_colors=True, skin=True, drop_damage=False, drop_vlo=True,
+                drop_frames=[])
 
 
 # --- RW skinning (validated against gta-reversed / librw semantics) ----------
@@ -69,9 +70,44 @@ def _hanim_table(m, num_bones):
     return table[:num_bones]
 
 
-def decimate(verts, tris, target):
+def _area(tris, P):
+    s = 0.0
+    for t in tris:
+        a, b, c = P[t[0]], P[t[1]], P[t[2]]
+        u = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+        w = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+        n = (u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0])
+        s += (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) ** 0.5
+    return s * 0.5
+
+
+def is_flat(verts, tris):
+    """Mostly horizontal (by area): ground / road / pavement / bridge deck pieces."""
+    up = total = 0.0
+    for t in tris:
+        a, b, c = verts[t[0]], verts[t[1]], verts[t[2]]
+        u = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+        w = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+        nz = u[0] * w[1] - u[1] * w[0]
+        ln = ((u[1] * w[2] - u[2] * w[1]) ** 2 + (u[2] * w[0] - u[0] * w[2]) ** 2 + nz * nz) ** 0.5
+        total += ln
+        if ln and abs(nz) / ln > 0.7:
+            up += ln
+    return total > 0 and up >= 0.6 * total
+
+
+def decimate(verts, tris, target, min_area=0.0):
     """Vertex clustering on a uniform grid; binary-searches the grid resolution so the
-    surviving triangle count is the largest <= target. Returns (vertex->rep position, tris)."""
+    surviving triangle count is the largest <= target. With min_area, the target grows
+    (x1.25) until that fraction of the surface area survives (small details vanish
+    first otherwise). Returns (vertex->rep position, tris)."""
+    if min_area > 0 and target < len(tris) and tris:
+        full = _area(tris, verts)
+        while True:
+            rep, out = decimate(verts, tris, target)
+            if rep is None or _area(out, rep) >= min_area * full:
+                return rep, out
+            target = int(target * 1.25) + 1
     if target >= len(tris) or not tris:
         return None, tris
     xs, ys, zs = zip(*verts)
@@ -223,6 +259,140 @@ def decimate_qem(verts, tris, target, bone=None):
     return None, [tuple(tris[ti]) for ti in sorted(live)]
 
 
+def decimate_wedge(verts, tris, target):
+    """Quadric half-edge collapses on the position-welded mesh (map ground).
+
+    Vertices that share a position are "wedges" of one position vertex (UV /
+    prelit / material seams). The topology is the welded one, so seams can
+    collapse too, but only when every wedge of u has a matching wedge of v
+    across a shared triangle (u1->v1, u2->v2 along a seam): attributes are
+    never interpolated or dragged across a seam. Open edges of the welded mesh
+    (the borders between adjacent map pieces) are locked and folds are
+    rejected, so ground stays hole- and crack-free (vertex clustering is not:
+    its folded triangles kept the area but left the sky showing through).
+    Returns (None, tris) like decimate()."""
+    import heapq
+    if target >= len(tris) or not tris:
+        return None, tris
+    pid, P, wpos = {}, [], []
+    for v in verts:
+        k = (round(v[0], 3), round(v[1], 3), round(v[2], 3))
+        if k not in pid:
+            pid[k] = len(P)
+            P.append(v)
+        wpos.append(pid[k])
+    tris = [list(t) for t in tris if len({wpos[t[0]], wpos[t[1]], wpos[t[2]]}) == 3]
+    n = len(P)
+    vt = [set() for _ in range(n)]
+    edges = {}
+    for ti, t in enumerate(tris):
+        for k in range(3):
+            a, b = wpos[t[k]], wpos[t[(k + 1) % 3]]
+            vt[a].add(ti)
+            e = (min(a, b), max(a, b))
+            edges[e] = edges.get(e, 0) + 1
+    locked = [False] * n
+    for (a, b), c in edges.items():
+        if c != 2:
+            locked[a] = locked[b] = True
+
+    def sub(a, b): return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+    def cross(a, b): return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+    def dot(a, b): return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+    def tri_n(t, u=-1, v=-1):
+        p = [P[v if wpos[i] == u else wpos[i]] for i in t[:3]]
+        return cross(sub(p[1], p[0]), sub(p[2], p[0]))
+
+    Q = [[0.0] * 10 for _ in range(n)]
+    for t in tris:
+        nn = tri_n(t)
+        ln = dot(nn, nn) ** 0.5
+        if ln < 1e-12:
+            continue
+        a, b, c = nn[0] / ln, nn[1] / ln, nn[2] / ln
+        d = -dot((a, b, c), P[wpos[t[0]]])
+        w = ln * 0.5
+        q = (a * a, a * b, a * c, a * d, b * b, b * c, b * d, c * c, c * d, d * d)
+        for i in t[:3]:
+            Qi = Q[wpos[i]]
+            for k in range(10):
+                Qi[k] += q[k] * w
+
+    def cost(u, v):
+        q = [Q[u][k] + Q[v][k] for k in range(10)]
+        x, y, z = P[v]
+        return (q[0] * x * x + 2 * q[1] * x * y + 2 * q[2] * x * z + 2 * q[3] * x + q[4] * y * y
+                + 2 * q[5] * y * z + 2 * q[6] * y + q[7] * z * z + 2 * q[8] * z + q[9])
+
+    def nbrs(u):
+        return {wpos[i] for ti in vt[u] for i in tris[ti][:3]} - {u}
+
+    stamp = [0] * n
+    heap = []
+
+    def push(u):
+        if locked[u]:
+            return
+        for v in nbrs(u):
+            heapq.heappush(heap, (cost(u, v), u, v, stamp[u], stamp[v]))
+
+    for u in range(n):
+        push(u)
+    alive = len(tris)
+    while alive > target and heap:
+        _c, u, v, su, sv = heapq.heappop(heap)
+        if su != stamp[u] or sv != stamp[v] or not vt[u]:
+            continue
+        shared = vt[u] & vt[v]
+        if not shared or len(nbrs(u) & nbrs(v)) != len(shared):
+            continue
+        # wedge map from the shared triangles; every wedge of u must be covered
+        wmap, ok = {}, True
+        for ti in shared:
+            t = tris[ti]
+            wu = next(i for i in t[:3] if wpos[i] == u)
+            wv = next(i for i in t[:3] if wpos[i] == v)
+            if wmap.setdefault(wu, wv) != wv:
+                ok = False
+                break
+        if ok:
+            for ti in vt[u] - shared:
+                t = tris[ti]
+                if next(i for i in t[:3] if wpos[i] == u) not in wmap:
+                    ok = False
+                    break
+                n0, n1 = tri_n(t), tri_n(t, u, v)
+                l1 = dot(n1, n1)
+                if l1 < 1e-14 or dot(n0, n1) <= 0.3 * (dot(n0, n0) * l1) ** 0.5:
+                    ok = False
+                    break
+        if not ok:
+            continue
+        for ti in shared:
+            for i in tris[ti][:3]:
+                vt[wpos[i]].discard(ti)
+            alive -= 1
+        for ti in vt[u]:
+            t = tris[ti]
+            for k in range(3):
+                if wpos[t[k]] == u:
+                    t[k] = wmap[t[k]]
+            vt[v].add(ti)
+        vt[u] = set()
+        for k in range(10):
+            Q[v][k] += Q[u][k]
+        touched = nbrs(v) | {v}
+        for i in touched:
+            stamp[i] += 1
+        for i in touched:
+            push(i)
+    live = set()
+    for i in range(n):
+        live |= vt[i]
+    return None, [tuple(tris[ti]) for ti in sorted(live)]
+
+
 def _exp_for(maxabs):
     """Smallest e so that maxabs*4096/2^e fits in s16."""
     e = math.ceil(math.log2(max(maxabs, 1e-6) * 4096 / 32767)) if maxabs > 0 else -4
@@ -245,8 +415,12 @@ def convert_geometry(g, p):
         bone = [sk.indices[i * 4 + max(range(4), key=lambda k: sk.weights[i * 4 + k])] for i in range(nv)]
     if p['decimate'] == 'qem':
         rep, tris = decimate_qem(g.verts, tris, target, bone)
+    elif p['ground_qem'] and is_flat(g.verts, tris):
+        # ground pieces: a hole in the ground shows the sky, a lost wall detail
+        # does not matter much -> crack/hole-free collapses there
+        rep, tris = decimate_wedge(g.verts, tris, target)
     else:
-        rep, tris = decimate(g.verts, tris, target)
+        rep, tris = decimate(g.verts, tris, target, p['min_area'])
     pos = rep or g.verts
 
     def attrs(i):

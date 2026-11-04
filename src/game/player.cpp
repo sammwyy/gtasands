@@ -189,6 +189,12 @@ static float wrap(float a) {
 float camYaw() { return s_camYaw; }
 float camPitch() { return s_camPitch; }
 float groundZ() { return SPAWN_Z; }
+#ifdef GTASADS_DEBUG
+void debugSetView(float yaw, float pitch) {
+	g.heading = s_camYaw = wrap(yaw);
+	s_camPitch = pitch;
+}
+#endif
 
 static const WepDef* defFor(int type) {
 	for (unsigned i = 0; i < sizeof k_weps / sizeof k_weps[0]; i++)

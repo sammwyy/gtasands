@@ -176,6 +176,45 @@ struct RadarHeader {
 	// uint8_t present[numTiles] (padded to 4)
 };
 
+// ---------------------------------------------------------------- DWLD (map placement, data/world.dwld)
+// tools/gtasa/world.py runs CFileLoader (gta.dat -> IDE objs/tobj/anim/txdp,
+// IPL inst + binary stream IPLs) offline. Instances are bucketed into a
+// gridW x gridH sector grid (row-major from the south-west corner, x fastest).
+struct WorldHeader {
+	uint32_t magic;          // 'DWLD'
+	uint16_t version;        // 1
+	uint16_t sectorSize;     // metres
+	int16_t originX, originY; // SA coords of sector (0,0)'s south-west corner
+	uint16_t gridW, gridH;
+	uint16_t numModels, numTxds;
+	uint32_t numInstances;
+	uint32_t modelsOffset;   // WorldModel[numModels], then WorldTxd[numTxds]
+	uint32_t sectorsOffset;  // WorldSector[gridW * gridH]
+	uint32_t instancesOffset; // WorldInstance[numInstances], grouped by sector
+};
+struct WorldModel {
+	char name[24];           // pack entry = name + ".dff"
+	uint16_t txd;            // WorldTxd index, 0xFFFF = none
+	uint16_t drawDist;       // IDE draw distance (m)
+	uint8_t timeOn, timeOff; // tobj hours, 24/24 = always
+	uint16_t radius;         // m, bounding sphere around the model origin (|center| + r)
+	uint32_t flags;          // IDE flags (eModelInfoFlags)
+};
+struct WorldTxd {
+	char name[24];           // pack entry = name + ".txd"
+	int16_t parent;          // txdp parent index, -1 = none
+	uint16_t pad;
+};
+struct WorldSector {
+	uint32_t first;          // instance index
+	uint16_t count, pad;
+};
+struct WorldInstance {
+	fx32 pos[3];             // SA world position
+	fx16 rot[9];             // rows right, forward, up (SA world = x*right + y*fwd + z*up + pos)
+	uint16_t model;          // WorldModel index
+};
+
 // ---------------------------------------------------------------- audio
 enum SoundFormat : uint8_t { SND_PCM8 = 0, SND_PCM16 = 1, SND_ADPCM = 2 };  // = DS SOUNDxCNT format bits
 struct SoundHeader {
@@ -235,6 +274,8 @@ static_assert(sizeof(ColModel) == 76 && sizeof(ColSphere) == 20 && sizeof(ColBox
 static_assert(sizeof(AnimHeader) == 32 && sizeof(AnimEntry) == 28 && sizeof(AnimSeq) == 32 &&
               sizeof(AnimDirEntry) == 32);
 static_assert(sizeof(RadarHeader) == 24);
+static_assert(sizeof(WorldHeader) == 36 && sizeof(WorldModel) == 36 && sizeof(WorldTxd) == 28 &&
+              sizeof(WorldSector) == 8 && sizeof(WorldInstance) == 32);
 static_assert(sizeof(SoundHeader) == 24 && sizeof(SfxPakBank) == 12 && sizeof(BankLookupHeader) == 12 && sizeof(StreamTrack) == 12);
 
 }

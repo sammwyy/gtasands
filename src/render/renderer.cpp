@@ -8,6 +8,7 @@
 #include "game/player.h"
 #include "game/timecycle.h"
 #include "game/weather.h"
+#include "game/world.h"
 #include "render/sky.h"
 
 namespace renderer {
@@ -98,7 +99,14 @@ void draw() {
 	// emitted unit is one ground cell (8 SA units). Anchor delta stays small.
 	const int ax = (int)floorf(px * 0.125f), ay = (int)floorf(py * 0.125f);
 	const float adx = ax * 8.0f - px, adz = -(ay * 8.0f - py);
-	if (dbg::opts.ground) {
+	cj::draw(0.0f, 0.0f, player::g.z - player::groundZ(), player::g.heading);
+
+	// map after CJ: the polygon budget drops far map objects, never CJ.
+	// light0 = world light (see world.cpp compile(): ambient * light colour)
+	glLight(0, RGB15(s_lr >> 3, s_lg >> 3, s_lb >> 3), 0, floattov10(-0.99f), 0);
+	world::draw({ px + elx, py + ely, player::groundZ() + eyeH, yaw, pitch, px, py, player::groundZ() });
+
+	if (dbg::opts.ground || !world::ready()) {
 		glPushMatrix();
 		glTranslatef(adx, 0.0f, adz);
 		glScalef(8.0f, 8.0f, 8.0f);
@@ -118,7 +126,6 @@ void draw() {
 		glPopMatrix(1);
 	}
 
-	cj::draw(0.0f, 0.0f, player::g.z - player::groundZ(), player::g.heading);
 	sky::drawWeatherFx(view);
 }
 

@@ -23,17 +23,17 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | Path | What |
 |---|---|
 | `main.cpp` | AppState machine (TITLE/MENU/LOADING/INGAME), per-frame order (see 3.) |
-| `platform/video.*` | screen/VRAM setup, projection constants (`FOV_Y`, `NEAR_PLANE`, `FAR_PLANE`, `TAN_HALF_FOV_*`), per-frame render environment (fog, clear colour, manual translucent sort) applied in vblank, `depth15()` z-buffer helpers |
+| `platform/video.*` | screen/VRAM setup, projection constants (`FOV_Y`, `NEAR_PLANE`, `FAR_PLANE`, `TAN_HALF_FOV_*`), per-frame render environment (fog, clear colour, manual translucent sort) applied in vblank, `depth15()` z-buffer helpers, DEBUG `requestCapture()` screenshots |
 | `platform/input.*` | key/touch polling, edges (`consumeEdges`) |
 | `platform/fs.*` | NitroFS or `nitro:`->`fat:` redirect (FAT=1), debug `fsok` marker |
 | `platform/timing.*` | timers 0+1, `vblanks()`, `ticks()`, `usSince()`, per-section CPU (`SEC_3D/SIM/HUD`) |
 | `mem/` | memory manager (budget.h regions, TLSF, scratch stack, perm arena, `Pool<T>`) |
 | `assets/ds_formats.h` | every binary layout (mirrors the Python writers, static_asserts) |
 | `assets/pack.*` | DSPK reader (sorted FNV-1a TOC) |
-| `assets/texture.*` | DTEX -> VRAM, `tex::Group` (FRONTEND / GAME) for bulk unloads |
+| `assets/texture.*` | DTEX -> VRAM, `tex::Group` (FRONTEND / GAME / WORLD) for bulk unloads |
 | `assets/txdfile.*` | loose DTXD read per entry into scratch (never whole) |
 | `assets/model.*` | DMDL parsed view (`mdl::Model`, geometries, skin) |
-| `render/renderer.*` | top-screen frame: chase camera, sky, placeholder ground/boxes, CJ, weather FX |
+| `render/renderer.*` | top-screen frame: chase camera, sky, CJ, streamed map (`world::draw`), placeholder ground/boxes (only without world.dwld or REND toggle), weather FX |
 | `render/sky.*` | sky polys, sun/moon/stars/clouds/rainbow/flares, fog setup, rain/sand streaks |
 | `render/gxlist.*` | packed GX display list builder + DMA `callList` |
 | `render/sprite2d.*` | 2D quads on the 3D engine (frontend, loading screen), virtual 640x480 |
@@ -45,6 +45,7 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `game/timecycle.*` | CTimeCycle/CColourSet port (timecyc.dat) |
 | `game/weather.*` | CWeather port |
 | `game/streaming.*` | open packs (`g_models` gta3, `g_player`, `g_anim`) |
+| `game/world.*` | streamed map: DWLD sector window, map model/texture streaming, GX list compile, culling + draw (section 6b) |
 | `game/loadscreen.*` | CLoadingScreen + resumable init jobs |
 | `game/zones.*` | info.zon -> zone GXT names |
 | `game/sfx.*`, `game/intro.*` | frontend SFX/loading tune; DVID movie player |
@@ -55,7 +56,7 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `hud/hud.*` | bottom-screen owner: GAME (chud) vs DEBUG (console), log ring, DEBUG hudok marker |
 | `hud/debugui.*` | touch tabs LOG / PERF / MEM / GAME / REND / SKY |
 
-Other dirs: `tools/` (pipeline, `hosthud/` host HUD harness, `dldi/`), `game/` (gitignored PC
+Other dirs: `tools/` (pipeline, `hosthud/` host HUD harness, `dldi/`, `dsshot.py` DEBUG screenshot -> PNG), `game/` (gitignored PC
 files), `nitrofs/` (gitignored output), `build/` (objects, `assets_cache/`, reports, previews).
 
 ## 3. Frame loop (`main.cpp`)
@@ -65,10 +66,11 @@ timing::frameStart; input::poll
 state transitions (title -> menu -> loading -> ingame), SELECT = toggle bottom screen, START = pause menu
 video::beginFrame()                 // resets render env: no fog, default clear, auto sort
   menu | loadscreen::draw | renderer::draw      -> SEC_3D
-INGAME && !menu: player::update; weather::update; timecycle::update   -> SEC_SIM
+INGAME && !menu: player::update; weather::update; timecycle::update; world::update -> SEC_SIM
 hud::draw()  (CPU framebuffer in RAM / debug console)                  -> SEC_HUD
 timing::frameEnd
 video::endFrame()   // glFlush(manual sort?) ; swiWaitForVBlank ; apply fog/clear registers
+world::vblank()     // staged map textures -> VRAM while the 3D engine is idle (any state)
 hud::present()      // DMA bottom framebuffer to VRAM C inside vblank
 ```
 Rendering happens before the simulation step, so draw uses last frame's sim/timecycle state.
@@ -91,9 +93,11 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
 ### Draw order in `renderer::draw`
 1. `sky::draw(view)` - latches fog/clear/manual sort, draws sky polys + sprites with
    constant-depth projections (see 5.), restores the projection.
-2. world light (`timecycle::worldLight`, darkened by `WetRoads`) for placeholder geometry,
+2. world light (`timecycle::worldLight`, darkened by `WetRoads`) for map/placeholder geometry,
    ped light (`timecycle::pedLight`) -> `cj::setLight`.
-3. view matrix, ground grid + landmark boxes (`POLY_FOG`), `cj::draw`, `sky::drawWeatherFx`.
+3. view matrix, `cj::draw` (first, so the polygon budget never drops CJ), light0 = world light,
+   `world::draw` (section 6b), placeholder ground grid + boxes only if there is no world, then
+   `sky::drawWeatherFx`.
 
 ### GX display lists (CJ)
 - Each CJ part is compiled once (`cj.cpp buildPart`) into a packed list: POLY_ATTR, COLOR,
@@ -104,6 +108,12 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
 - `gx::ListBuilder::words()` gives the index of the last parameter -> lists can be patched in place
   (CJ material colours for lighting: `colorAt[]`, then `DC_FlushRange` of the word).
 - Skinning = one dominant bone per vertex. After the pose blend, `shoulderBoneRotation` is applied.
+- CJ (and the map) are CCW-front like RW (checked on the dffs): `POLY_CULL_BACK`, which halved CJ
+  from ~1200 to ~450 drawn polys. Sky/sprites stay `CULL_NONE`.
+- Matrix slot 13 holds the view while the map draws (`MATRIX_RESTORE` + `MATRIX_MULT4x3` per
+  instance); CJ uses 14..30.
+- Lists that write `TEXIMAGE_PARAM`/`PLTT_BASE` themselves (map) must leave both registers at 0 and
+  call `glBindTexture(0, 0)` afterwards: libnds caches the bound texture and skips redundant binds.
 
 ### Translucency / hardware rules worth remembering
 - Polygons with alpha 1..30 or an A3I5/A5I3 texture are translucent: drawn after opaque, do not
@@ -119,7 +129,8 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
   (`texture.additive`: alpha = max(r,g,b), colour normalised) and drawn with polygon alpha =
   max channel and normalised vertex colour (`sky.cpp additive()`), ~ dst + c over dark skies.
 - A triangle with a repeated vertex renders as a 1-px line (skeleton overlay, rain, streaks).
-- Budget: 2048 polys / 6144 verts per frame (current scene ~1300 polys incl. sky ~100).
+- Budget: 2048 polys / 6144 verts per frame. Grove Street spawn: sky ~100 + CJ ~450, map up to
+  `dbg::opts.worldPolys` (1800 total), weather FX after it.
 
 ## 5. Time cycle, weather and sky
 
@@ -182,6 +193,41 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
   textured with player_torso + clothing composite (PlaceTextureOnTopOfTexture); hands share it.
   Outfit presets `cj::setOutfit`, fat/muscle scale bones and pick the motion group.
 
+## 6b. Streamed map (`game/world.*`)
+
+CWorld + CStreaming + CRenderer, heavily reduced. CFileLoader runs offline (section 10): the
+runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
+- **Data in RAM**: header, 8 B/model (draw distance, radius, tobj hours), the WorldTxd table
+  (name + txdp parent), `slotOf[model]`. Model names are read (36 B) when a model loads.
+- **Sector window**: 50 m sectors within `fogView + 40` m of the current sector's centre
+  (re-evaluated only when the player crosses a sector edge, <= 2 sector reads/frame). Instances are
+  32 B, rotation rows pre-converted to GL axes on load; each sector keeps a bounding sphere.
+- **Scan** (in `draw`, ~1.2 ms for ~600 instances): sector sphere vs range/frustum, then per
+  instance: tobj hour, distance (`d - radius < view && d < drawDist + radius`; no LODs yet, so HD
+  models stay until the fog), sphere vs frustum (fixed point, 1/16 m), slot state. Not-loaded
+  models go to an 8-entry nearest-first want list (out of view = lower priority). Drawn or
+  within 40 m = protected from LRU.
+- **Model streaming** (`world::update`, ~3 ms budget, 2 starts/frame): `startLoad` reads the DMDL
+  into STREAM and requests its textures; textures are found in the model TXD or its txdp parents
+  (4-entry TXD directory cache, entries read alone) and staged in RAM; `world::vblank` uploads
+  <= 24 KB per vblank (evicting unreferenced textures LRU over `WORLD_TEX_VRAM`) and records
+  TEXIMAGE_PARAM (+repeat) / PLTT_BASE. Once all textures are in, `compile()` builds one GX list.
+- **compile()**: model-wide s16 positions (scale 2^e folded into the instance matrix), per
+  material POLY_ATTR (alpha, cull back, fog, light0) + texture registers, triangle list with
+  TEXCOORD (shifted per triangle by whole repeats so 12.4 texcoords stay in range) and the
+  lighting trick: vertex colour (prelit * material colour) as AMBIENT + constant NORMAL with
+  diffuse/specular/emission 0 -> GE outputs prelit * light0, light0 = world light per frame (no
+  per-vertex CPU pass for the time of day). Emitted only when the colour changes. ~2.5 KB/model.
+- **Draw**: 8 distance buckets near -> far, stop when the hardware polygon count + tris/2 passes
+  `dbg::opts.worldPolys`. GE-bound: each `callList` waits for its DMA (~100 us per model).
+- **Eviction**: slots LRU (`WORLD_MODEL_SLOTS`, `WORLD_LIST_BYTES`), textures refcounted + LRU.
+  `world::suspend()` drops all lists/textures when the pause menu opens (VRAM); they stream back.
+- **Preload** (loading job): sectors + every model in range around the player, no frustum, until
+  idle or 10 s.
+- Stats: PERF tab rows 15-18, `world:` line in hudok, REND tab toggle + poly budget.
+- Grove Street numbers: ~110 models / 600 instances in the window, ~70 drawn, ~1600 polys,
+  lists ~850 KB, map textures ~200 KB VRAM; draw ~8 ms (scan 1.2) -> 30 fps with the 8 ms HUD.
+
 ## 7. Bottom screen
 
 - `game/hud/subfb.*`: 96 KB RAM backbuffer DMA'd to sub BG3 (B16 bitmap, VRAM C) in vblank.
@@ -209,7 +255,8 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
 - Loading screen (`loadscreen.cpp`): resumable jobs with a 10 ms/frame budget, order:
   free frontend, splash, loading tune, open gta3 + sparse TOC index, player/anim packs, ped anim
   block, CJ (part per slice), player init, weather init, timecyc (weather per slice), sky
-  textures (+ first timecycle update), HUD init, zones, radar prefetch, mem report.
+  textures (+ first timecycle update), HUD init, zones, radar prefetch, world (open + preload),
+  mem report.
   **New heavy init work must be a job.**
 - Intro: DVID (pal8 256x256 @10 fps + PCM16) on a bitmap BG. SFX: `genrl.dsfx` banks 59/60
   (frontend), 82 (loading tunes), IMA-ADPCM decoded to PCM16.
@@ -225,7 +272,9 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
 - PERM is never freed: allocate there only once per boot (guard with a pointer, e.g. timecycle).
 - libc `_malloc_r` & co are replaced in `mem.cpp` (newlib dlmalloc/sbrk are not linked).
   `tlsf.cpp` is portable and passed a 400k-op host stress test (git history); keep it portable.
-- Pool budgets for peds/vehicles/objects are already declared in `budget.h`.
+- Pool budgets for peds/vehicles/objects are already declared in `budget.h`, plus the world ones
+  (`WORLD_*`: 192 model slots, 900 KB lists, 320 texture entries, 300 KB map VRAM, 96 sectors).
+- `tex::` slots: 384 (PERM), most of them map textures.
 
 ## 10. Asset pipeline (`tools/`)
 
@@ -241,12 +290,24 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
   material), `ds_misc.py` (DCOL, DANM), `ds_radar.py`, `intro.py`, `dsfmt.py` (fixed point, DSPK).
 - Output formats (details in `ds_formats.h`): DSPK packs (`models/gta3.dspk`, `gta_int.dspk`,
   `player.dspk`, `anim/anim.dspk`) with original entry names; loose files keep lowercased paths;
-  `data/**` and `text/*.gxt` verbatim (runtime must lowercase paths read from data files);
+  `data/**` and `text/*.gxt` verbatim (runtime must lowercase paths read from data files),
+  `data/world.dwld` (map placement, section 6b);
   `audio/sfx/*.dsfx` + `banks.dsbl`, `audio/streams/*.dsst` (DSND, IMA-ADPCM).
 - DSPK: entry names are the original ones (`infernus.dff`), payload in DS format (DMDL, DTXD,
   DCOL, DANM); `.ipl/.dat` inside IMGs copied raw. TOC sorted by FNV-1a(lowercase name),
   16 B/entry in RAM (gta3 = 256 KB, hence the sparse index). DSND = DS IMA-ADPCM (4-byte header,
   nibbles low first) or PCM8/16. `banks.dsbl` maps global bank id -> pak/index.
+- World (`kind = "world"`, `tools/gtasa/world.py`): gta.dat -> IDE objs/tobj/anim/txdp, IPL inst
+  + binary `<ipl>_stream<N>.ipl` from gta3.img (lod indices point into the text IPL), area 0/13
+  only, LODs dropped (`lods = false`), optional `bounds` box (Grove Street area for now), quaternion
+  negated + CMatrix::SetRotate like LoadObjectInstance; model radius from the dff spheres.
+  Not cached per entry (~1 s for the Grove box; a dff parse per referenced model).
+- Map models (rule `match_ide = "data/maps/**/*.ide"`): ratio 0.25 clustering with `min_area 0.85`
+  (target grows until 85% of the surface survives), mostly-horizontal geometry (`is_flat`,
+  ground/roads/bridge decks) uses `decimate_wedge` instead (`ground_qem`): quadric half-edge
+  collapses on the welded mesh, borders locked, seams only collapse wedge-to-wedge, folds rejected
+  -> no holes/cracks (clustering kept the area with folded tris and showed the sky through).
+  Textures 32 px, ground-ish names (`*road*`, `*pave*`, ...) 64 px. `match_ide` accepts globs.
 - Decimation: vertex clustering by default (fast, moves seam verts); `model.decimate = "qem"`
   (player_img) = quadric half-edge collapses with open-edge/UV-seam verts locked and same-bone
   collapses only, so runtime-assembled CJ parts stay crack-free.
@@ -285,4 +346,5 @@ Audio/ (AEBankLoader, AETrackLoader), Renderer.cpp, World.cpp, Entity/, Pools/, 
 Hud.cpp, Radar.cpp, TimeCycle.cpp, Weather.cpp, Clouds.cpp, Coronas.cpp, Clock.cpp,
 `app/app_light.cpp` (lighting setup), Scripts/ (SCM VM), Core/. Ported so far: Clock (in player),
 TimeCycle, Weather, Clouds (sky polys + Render), Coronas (sun only), Hud, Radar, MenuManager,
-LoadingScreen, Text/Font, ClothesBuilder (CJ), parts of Ped/PlayerPed control.
+LoadingScreen, Text/Font, ClothesBuilder (CJ), parts of Ped/PlayerPed control, FileLoader
+(LoadObjectTypes/LoadObjectInstance, offline in world.py), a CStreaming/CRenderer subset (world.cpp).

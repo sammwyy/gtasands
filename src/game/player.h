@@ -100,6 +100,9 @@ void update();            // once per frame while INGAME and the menu is down
 float camYaw();           // chase camera heading, radians (0 = north, clockwise)
 float camPitch();         // radians above the horizon; positive looks down
 float groundZ();          // flat ground until collision exists; jump lifts g.z
+#ifdef GTASADS_DEBUG
+void debugSetView(float yaw, float pitch);   // headless tests: face + camera heading
+#endif
 
 // CPed::GiveWeapon. Same type in a slot adds ammo; a new type replaces it
 // and is selected. Melee has no ammo count.

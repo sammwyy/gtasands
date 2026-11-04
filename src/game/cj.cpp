@@ -230,7 +230,9 @@ static bool buildPart(Part& p, const mdl::Model* m, s32& minZ) {
 		}
 		for (int mi = 0; mi < geo.h->numMaterials; mi++) {
 			const ds::GeometryMaterial& mat = geo.mats[mi];
-			dl.cmd(gx::CMD_POLYGON_ATTR, POLY_ALPHA(mat.alpha >= 248 ? 31 : (mat.alpha >> 3) | 1) | POLY_CULL_NONE | POLY_FOG);
+			// back faces culled: ped meshes are closed and CCW-front like RW
+			// (halves CJ's ~1200 tris, the rest of the 2048 budget is the map)
+			dl.cmd(gx::CMD_POLYGON_ATTR, POLY_ALPHA(mat.alpha >= 248 ? 31 : (mat.alpha >> 3) | 1) | POLY_CULL_BACK | POLY_FOG);
 			dl.cmd(gx::CMD_COLOR, tint(mat.color, s_light));
 			if (p.numColors < MAX_PART_COLORS) {
 				p.colorAt[p.numColors] = (uint16_t)(dl.words() - 1);

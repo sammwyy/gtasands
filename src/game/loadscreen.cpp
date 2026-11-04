@@ -18,6 +18,7 @@
 #include "game/streaming.h"
 #include "game/timecycle.h"
 #include "game/weather.h"
+#include "game/world.h"
 #include "game/zones.h"
 #include "hud/hud.h"
 #include "mem/mem.h"
@@ -105,6 +106,7 @@ static bool jobSky() {
 	return true;
 }
 static bool jobWeather() { weather::init(); return true; }
+static bool jobWorld() { return world::initStep(); }   // open world.dwld + LoadScene around the player
 static bool jobReport() {
 	char buf[96];
 	mem::summary(buf, sizeof buf);
@@ -129,6 +131,7 @@ static bool (*const s_jobs[])() = {
 	jobHud,
 	jobZones,
 	jobRadar,
+	jobWorld,
 	jobReport,
 };
 static constexpr int NUM_JOBS = sizeof(s_jobs) / sizeof(s_jobs[0]);

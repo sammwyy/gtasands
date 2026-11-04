@@ -7,6 +7,7 @@
 #include "game/sfx.h"
 #include "game/timecycle.h"
 #include "game/weather.h"
+#include "game/world.h"
 #include "game/menu/menu.h"
 #include "game/text/gxt.h"
 #include "hud/hud.h"
@@ -97,6 +98,7 @@ int main() {
 				if (FrontEndMenuManager.m_bMenuActive) {
 					closePauseMenu();
 				} else {
+					world::suspend();   // the menu art needs the VRAM; the map streams back in after
 					FrontEndMenuManager.m_bMenuActive = true;
 					FrontEndMenuManager.ensureTextures();
 					FrontEndMenuManager.m_bDontDrawFrontEnd = false;
@@ -128,6 +130,7 @@ int main() {
 			player::update();
 			weather::update(player::g.x, player::g.y, player::g.z);     // CWeather::Update
 			timecycle::update(player::g.x, player::g.y, player::g.z);   // CTimeCycle::Update
+			world::update(player::g.x, player::g.y);                    // sectors + model streaming
 		}
 		timing::setSection(timing::SEC_SIM, timing::usSince(t));
 		// bottom screen renders into a RAM backbuffer (safe mid-frame), then
@@ -137,6 +140,7 @@ int main() {
 		timing::setSection(timing::SEC_HUD, timing::usSince(t));
 		timing::frameEnd();   // cpu = everything the frame did (3D + sim + HUD)
 		video::endFrame();
+		world::vblank();      // texture uploads while the 3D engine is idle
 		hud::present();
 	}
 	return 0;

@@ -105,6 +105,18 @@ texture = { max_size = 32 }
 match = "radar[0-9]*.txd"
 remove = true
 
+[[gta3_img.rule]]         # map objects (streamed world, see [world]): the DS draws ~1500 polys
+match_ide = "data/maps/**/*.ide"   # per frame for everything, so buildings get very few tris;
+# min_area: clustering alone punched holes into ground/road meshes (sky showing through);
+# ground_qem: mostly-flat meshes use crack/hole-free quadric collapses (borders locked) instead
+model = { ratio = 0.25, min_tris = 12, max_tris = 192, min_area = 0.85, ground_qem = true }
+texture = { max_size = 32 }   # ~200 textures in view around Grove Street: 64px would not fit VRAM
+
+[[gta3_img.rule]]         # ground surfaces fill the screen: keep them sharper
+match_ide = "data/maps/**/*.ide"
+match_texture = ["*road*", "*pave*", "*sidew*", "*grass*", "*dirt*", "*conc*", "*tar*", "*kerb*", "*curb*"]
+texture = { max_size = 64 }
+
 [[gta3_img.rule]]         # LOD models are seen from far away only
 match = "lod*.dff"
 model = { ratio = 0.3 }
@@ -117,6 +129,18 @@ collision = { mode = "simple", face_ratio = 0.5 }
 [[gta3_img.rule]]         # shadows / light coronas inside any TXD
 match_texture = ["*shad*", "*corona*"]
 texture = { max_size = 32 }
+
+# -----------------------------------------------------------------------------
+# Map placement: gta.dat IDE/IPL (+ binary stream IPLs from gta3.img) baked into
+# a sector grid of fixed-point instances (src/game/world.cpp streams it).
+[world]
+kind = "world"
+out = "data/world.dwld"
+dat = "data/gta.dat"
+img = "models/gta3.img"
+sector = 50               # sector size in metres
+lods = false              # LOD instances (lod*.dff) are not drawn yet
+bounds = [2150, -1950, 2850, -1400]   # Grove Street / Ganton / Idlewood for now; remove for the whole map
 
 # -----------------------------------------------------------------------------
 [gta_int_img]             # interiors

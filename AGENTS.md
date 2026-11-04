@@ -10,8 +10,9 @@ the code base; open source files only for the parts you are changing, and update
 ARCHITECTURE.md when a system changes or a new one lands.
 
 Current state: frontend + loading screen + intro, CJ (clothes, anims, locomotion, jump/fight/aim),
-bottom-screen GTA HUD with radar, debug UI, time cycle + weather + sky/fog/rain on a placeholder
-ground. No world streaming yet (see Roadmap).
+bottom-screen GTA HUD with radar, debug UI, time cycle + weather + sky/fog/rain, and the streamed
+map (Grove Street / Ganton box from `[world] bounds`: sectors, map models + textures, culling,
+poly budget; no LODs, no collision yet -> CJ walks on a flat z = 13.5). 30 fps at the spawn.
 
 ## Toolchain
 - devkitPro at `~/devkitpro` (`source ~/devkitpro/devkitarm.sh`).
@@ -51,6 +52,11 @@ ground. No world streaming yet (see Roadmap).
   `/tmp/melcfg/melonDS` is a copy of `~/.config/melonDS` with `[DLDI] Enable=true,
   FolderSync=true, FolderPath=<repo>/sdcard, ImagePath=/tmp/melcfg/dldi.bin` (SIGINT, not TERM:
   melonDS only writes the image on a clean exit). Recreate it if /tmp was wiped.
+- Headless screenshots (DEBUG): the hudok block captures the 3D screen at frames 120 + k*90
+  (`sdcard/gtasads_shot0..5.dscr`: N, W, S, E, bird's eye, 150 m west after a teleport) and writes
+  `gtasads_hudok2.txt` after the teleport. Convert + look at them: `python3 tools/dsshot.py
+  sdcard/gtasads_shot0.dscr /tmp/shot0.png`, then read the PNG. Needs ~100 s of emulator time
+  (`timeout -s INT 100`). The capture borrows VRAM D (textures there are garbage afterwards).
 - To test a specific state headless (time, weather...), add a temporary `#ifdef` hook in a loading
   job and pass it through `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DMYHOOK=..."`;
   remove it afterwards.
@@ -86,11 +92,13 @@ while tuning. Current total ~413 MB of the 448 MB budget.
 - Source basenames must be unique (objects are flattened into `build/`).
 
 ## Roadmap (suggested order)
-1. World data: `data/gta.dat`, IDE (objs/tobj/cars/peds), IPL (text `data/maps` + binary `bnry`
-   inside gta3.dspk) -> model info table by id.
-2. Streaming: sector grid around the camera, fixed RAM budget, LOD (`lod*.dff`), draw distance tied
-   to `dbg::opts.fogView`/timecyc far clip, per-frame poly budget. CStreaming/CRenderer.
-   World materials then need `POLY_FOG` and the `timecycle::worldLight` tint.
+1. World data + streaming: done for a bounds box (see ARCHITECTURE 6b). Next: LODs (keep
+   `lods = true` instances with their HD link, draw the LOD past the HD draw distance / while the
+   HD is not loaded: far field for a few tris), triangle strips in compile() (lists are GE/DMA
+   bound, ~8 ms for ~70 models), then grow `bounds` to all of LS (model records are already read
+   on demand; the TXD table is resident).
+2. Performance: the HUD costs ~8 ms/frame and the map draw ~8 ms -> 30 fps; strips + chaining
+   the list DMAs from the DMA IRQ (CPU free while the GE works) would bring back 60.
 3. Collision + simple physics (ped vs world -> real ground z, collision lighting for `pedLight`,
    rain splashes on real surfaces), then vehicles from handling.cfg.
 4. Audio: DSND via the ARM7 sound API, SFX banks (thunder for lightning), ambience streams.

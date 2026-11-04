@@ -45,4 +45,12 @@ void setManualSort(bool on);
 int depth15(float dist);
 float distForDepth15(int depth);
 
+#ifdef GTASADS_DEBUG
+// Headless screenshot: the next displayed 3D frame is captured into VRAM D
+// (borrowed from the texture allocator: whatever texture lives in D is
+// garbage afterwards, so this is for test runs) and written as a raw dump:
+// "DSCR" + u16 w, h + RGB15 pixels. tools/dsshot.py converts it to PNG.
+void requestCapture(const char* path);
+#endif
+
 }

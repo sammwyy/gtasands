@@ -11,7 +11,7 @@
 // must not take CJ's textures with it).
 namespace tex {
 
-enum Group : u8 { GROUP_FRONTEND, GROUP_GAME, GROUP_COUNT };
+enum Group : u8 { GROUP_FRONTEND, GROUP_GAME, GROUP_WORLD, GROUP_COUNT };
 
 struct Texture {
 	GL_TEXTURE_TYPE_ENUM format;

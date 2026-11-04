@@ -28,6 +28,14 @@ constexpr size_t PERM_BYTES = 320 * 1024;
 
 // Category soft budgets inside STREAM (checked by the debug HUD/logs).
 constexpr size_t ANIM_CACHE_BYTES = 192 * 1024;   // streamed anim clips (LRU over refcount 0)
+constexpr size_t WORLD_LIST_BYTES = 900 * 1024;   // compiled map-object display lists (LRU)
+constexpr size_t WORLD_TEX_VRAM = 300 * 1024;     // map textures in VRAM (LRU over refcount 0); 384K total
+
+// Streamed world (game/world.cpp)
+constexpr int WORLD_MODEL_SLOTS = 192;    // map models resident (display list + textures)
+constexpr int WORLD_TEX_ENTRIES = 320;    // map textures (txd, name) -> VRAM texture
+constexpr int WORLD_SECTOR_SLOTS = 96;    // loaded sectors (window around the camera, ~55 at fogView 140)
+constexpr int WORLD_VISIBLE_MAX = 384;    // instances drawn per frame (after culling)
 
 // Pool capacities (CPool-style, gta-reversed Core/Pool.h). The PC game uses
 // 140 peds / 110 vehicles / 350 objects; the DS draws at most 2048 polygons,
@@ -35,7 +43,7 @@ constexpr size_t ANIM_CACHE_BYTES = 192 * 1024;   // streamed anim clips (LRU ov
 constexpr int MAX_PEDS = 12;
 constexpr int MAX_VEHICLES = 8;
 constexpr int MAX_OBJECTS = 48;
-constexpr int MAX_TEX_SLOTS = 64;         // VRAM texture slots (banks A+B+D)
+constexpr int MAX_TEX_SLOTS = 384;        // VRAM texture slots (banks A+B+D), mostly map textures
 constexpr int MAX_ANIM_CLIPS = 64;        // resident clips across all blocks
 constexpr int MAX_ANIM_BLOCKS = 8;        // ped.ifp + fat/muscle + future vehicle/weapon blocks
 constexpr int RADAR_TILE_SLOTS = 16;      // 64px tiles (8 KB): worst-case 4x4 window at range ~460

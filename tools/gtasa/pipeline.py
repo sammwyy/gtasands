@@ -12,7 +12,7 @@ from fnmatch import fnmatchcase
 from multiprocessing import Pool
 from pathlib import Path
 
-from . import audio, ds_mesh, ds_misc, ds_radar, ds_texture, img, intro
+from . import audio, ds_mesh, ds_misc, ds_radar, ds_texture, img, intro, world
 from .dsfmt import name as fname, write_pack
 
 HANDLERS = {
@@ -63,14 +63,16 @@ class Config:
         self.sections = {k: v for k, v in raw.items() if isinstance(v, dict) and 'kind' in v}
 
     def ide_names(self, files):
-        """Model + TXD file names ('x.dff', 'x.txd') declared in IDE files (relative to game/)."""
+        """Model + TXD file names ('x.dff', 'x.txd') declared in IDE files (relative to game/,
+        globs allowed, case-insensitive: "data/maps/**/*.ide")."""
         key = tuple([files] if isinstance(files, str) else files)
         cache = self.__dict__.setdefault('_ide', {})
         if key not in cache:
             names = set()
-            for f in key:
-                p = self.game / f
-                for line in (p.read_text(errors='replace').splitlines() if p.exists() else []):
+            paths = [p for f in key for p in (sorted(self.game.glob(f, case_sensitive=False)) if any(c in f for c in '*?[')
+                                              else [self.game / f])]
+            for p in paths:
+                for line in (p.read_text(errors='replace').splitlines() if p.is_file() else []):
                     parts = [x.strip() for x in line.split('#', 1)[0].split(',')]
                     if len(parts) >= 3 and parts[0].isdigit():
                         names |= {parts[1].lower() + '.dff', parts[2].lower() + '.txd'}
@@ -436,6 +438,18 @@ class Builder:
         st['out'] += self._emit(sec['out'], bytes(blob))
         st['files'] = sum(present)
 
+    def do_world(self, name, sec, st):
+        """gta.dat IDE/IPL (+ stream IPLs in gta3.img) -> one DWLD sector file.
+        Not cached per entry: a full pass over the map data takes a few seconds."""
+        try:
+            blob, stats = world.build(self.cfg.game, sec)
+        except FileNotFoundError as e:
+            st['errors'].append(str(e))
+            return
+        st['stats'] = stats
+        st['out'] += self._emit(sec['out'], blob)
+        st['files'] = 1
+
     def _prune(self):
         cfg = self.cfg
         old = set(json.loads(cfg.manifest.read_text())) if cfg.manifest.exists() else set()
@@ -463,6 +477,10 @@ def sync(cfg, dry=False):
         k = sec['kind']
         if k in ('img', 'radar'):
             want.add(Path(sec['src']))
+        elif k == 'world':
+            want.add(Path(sec.get('img', 'models/gta3.img')))
+            want |= {p.relative_to(src) for p in src.glob('data/**/*', case_sensitive=False)
+                     if p.is_file() and p.suffix.lower() in ('.dat', '.ide', '.ipl')}
         elif k in ('files', 'copy', 'intro'):
             rm = sec.get('remove', [])
             for pat in sec['src']:
