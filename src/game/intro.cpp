@@ -67,7 +67,10 @@ static bool playDvid(const char* path) {
 
 	const int framesPerVblank = 60 / (dh.fps ? dh.fps : 10);
 	bool done = false;
-	tex::Texture* t = nullptr;
+	// rotate through 3 texture slots: the upload for frame i lands in a slot
+	// that was last drawn 2 frames ago (fully rendered by then), and the slot
+	// drawn last frame stays allocated so it can't be reused for the upload
+	tex::Texture* t[3] = { nullptr, nullptr, nullptr };
 	u32 audioLeft = 0;
 	for (u32 i = 0; i < dh.numFrames && !done; i++) {
 		if (fread(&audioLeft, 4, 1, f) != 1) audioLeft = 0;
@@ -82,12 +85,13 @@ static bool playDvid(const char* path) {
 		}
 		if (fread(frame, 1, frameBytes, f) != frameBytes) break;
 		memcpy(s_dtex + 16, frame, frameBytes);
-		tex::unload(t);
-		t = tex::load(s_dtex);
+		int cur = i % 3;
+		tex::unload(t[(cur + 2) % 3]); // free the slot drawn 2 frames ago
+		t[cur] = tex::load(s_dtex);
 
 		sprite::beginFrame();
 		sprite::rect({ 0, 0, 640, 480 }, { 0, 0, 0, 255 });
-		sprite::draw(t, { 0, 0, 640, 480 }, { 255, 255, 255, 255 });
+		sprite::draw(t[cur], { 0, 0, 640, 480 }, { 255, 255, 255, 255 });
 		sprite::endFrame();
 		glFlush(0);
 
@@ -99,7 +103,9 @@ static bool playDvid(const char* path) {
 	}
 
 	CNT_L = 0;
-	tex::unload(t);
+	tex::unload(t[0]);
+	tex::unload(t[1]);
+	tex::unload(t[2]);
 	fclose(f);
 	free(frame);
 	free(ring);

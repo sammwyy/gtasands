@@ -20,12 +20,12 @@ def convert(src, dst, fps=10, rate=22050):
     frames = os.path.join(tmp, 'f.bin')
     audio = os.path.join(tmp, 'a.pcm')
     subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', src,
-                    '-vf', 'palettegen', '-frames:v', '1', pal_png], check=True)
+                    '-vf', 'palettegen=reserve_transparent=0', '-frames:v', '1', pal_png], check=True)
     subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', pal_png,
                     '-f', 'rawvideo', '-pix_fmt', 'rgb24', pal_raw], check=True)
     subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', src, '-i', pal_png,
                     '-lavfi', f'[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease,'
-                              f'pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,fps={fps}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3',
+                              f'pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black,vflip,fps={fps}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3',
                     '-f', 'rawvideo', '-pix_fmt', 'pal8', frames], check=True)
     subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', src, '-vn', '-ac', '1',
                     '-ar', str(rate), '-f', 's16le', audio], check=True)
