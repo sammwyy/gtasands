@@ -29,6 +29,9 @@ struct State {
 	Weapon weapon;
 	const GxtChar* zoneName;    // nullptr = none shown
 	const GxtChar* vehicleName; // nullptr = none shown
+	float fat;            // STAT_FAT, 0..1000
+	float muscle;         // STAT_MUSCLE, 0..1000
+	float sprint;         // sprint energy left, 0..100
 };
 
 extern State g;

@@ -28,6 +28,19 @@ static const ds::AnimSeq* seqAt(const Player& p, int i) {
 	return s;
 }
 
+// IFP names are mixed case (FatWalk, WALK_player, IDLE_stance). The motion
+// group tables in the original are lowercase, so matching is folded.
+static bool nameEq(const char* a, const char* b) {
+	for (int i = 0; i < 24; i++) {
+		unsigned char ca = (unsigned char)a[i], cb = (unsigned char)b[i];
+		if (ca >= 'A' && ca <= 'Z') ca += 32;
+		if (cb >= 'A' && cb <= 'Z') cb += 32;
+		if (ca != cb) return false;
+		if (!ca) return true;
+	}
+	return true;
+}
+
 static const uint8_t* findEntry(const void* danm, const char* name) {
 	const ds::AnimHeader* h = (const ds::AnimHeader*)danm;
 	if (!danm || h->magic != DS_FOURCC('D', 'A', 'N', 'M')) return nullptr;
@@ -36,7 +49,7 @@ static const uint8_t* findEntry(const void* danm, const char* name) {
 		const ds::AnimEntry* e = (const ds::AnimEntry*)p;
 		p += sizeof(ds::AnimEntry);
 		const ds::AnimSeq* s = (const ds::AnimSeq*)p;
-		if (!strcmp(e->name, name)) return (const uint8_t*)e;
+		if (nameEq(e->name, name)) return (const uint8_t*)e;
 		for (int j = 0; j < e->numSeqs; j++) s = nextSeq(s);
 		p = (const uint8_t*)s;
 	}
@@ -185,6 +198,149 @@ bool rootTranslation(const Player& p, const mdl::Model* m, int32_t time, s32 out
 	const ds::AnimSeq* s = rootSeq(p, m);
 	if (!s) return false;
 	return sampleTrans(s, time, out);
+}
+
+void setTime(Player& p, int32_t t60) {
+	if (p.duration < 1) p.duration = 1;
+	if (t60 < 0) t60 = 0;
+	if (t60 > p.duration) t60 = p.duration;
+	// A seek backwards (loop wrap, or a stop/start clip restarted) invalidates
+	// the forward-only key cursors.
+	if (t60 < p.time) memset(p.cursor, 0, p.numSeqs < MAX_NODES ? p.numSeqs : MAX_NODES);
+	p.time = t60;
+}
+
+float phase(const Player& p) {
+	if (p.duration < 1) return 0.0f;
+	return (float)p.time / (float)p.duration;
+}
+
+// Inverse of quatToMat. The stored matrix is the transpose of the usual
+// column-vector quat matrix, so the off-diagonal terms are swapped.
+static void matToQuat(const s32* m, s32* q) {
+	const s32 one = 1 << 12;
+	const s32 tr = m[0] + m[4] + m[8];
+	s32 x, y, z, w, s;
+	if (tr > 0) s = sqrtf32(tr + one) << 1;
+	else if (m[0] > m[4] && m[0] > m[8]) s = sqrtf32(one + m[0] - m[4] - m[8]) << 1;
+	else if (m[4] > m[8]) s = sqrtf32(one + m[4] - m[0] - m[8]) << 1;
+	else s = sqrtf32(one + m[8] - m[0] - m[4]) << 1;
+	if (s < 1) s = 1;
+	if (tr > 0) {
+		w = s >> 2;
+		x = divf32(m[5] - m[7], s);
+		y = divf32(m[6] - m[2], s);
+		z = divf32(m[1] - m[3], s);
+	} else if (m[0] > m[4] && m[0] > m[8]) {
+		x = s >> 2;
+		y = divf32(m[1] + m[3], s);
+		z = divf32(m[2] + m[6], s);
+		w = divf32(m[5] - m[7], s);
+	} else if (m[4] > m[8]) {
+		y = s >> 2;
+		x = divf32(m[1] + m[3], s);
+		z = divf32(m[5] + m[7], s);
+		w = divf32(m[6] - m[2], s);
+	} else {
+		z = s >> 2;
+		x = divf32(m[2] + m[6], s);
+		y = divf32(m[5] + m[7], s);
+		w = divf32(m[1] - m[3], s);
+	}
+	s32 d2 = qmul(x, x) + qmul(y, y) + qmul(z, z) + qmul(w, w);
+	const s32 inv = divf32(one, sqrtf32(d2 ? d2 : one));
+	q[0] = qmul(x, inv);
+	q[1] = qmul(y, inv);
+	q[2] = qmul(z, inv);
+	q[3] = qmul(w, inv);
+}
+
+static void nlerp(const s32* a, const s32* b, s32 f, s32* o) {
+	s32 dot = 0;
+	for (int c = 0; c < 4; c++) dot += a[c] * b[c];
+	const int32_t sgn = dot < 0 ? -1 : 1;
+	s32 d2 = 0;
+	for (int c = 0; c < 4; c++) {
+		o[c] = a[c] + (((b[c] * sgn - a[c]) * f) >> 12);
+		d2 += qmul(o[c], o[c]);
+	}
+	const s32 inv = divf32(1 << 12, sqrtf32(d2 ? d2 : 1 << 12));
+	for (int c = 0; c < 4; c++) o[c] = qmul(o[c], inv);
+}
+
+static void compose(const mdl::Model* m, const s32* local, s32* world) {
+	for (int n = 0; n < m->numBones; n++) {
+		s32* wm = world + n * 12;
+		const int16_t par = m->nodes[n].parent;
+		if (par >= 0) matMul(local + n * 12, world + par * 12, wm);
+		else memcpy(wm, local + n * 12, 48);
+	}
+}
+
+void sampleLocal(const mdl::Model* m, Player& p, Local* out) {
+	for (int n = 0; n < m->numBones; n++) {
+		Local& L = out[n];
+		const int16_t si = p.seqs ? p.seqOfNode[n] : -1;
+		if (si >= 0) {
+			const ds::AnimSeq* sq = seqAt(p, si);
+			seqRot(sq, seqKeyStride(sq), p.cursor[si], p.time, L.q);
+			if (sq->hasTrans) seqTrans(sq, seqKeyStride(sq), p.cursor[si], p.time, L.t);
+			else {
+				L.t[0] = m->bonePos[n * 3];
+				L.t[1] = m->bonePos[n * 3 + 1];
+				L.t[2] = m->bonePos[n * 3 + 2];
+			}
+			if (p.extractRoot && n == p.rootNode) {
+				L.t[0] = m->bonePos[n * 3];
+				L.t[1] = m->bonePos[n * 3 + 1];
+			}
+		} else {
+			matToQuat(m->bindLocal + n * 12, L.q);
+			L.t[0] = m->bindLocal[n * 12 + 9];
+			L.t[1] = m->bindLocal[n * 12 + 10];
+			L.t[2] = m->bindLocal[n * 12 + 11];
+		}
+	}
+}
+
+void blendWorld(const mdl::Model* m, const Local* const* locals, const s32* w4096, int n, s32* world) {
+	static s32 mats[MAX_NODES * 12];
+	if (n <= 0 || !m->nodes) {
+		evalBind(m, world);
+		return;
+	}
+	for (int b = 0; b < m->numBones; b++) {
+		s32 q[4], t[3];
+		s32 wsum = 0;
+		bool any = false;
+		for (int i = 0; i < n; i++) {
+			const s32 w = w4096[i];
+			if (w <= 0) continue;
+			const Local& L = locals[i][b];
+			if (!any) {
+				memcpy(q, L.q, sizeof q);
+				memcpy(t, L.t, sizeof t);
+				wsum = w;
+				any = true;
+				continue;
+			}
+			const s32 f = divf32(w, wsum + w);
+			nlerp(q, L.q, f, q);
+			for (int c = 0; c < 3; c++)
+				t[c] = t[c] + (((L.t[c] - t[c]) * f) >> 12);
+			wsum += w;
+		}
+		s32* lm = mats + b * 12;
+		if (!any) {
+			memcpy(lm, m->bindLocal + b * 12, 48);
+			continue;
+		}
+		quatToMat(q, lm);
+		lm[9] = t[0];
+		lm[10] = t[1];
+		lm[11] = t[2];
+	}
+	compose(m, mats, world);
 }
 
 bool rootEndTranslation(const Player& p, const mdl::Model* m, s32 out[3]) {

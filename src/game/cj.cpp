@@ -40,14 +40,27 @@ struct Part {
 };
 
 static Part s_parts[NUM_PARTS];
-static anim::Player s_anim;
-static char s_animName[24];
+static constexpr int SLOTS = 4;
+struct Slot {
+	anim::Player anim;
+	char name[24];
+	float weight;
+	uint8_t alive;
+};
+static Slot s_slots[SLOTS];
+static char s_miss[24];
 static int s_vertCount;
 static float s_lift;        // +z entity offset so the feet rest at the origin
 static float s_rootX, s_rootY; // locomotion extracted this frame (model metres)
+static float s_fat, s_muscle;
+static const void* s_fatIfp;
+static const void* s_musIfp;
+static uint8_t s_triedFat, s_triedMus;
+static s32 s_scale[anim::MAX_NODES]; // 4.12 girth per bone, 4096 = unchanged
 
 static s32 s_world[anim::MAX_NODES * 12];
 static s32 s_skin[anim::MAX_NODES * 12];
+static anim::Local s_locals[SLOTS][anim::MAX_NODES];
 
 // scratch buffers for one part's transformed verts
 static constexpr int MAX_VERTS = 1024;
@@ -79,11 +92,12 @@ bool init() {
 		         p.tex ? "ok" : "none");
 	}
 	if (!s_parts[0].m) return false;
-	// safe fallback pose (bind) if the anim below fails to load
-	s_anim.seqs = nullptr; s_anim.numSeqs = 0; s_anim.duration = 1;
-	s_anim.loop = 1; s_anim.extractRoot = 0; s_anim.time = 0; s_anim.rootNode = -1;
-	for (int i = 0; i < anim::MAX_NODES; i++) s_anim.seqOfNode[i] = -1;
-	setAnim("IDLE_stance");
+	for (int i = 0; i < SLOTS; i++) s_slots[i].alive = 0;
+	s_miss[0] = 0;
+	s_fat = s_muscle = 0;
+	for (int i = 0; i < anim::MAX_NODES; i++) s_scale[i] = 1 << 12;
+	const Clip idle = { "IDLE_stance", 1.0f, true, false, false, false, 0.0f };
+	pose(&idle, 1);
 
 	// SA ped models are authored pelvis-at-origin: the feet hang ~1 unit
 	// below. Measure the bind pose's lowest vert once and lift the entity
@@ -105,54 +119,239 @@ bool init() {
 	return true;
 }
 
-// Walk/run/sprint carry ANIMATION_CAN_EXTRACT_VELOCITY in the original:
-// the root bone's travel is the ped's step, not a mesh offset.
-static bool isLocomotion(const char* name) {
-	char n[8];
+static bool nameEq(const char* a, const char* b) {
+	if (!a || !b) return false;
+	for (int i = 0; i < 24; i++) {
+		unsigned char ca = (unsigned char)a[i], cb = (unsigned char)b[i];
+		if (ca >= 'A' && ca <= 'Z') ca += 32;
+		if (cb >= 'A' && cb <= 'Z') cb += 32;
+		if (ca != cb) return false;
+		if (!ca) return true;
+	}
+	return true;
+}
+
+static void copyName(char* d, const char* s) {
 	int i = 0;
-	for (; i < 7 && name[i]; i++) {
-		const char c = name[i];
-		n[i] = c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
-	}
-	n[i] = 0;
-	return !strncmp(n, "walk", 4) || !strncmp(n, "run", 3) || !strncmp(n, "sprint", 6);
+	for (; i < 23 && s && s[i]; i++) d[i] = s[i];
+	d[i] = 0;
 }
 
-void setAnim(const char* name) {
-	if (!strncmp(name, s_animName, sizeof s_animName)) return;
-	if (!streaming::g_pedIfp) return;
-	if (anim::play(s_anim, s_parts[0].m, streaming::g_pedIfp, name)) {
-		strncpy(s_animName, name, sizeof s_animName - 1);
-		s_animName[sizeof s_animName - 1] = 0;
-		s_anim.extractRoot = isLocomotion(name) ? 1 : 0;
-	} else {
-		hud::log("\x1b[33manim '%s' not in ped.ifp\x1b[39m", name);
-	}
+static int groupId() {
+	// CClothes::GetPlayerMotionGroupToLoad. Fat wins only when strictly fatter.
+	if (s_fat > 500.0f && s_fat > s_muscle) return 1;
+	if (s_muscle <= 500.0f) return 0;
+	return 2;
 }
 
-const char* animName() { return s_animName; }
+static const void* extraIfp(int which) {
+	const void*& slot = which == 1 ? s_fatIfp : s_musIfp;
+	uint8_t& tried = which == 1 ? s_triedFat : s_triedMus;
+	if (slot || tried || !streaming::g_anim.isOpen()) return slot;
+	tried = 1;
+	const char* file = which == 1 ? "fat.ifp" : "muscular.ifp";
+	slot = streaming::g_anim.load(streaming::g_anim.find(file));
+	hud::log("cj %s %s", file, slot ? "ok" : "MISSING");
+	return slot;
+}
+
+static bool playName(anim::Player& p, const char* name) {
+	const mdl::Model* m = s_parts[0].m;
+	if (!m || !name) return false;
+	const int g = groupId();
+	const void* blobs[2];
+	int n = 0;
+	if (g != 0) blobs[n++] = extraIfp(g);
+	blobs[n++] = streaming::g_pedIfp;
+	for (int i = 0; i < n; i++) {
+		if (blobs[i] && anim::play(p, m, blobs[i], name)) return true;
+	}
+	if (!nameEq(s_miss, name)) {
+		copyName(s_miss, name);
+		hud::log("\x1b[33manim '%s' missing\x1b[39m", name);
+	}
+	return false;
+}
+
+static int findSlot(const char* name) {
+	for (int i = 0; i < SLOTS; i++)
+		if (s_slots[i].alive && nameEq(s_slots[i].name, name)) return i;
+	return -1;
+}
+
+void pose(const Clip* clips, int n) {
+	uint8_t keep[SLOTS] = {};
+	for (int i = 0; i < n; i++) {
+		const Clip& c = clips[i];
+		if (!c.name || c.weight <= 0.0f) continue;
+		int s = findSlot(c.name);
+		if (s < 0) {
+			for (int k = 0; k < SLOTS; k++)
+				if (!s_slots[k].alive) { s = k; break; }
+			if (s < 0) {
+				s = 0;
+				for (int k = 1; k < SLOTS; k++)
+					if (s_slots[k].weight < s_slots[s].weight) s = k;
+			}
+			if (!playName(s_slots[s].anim, c.name)) continue;
+			copyName(s_slots[s].name, c.name);
+			s_slots[s].alive = 1;
+		}
+		Slot& sl = s_slots[s];
+		sl.weight = c.weight;
+		sl.anim.loop = c.loop ? 1 : 0;
+		sl.anim.extractRoot = c.extract ? 1 : 0;
+		if (c.restart || c.sync) {
+			int32_t t = (int32_t)(c.phase * (float)sl.anim.duration + 0.5f);
+			if (t < 0) t = 0;
+			if (t > sl.anim.duration) t = sl.anim.duration;
+			// Sync every frame quantises the follower a tick behind the leader
+			// often enough to rewind. A one-tick lag is left for advance() to
+			// close; a real seek (restart, or a drifted follower) still rewinds.
+			if (c.restart || t + 1 < sl.anim.time || t > sl.anim.time + 1)
+				anim::setTime(sl.anim, t);
+		}
+		keep[s] = 1;
+	}
+	for (int i = 0; i < SLOTS; i++)
+		if (!keep[i]) s_slots[i].alive = 0;
+}
+
+float clipPhase(const char* name) {
+	const int s = findSlot(name);
+	if (s < 0) return -1.0f;
+	return anim::phase(s_slots[s].anim);
+}
+
+bool clipEnded(const char* name) {
+	const int s = findSlot(name);
+	if (s < 0) return false;
+	const anim::Player& p = s_slots[s].anim;
+	return !p.loop && p.time >= p.duration;
+}
+
+const char* animName() {
+	int best = -1;
+	for (int i = 0; i < SLOTS; i++)
+		if (s_slots[i].alive && (best < 0 || s_slots[i].weight > s_slots[best].weight)) best = i;
+	return best >= 0 ? s_slots[best].name : "";
+}
 
 void rootDelta(float& x, float& y) { x = s_rootX; y = s_rootY; }
 
 void advance(int dt60) {
 	s_rootX = s_rootY = 0;
-	s32 before[3], after[3], end[3];
-	const int32_t t0 = s_anim.time;
-	const bool take = s_anim.extractRoot &&
-	                  anim::rootTranslation(s_anim, s_parts[0].m, t0, before);
-	const bool wrapped = anim::advance(s_anim, dt60);
-	if (!take || !anim::rootTranslation(s_anim, s_parts[0].m, s_anim.time, after)) return;
-	// Per-frame root delta. Across the loop the translation jumps from the
-	// end of the stride back to the start; add the end key so the step
-	// stays continuous (RpAnimBlend's loopedDelta).
-	s32 dx = after[0] - before[0];
-	s32 dy = after[1] - before[1];
-	if (wrapped && anim::rootEndTranslation(s_anim, s_parts[0].m, end)) {
-		dx += end[0];
-		dy += end[1];
+	const mdl::Model* m = s_parts[0].m;
+	if (!m) return;
+	float dx = 0, dy = 0, wsum = 0;
+	for (int i = 0; i < SLOTS; i++) {
+		Slot& sl = s_slots[i];
+		if (!sl.alive) continue;
+		s32 before[3], after[3], end[3];
+		const int32_t t0 = sl.anim.time;
+		const bool take = sl.anim.extractRoot && sl.weight > 0.0f &&
+		                  anim::rootTranslation(sl.anim, m, t0, before);
+		const bool wrapped = anim::advance(sl.anim, dt60);
+		if (!take || !anim::rootTranslation(sl.anim, m, sl.anim.time, after)) continue;
+		s32 ddx = after[0] - before[0];
+		s32 ddy = after[1] - before[1];
+		if (wrapped && anim::rootEndTranslation(sl.anim, m, end)) {
+			ddx += end[0];
+			ddy += end[1];
+		}
+		dx += sl.weight * (float)ddx;
+		dy += sl.weight * (float)ddy;
+		wsum += sl.weight;
 	}
-	s_rootX = (float)dx / 4096.0f;
-	s_rootY = (float)dy / 4096.0f;
+	// Weights already sum to about 1 during a crossfade. Only a sum past 1
+	// (two full locomotion clips) would double the step.
+	if (wsum > 1.0f) {
+		dx /= wsum;
+		dy /= wsum;
+	}
+	s_rootX = dx / 4096.0f;
+	s_rootY = dy / 4096.0f;
+}
+
+// CClothesBuilder blend ratios, then a per-bone girth. Scaling the 3x3 of the
+// bone's world matrix (translation kept) bulges the vertices bound to that
+// bone around its origin. Children are already in world space, so they do not
+// inherit the scale — a fat belly does not drag the head. Dominant-bone
+// skinning means only the vertices owned by that bone move.
+static float clamp01(float v) { return v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v; }
+
+static void girthFor(int16_t id, float& fatAdd, float& musAdd) {
+	fatAdd = musAdd = 0;
+	switch (id) {
+	case 201: fatAdd = 0.85f; musAdd = -0.12f; break;             // belly
+	case 2:   fatAdd = 0.35f; musAdd = 0.20f; break;              // spine
+	case 3:   fatAdd = 0.35f; musAdd = 0.25f; break;              // spine1
+	case 1:   fatAdd = 0.25f; musAdd = 0.10f; break;              // pelvis
+	case 41: case 51: fatAdd = 0.30f; musAdd = 0.30f; break;      // thighs
+	case 42: case 52: fatAdd = 0.12f; musAdd = 0.22f; break;      // calves
+	case 22: case 32: fatAdd = 0.15f; musAdd = 0.55f; break;      // upper arms
+	case 23: case 33: fatAdd = 0.05f; musAdd = 0.35f; break;      // forearms
+	case 301: case 302: fatAdd = 0.55f; musAdd = 0.10f; break;    // breasts
+	case 21: case 31: fatAdd = 0.12f; musAdd = 0.20f; break;      // clavicles
+	default: break;
+	}
+}
+
+static void rebuildScales() {
+	for (int i = 0; i < anim::MAX_NODES; i++) s_scale[i] = 1 << 12;
+	const mdl::Model* m = s_parts[0].m;
+	if (!m || !m->nodes) return;
+	float rM = clamp01(s_muscle / 1000.0f);
+	float rF = clamp01((s_fat - 200.0f) / 800.0f);
+	float rN = 1.0f - rM - rF;
+	if (rN <= 0.0f) {
+		const float t = rF + rM;
+		if (t > 0.0f) { rM /= t; rF /= t; }
+		rN = 0.0f;
+	}
+	(void)rN;
+	for (int n = 0; n < m->numBones && n < anim::MAX_NODES; n++) {
+		float fa, ma;
+		girthFor(m->nodes[n].boneId, fa, ma);
+		float s = 1.0f + fa * rF + ma * rM;
+		if (s < 0.85f) s = 0.85f;
+		if (s > 1.90f) s = 1.90f;
+		s_scale[n] = (s32)(s * 4096.0f + 0.5f);
+	}
+}
+
+void setStats(float fat, float muscle) {
+	if (fat < 0.0f) fat = 0.0f;
+	if (fat > 1000.0f) fat = 1000.0f;
+	if (muscle < 0.0f) muscle = 0.0f;
+	if (muscle > 1000.0f) muscle = 1000.0f;
+	if (fat == s_fat && muscle == s_muscle) return;
+	s_fat = fat;
+	s_muscle = muscle;
+	rebuildScales();
+}
+
+float fat() { return s_fat; }
+float muscle() { return s_muscle; }
+
+Motion motion() {
+	static const Motion k_player = {
+		"IDLE_stance", "WALK_player", "run_player", "sprint_civi",
+		"walk_start", "idle_tired", "run_stop", "run_stopR"
+	};
+	static const Motion k_fat = {
+		"FatIdle", "FatWalk", "FatRun", "FatSprint",
+		"FatWalkstart", "IDLE_tired", "run_stop", "run_stopR"
+	};
+	static const Motion k_muscle = {
+		"MuscleIdle", "MuscleWalk", "MuscleRun", "MuscleSprint",
+		"MuscleWalkstart", "idle_tired", "run_stop", "run_stopR"
+	};
+	const int g = groupId();
+	if (g != 0 && !extraIfp(g)) return k_player;
+	if (g == 1) return k_fat;
+	if (g == 2) return k_muscle;
+	return k_player;
 }
 
 static const s32 s_ident[12] = { 1 << 12, 0, 0, 0, 1 << 12, 0, 0, 0, 1 << 12, 0, 0, 0 };
@@ -219,7 +418,27 @@ static void drawPart(const Part& p) {
 }
 
 void draw(float x, float y, float z, float heading) {
-	anim::evalWorld(s_parts[0].m, s_anim, s_world);
+	const mdl::Model* skel = s_parts[0].m;
+	if (!skel) return;
+	const anim::Local* ptrs[SLOTS];
+	s32 w[SLOTS];
+	int n = 0;
+	for (int i = 0; i < SLOTS; i++) {
+		if (!s_slots[i].alive || s_slots[i].weight <= 0.0f) continue;
+		anim::sampleLocal(skel, s_slots[i].anim, s_locals[i]);
+		ptrs[n] = s_locals[i];
+		w[n] = (s32)(s_slots[i].weight * 4096.0f + 0.5f);
+		n++;
+	}
+	anim::blendWorld(skel, ptrs, w, n, s_world);
+	if (skel && skel->nodes) {
+		for (int b = 0; b < skel->numBones && b < anim::MAX_NODES; b++) {
+			const s32 s = s_scale[b];
+			if (s == (1 << 12)) continue;
+			s32* m = s_world + b * 12;
+			for (int k = 0; k < 9; k++) m[k] = mulf32(m[k], s);
+		}
+	}
 
 	// entity matrix: SA model space -> GL via rotX(-90), heading on the up
 	// axis (SA heading is CCW-from-north; forward = (-sin h, cos h) so the

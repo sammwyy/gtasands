@@ -33,6 +33,19 @@ static float s_camPitch;        // radians above horizontal; + looks down
 static float s_betaSpeed;
 static int s_zoneTimer;
 
+// On-foot anim flow, the part of CPlayerPed::SetRealMoveAnim this port uses.
+// Weights ease at the original blend delta (8/s, ~0.125 s). The stick release
+// itself is instant — the soft stop is run_stop / run_stopR, not a ratio ramp.
+enum Phase { PH_IDLE, PH_START, PH_MOVE, PH_STOP };
+static Phase s_phase;
+static float s_ratio;           // 0 idle .. 1 walk .. 2 run
+static float s_energy;          // sprint bar, 0..100
+static bool s_spent;            // bar hit empty -> idle_tired until it recovers
+static bool s_stopR;            // which plant clip, chosen from the foot phase
+static bool s_restartStart;
+static bool s_restartStop;
+static float s_wIdle, s_wWalk, s_wRun, s_wSprint, s_wStart, s_wStop, s_wTired;
+
 // radians -> [-pi, pi]
 static float wrap(float a) {
 	while (a > 3.14159265f) a -= 6.2831853f;
@@ -54,12 +67,24 @@ void init() {
 	g.money = 350;
 	g.wantedLevel = 0;
 	g.weapon = k_weapons[0];
+	g.fat = 0.0f;
+	g.muscle = 0.0f;
+	g.sprint = 100.0f;
 	g_clockH = 12; g_clockM = 0;
 	s_camYaw = 0;
 	s_camPitch = 0.42f;     // a little above CJ, the default follow-ped framing
 	s_betaSpeed = 0;
 	s_zoneTimer = 0;
+	s_phase = PH_IDLE;
+	s_ratio = 0;
+	s_energy = 100.0f;
+	s_spent = false;
+	s_stopR = false;
+	s_restartStart = s_restartStop = false;
+	s_wIdle = 1.0f;
+	s_wWalk = s_wRun = s_wSprint = s_wStart = s_wStop = s_wTired = 0.0f;
 	cj::init();
+	cj::setStats(0.0f, 0.0f);
 }
 
 // Follow-ped camera, the on-foot half of CCam::Process_FollowPed_SA.
@@ -82,10 +107,27 @@ static void followCam(float targetYaw) {
 	s_camYaw = wrap(s_camYaw + fminf(CAM_TIMESTEP, 10.0f) * s_betaSpeed);
 }
 
+// Blend delta from AnimBlendAssociation::UpdateBlend: amount += 8 * seconds.
+static void approach(float& v, float target, float dt) {
+	const float step = 8.0f * dt;
+	if (v < target) v = v + step < target ? v + step : target;
+	else if (v > target) v = v - step > target ? v - step : target;
+}
+
+static float clipOr(const char* name, float fallback) {
+	const float p = cj::clipPhase(name);
+	return p >= 0.0f ? p : fallback;
+}
+
 // D-pad moves camera-relative (up = away from camera), same as
 // CTaskSimplePlayerOnFoot::PlayerControlZelda. B = run, A = sprint.
 // The step itself comes from the anim's root bone, not a made-up speed,
 // so the feet stay on the ground they were authored for.
+//
+// Flow (SetRealMoveAnim, on foot, unarmed):
+//   idle -> walk_start (once) -> walk, blended into run by the move ratio
+//   A -> sprint, until the bar empties (then run, and idle_tired once stopped)
+//   release -> run_stop or run_stopR from the foot phase, then idle
 static void updateMove() {
 	const input::State& in = input::get();
 	const float dt = 1.0f / 60.0f;
@@ -102,7 +144,6 @@ static void updateMove() {
 	s_camYaw = wrap(s_camYaw);
 
 	const bool moving = ix != 0.0f || iy != 0.0f;
-	const char* an = "IDLE_stance";
 	if (moving) {
 		// camera-relative wish direction in SA xy. Facing is (-sin h, cos h).
 		const float dx = -sinf(s_camYaw) * iy + cosf(s_camYaw) * ix;
@@ -113,9 +154,101 @@ static void updateMove() {
 		if (turn > maxTurn) turn = maxTurn;
 		if (turn < -maxTurn) turn = -maxTurn;
 		g.heading = wrap(g.heading + turn);
-		an = in.held & KEY_A ? "sprint_civi" : in.held & KEY_B ? "run_civi" : "WALK_player";
 	}
-	cj::setAnim(an);
+
+	// Sprint energy. STAT_STAMINA is 0 on a new game, so the bar lasts ~5 s
+	// and refills in ~8 s. Hitting empty forces a run and, once stopped, idle_tired.
+	const bool wantSprint = moving && (in.held & KEY_A);
+	// New-game STAT_STAMINA is 0, which is the fast end of the drain
+	// (~21.6/s, a full bar lasts about five seconds). Recover is 12/s.
+	const float drain = 21.6f;
+	if (wantSprint && s_energy > 0.0f) {
+		s_energy -= drain * dt;
+		if (s_energy <= 0.0f) { s_energy = 0.0f; s_spent = true; }
+	} else {
+		s_energy += 12.0f * dt;
+		if (s_energy > 100.0f) s_energy = 100.0f;
+		if (s_energy > 40.0f) s_spent = false;
+	}
+	g.sprint = s_energy;
+	const bool sprinting = wantSprint && s_energy > 0.0f;
+	// Bar empty while A is still held: drop to run, not back to a walk.
+	const bool forcedRun = wantSprint && !sprinting;
+
+	if (sprinting) s_ratio = 2.0f;
+	else if (moving) {
+		// PlayerControlZelda: fMaximumMoveBlendRatio steps at ~0.07 * timestep.
+		// Timestep 1 at 30 fps is 2.1/s. Digital pad: walk = 1, B = run = 2.
+		const float target = ((in.held & KEY_B) || forcedRun) ? 2.0f : 1.0f;
+		const float step = 2.1f * dt;
+		if (s_ratio < target) s_ratio = s_ratio + step < target ? s_ratio + step : target;
+		else if (s_ratio > target) s_ratio = s_ratio - step > target ? s_ratio - step : target;
+	} else {
+		s_ratio = 0.0f;
+	}
+
+	const cj::Motion mo = cj::motion();
+	if (moving) {
+		if (s_phase == PH_IDLE || s_phase == PH_STOP) {
+			if (sprinting) s_phase = PH_MOVE;
+			else { s_phase = PH_START; s_restartStart = true; }
+		} else if (s_phase == PH_START &&
+		           (sprinting || cj::clipEnded(mo.start) || cj::clipPhase(mo.start) < 0.0f)) {
+			s_phase = PH_MOVE;
+		}
+	} else if (s_phase == PH_MOVE || s_phase == PH_START) {
+		// Foot phase of whichever locomotion clip is carrying the stride.
+		float ph = clipOr(mo.run, -1.0f);
+		if (s_wSprint >= s_wRun && s_wSprint >= s_wWalk) ph = clipOr(mo.sprint, ph);
+		else if (s_wWalk >= s_wRun) ph = clipOr(mo.walk, ph);
+		if (ph < 0.0f) ph = clipOr(mo.start, 0.0f);
+		s_stopR = ph >= 0.5f;
+		s_phase = PH_STOP;
+		s_restartStop = true;
+	} else if (s_phase == PH_STOP) {
+		const char* sn = s_stopR ? mo.stopR : mo.stop;
+		if (cj::clipEnded(sn) || cj::clipPhase(sn) < 0.0f) s_phase = PH_IDLE;
+	}
+
+	float tIdle = 0, tWalk = 0, tRun = 0, tSprint = 0, tStart = 0, tStop = 0, tTired = 0;
+	if (s_phase == PH_IDLE) {
+		if (s_spent) tTired = 1.0f;
+		else tIdle = 1.0f;
+	} else if (s_phase == PH_START) {
+		tStart = 1.0f;
+	} else if (s_phase == PH_MOVE) {
+		if (sprinting) tSprint = 1.0f;
+		else if (s_ratio <= 1.0f) { tWalk = s_ratio; tIdle = 1.0f - s_ratio; }
+		else { tWalk = 2.0f - s_ratio; tRun = s_ratio - 1.0f; }
+	} else {
+		tStop = 1.0f;
+	}
+	approach(s_wIdle, tIdle, dt);
+	approach(s_wWalk, tWalk, dt);
+	approach(s_wRun, tRun, dt);
+	approach(s_wSprint, tSprint, dt);
+	approach(s_wStart, tStart, dt);
+	approach(s_wStop, tStop, dt);
+	approach(s_wTired, tTired, dt);
+
+	cj::Clip clips[7];
+	int n = 0;
+	const float walkPh = clipOr(mo.walk, 0.0f);
+	auto add = [&](const char* name, float w, bool loop, bool extract, bool sync, bool restart, float phase) {
+		if (w <= 0.01f || n >= 7) return;
+		clips[n++] = { name, w, loop, extract, sync, restart, phase };
+	};
+	add(mo.idle, s_wIdle, true, false, false, false, 0.0f);
+	add(mo.tired, s_wTired, true, false, false, false, 0.0f);
+	add(mo.start, s_wStart, false, true, false, s_restartStart, 0.0f);
+	add(mo.walk, s_wWalk, true, true, false, false, 0.0f);
+	// Walk and run are ANIMATION_IS_SYNCRONISED: same foot phase, weights = ratio.
+	add(mo.run, s_wRun, true, true, s_wWalk > 0.05f, false, walkPh);
+	add(mo.sprint, s_wSprint, true, true, false, false, 0.0f);
+	add(s_stopR ? mo.stopR : mo.stop, s_wStop, false, true, false, s_restartStop, 0.0f);
+	s_restartStart = s_restartStop = false;
+
+	cj::pose(clips, n);
 	cj::advance(1);
 
 	float mx, my;
@@ -127,7 +260,8 @@ static void updateMove() {
 	g.y += wy;
 	g.speed = sqrtf(wx * wx + wy * wy) / dt;
 
-	if (moving && !looking) followCam(g.heading);
+	if (!looking && (moving || s_phase == PH_START || s_phase == PH_MOVE || s_phase == PH_STOP))
+		followCam(g.heading);
 	else s_betaSpeed = 0.0f;
 }
 
@@ -153,6 +287,13 @@ static void updateDemo() {
 	const u32 mins = t / 60;
 	g_clockH = (12 + mins / 60) % 24;
 	g_clockM = mins % 60;
+
+	// Body shape, same demo cadence as the wanted stars: 20 s normal, 20 s
+	// fat, 20 s muscle. The real stats will replace this when gameplay lands.
+	const int body = (int)((t / 1200) % 3);
+	g.fat = body == 1 ? 1000.0f : 0.0f;
+	g.muscle = body == 2 ? 1000.0f : 0.0f;
+	cj::setStats(g.fat, g.muscle);
 }
 
 void update() {

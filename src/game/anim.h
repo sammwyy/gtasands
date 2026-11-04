@@ -43,6 +43,27 @@ bool rootTranslation(const Player& p, const mdl::Model* m, int32_t time, s32 out
 // Translation of the root bone's last key (the pose the cycle leaves on).
 bool rootEndTranslation(const Player& p, const mdl::Model* m, s32 out[3]);
 
+// One node's local pose: unit quaternion (4.12, xyzw) and translation (20.12).
+struct Local {
+	s32 q[4];
+	s32 t[3];
+};
+
+// Seeks the play head. Rewinding clears the key cursors.
+void setTime(Player& p, int32_t t60);
+float phase(const Player& p); // 0..1
+
+// Samples the local pose at the current time into `out` (numBones entries).
+// Nodes the clip does not animate stay on the bind pose. An extractRoot clip
+// keeps only the root bone's vertical bob (XY replaced by the bind position).
+// Advances the per-sequence key cursors.
+void sampleLocal(const mdl::Model* m, Player& p, Local* out);
+
+// Blends `n` local poses by 4.12 weights (renormalized) and composes the
+// hierarchy into world matrices (numBones entries of 12 fx32). n == 0 writes
+// the bind pose.
+void blendWorld(const mdl::Model* m, const Local* const* locals, const s32* w4096, int n, s32* world);
+
 // Evaluates the pose at the current time: world[node] gets each node's
 // model-space matrix (numBones entries of 12 fx32 each). Nodes with no
 // sequence use the skin bind local baked into the model.
