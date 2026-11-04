@@ -79,8 +79,8 @@ static void updateMove() {
 		g.speed += (vmax - g.speed) * (1.0f - expf(-8.0f * dt));
 		g.x += -sinf(g.heading) * g.speed * dt;
 		g.y +=  cosf(g.heading) * g.speed * dt;
-		// idle camera drift behind the move direction
-		s_camYaw += wrap(target - s_camYaw) * (1.0f - expf(-2.0f * dt));
+		// camera settles behind the move direction (GTA-like chase follow)
+		s_camYaw += wrap(target - s_camYaw) * (1.0f - expf(-4.5f * dt));
 	} else {
 		g.speed += (0.0f - g.speed) * (1.0f - expf(-10.0f * dt));
 	}

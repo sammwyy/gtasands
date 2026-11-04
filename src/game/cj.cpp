@@ -11,18 +11,29 @@
 
 namespace cj {
 
-// The default outfit from main.scm: (texture, model) pairs. Hands get no own
-// texture part - they share the torso's (BODY_PART_TEX_NAMES in ClothesBuilder).
-static const struct { const char* dff; const char* txd; } k_parts[] = {
-	{ "vest.dff",    "vest.txd" },
-	{ "head.dff",    "player_face.txd" },
-	{ "hands.dff",   "vest.txd" },
-	{ "jeans.dff",   "jeansdenim.txd" },
-	{ "sneaker.dff", "sneakerbincblk.txd" },
+// The default outfit from main.scm: (model, txd, texture) triples.
+// vest.dff and torso.dff share the exact same mesh (324 verts, same skinning):
+// the vest is a reskin whose arm-region triangles sample fully transparent
+// texels in vest.txd (the "cut" -- CJ's skin shows through there). So we split
+// the shared topology: torso.dff draws only the triangles fully bound to the
+// neck/arm bones (real skin from player_torso.txd), vest.dff draws the rest
+// (opaque cloth). Every triangle is emitted exactly once -> no z-fighting.
+// hands.dff is a separate model part covering the forearm/hand/fingers.
+// legs/feet skin parts are not drawn (jeans+sneakers cover them completely).
+static constexpr u64 SKIN_NODES = (1ull << 4) | 0x1FC00ull | 0x1FC0000ull;
+struct PartDef { const char* dff; const char* txd; const char* tex; u64 onlyIn; u64 skipIn; };
+static const PartDef k_parts[] = {
+	{ "torso.dff",   "player_torso.txd",   "torso",          SKIN_NODES, 0 },
+	{ "vest.dff",    "vest.txd",           "vest",           0, SKIN_NODES },
+	{ "head.dff",    "player_face.txd",    "face",           0, 0 },
+	{ "hands.dff",   "hands.txd",          "torso8bit",      0, 0 },
+	{ "jeans.dff",   "jeansdenim.txd",     "legs",           0, 0 },
+	{ "sneaker.dff", "sneakerbincblk.txd", "sneakerbincblk", 0, 0 },
 };
 static constexpr int NUM_PARTS = sizeof(k_parts) / sizeof(k_parts[0]);
 
 struct Part {
+	const PartDef* def;
 	mdl::Model* m;
 	void* blob;          // DMDL blob (owned)
 	tex::Texture* tex;   // VRAM texture for all its materials
@@ -51,15 +62,17 @@ static int skinVerts(const Part& p, const mdl::Geometry& g);
 bool init() {
 	for (int i = 0; i < NUM_PARTS; i++) {
 		Part& p = s_parts[i];
-		p.blob = loadEntry(streaming::g_player, k_parts[i].dff);
+		p.def = &k_parts[i];
+		p.blob = loadEntry(streaming::g_player, p.def->dff);
 		p.m = mdl::load(p.blob);
 		p.tex = nullptr;
-		void* txd = loadEntry(streaming::g_player, k_parts[i].txd);
+		void* txd = loadEntry(streaming::g_player, p.def->txd);
 		if (txd) {
-			p.tex = tex::loadFirst(txd);
+			p.tex = tex::loadFromTxd(txd, p.def->tex);
+			if (!p.tex) p.tex = tex::loadFirst(txd);
 			::free(txd);
 		}
-		hud::log("cj %s: %s, %u verts, tex %s", k_parts[i].dff,
+		hud::log("cj %s: %s, %u verts, tex %s", p.def->dff,
 		         p.m ? "ok" : "FAILED",
 		         p.m ? (unsigned)p.m->geoms[0].h->numVerts : 0u,
 		         p.tex ? "ok" : "none");
@@ -146,10 +159,21 @@ static void drawPart(const Part& p) {
 			glPolyFmt(POLY_ALPHA(mat.alpha >= 248 ? 31 : (mat.alpha >> 3) | 1) | POLY_CULL_NONE);
 			glColor(mat.color);
 			glBegin(GL_TRIANGLES);
-			for (uint32_t i = mat.firstIndex; i < mat.firstIndex + mat.numIndices; i++) {
-				const uint16_t v = geo.idx[i] < nv ? geo.idx[i] : 0;
-				glTexCoord2t16(s_uv[v][0], s_uv[v][1]);
-				glVertex3v16(s_xyz[v][0], s_xyz[v][1], s_xyz[v][2]);
+			for (uint32_t i = mat.firstIndex; i < mat.firstIndex + mat.numIndices; i += 3) {
+				const uint16_t a = geo.idx[i] < nv ? geo.idx[i] : 0;
+				const uint16_t b = geo.idx[i + 1] < nv ? geo.idx[i + 1] : 0;
+				const uint16_t c = geo.idx[i + 2] < nv ? geo.idx[i + 2] : 0;
+				if (geo.bone && (p.def->onlyIn | p.def->skipIn)) {
+					const u64 t = (1ull << geo.bone[a]) | (1ull << geo.bone[b]) | (1ull << geo.bone[c]);
+					if (p.def->onlyIn && (t & ~p.def->onlyIn)) continue;
+					if (!(t & ~p.def->skipIn)) continue;
+				}
+				glTexCoord2t16(s_uv[a][0], s_uv[a][1]);
+				glVertex3v16(s_xyz[a][0], s_xyz[a][1], s_xyz[a][2]);
+				glTexCoord2t16(s_uv[b][0], s_uv[b][1]);
+				glVertex3v16(s_xyz[b][0], s_xyz[b][1], s_xyz[b][2]);
+				glTexCoord2t16(s_uv[c][0], s_uv[c][1]);
+				glVertex3v16(s_xyz[c][0], s_xyz[c][1], s_xyz[c][2]);
 			}
 			glEnd();
 		}
@@ -160,11 +184,11 @@ void draw(float x, float y, float z, float heading) {
 	anim::evalWorld(s_parts[0].m, s_anim, s_world);
 
 	// entity matrix: SA model space -> GL via rotX(-90), heading on the up
-	// axis (SA heading is counterclockwise-from-north -> negative GL yaw),
-	// position in world (SA x,y,z -> GL x,z,-y)
+	// axis (SA heading is CCW-from-north; forward = (-sin h, cos h) so the
+	// GL yaw is +heading), position in world (SA x,y,z -> GL x,z,-y)
 	glPushMatrix();
 	glTranslatef(x, z + s_lift, -y);
-	glRotatef(-heading * 57.2958f, 0.0f, 1.0f, 0.0f);
+	glRotatef(heading * 57.2958f, 0.0f, 1.0f, 0.0f);
 	glRotatef(-90.0f, 1.0f, 0.0f, 0.0f);
 	s_vertCount = 0;
 	for (int i = 0; i < NUM_PARTS; i++) {
