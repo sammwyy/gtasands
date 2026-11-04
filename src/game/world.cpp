@@ -163,6 +163,13 @@ static int lruTex() {
 	return best;
 }
 
+bool evictTexture() {
+	const int v = s_tex ? lruTex() : -1;
+	if (v < 0) return false;
+	freeTex(s_tex[v]);
+	return true;
+}
+
 static int newTexEntry() {
 	for (int i = 0; i < WORLD_TEX_ENTRIES; i++)
 		if (s_tex[i].state == TEX_FREE) return i;

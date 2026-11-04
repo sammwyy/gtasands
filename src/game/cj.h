@@ -1,5 +1,7 @@
 #pragma once
 
+#include <nds/ndstypes.h>
+
 // CJ: the player model assembled from player.dspk clothing parts, animated by
 // ped.ifp plus the fat/muscular motion groups (clips streamed by animstore).
 // Skinned on the geometry engine: each part is a prebuilt display list that
@@ -79,6 +81,11 @@ const char* animName();
 // Draws CJ at SA coords (x east, y north, z up) facing `heading` radians
 // (0 = north, clockwise). Assumes the view matrix is already set.
 void draw(float x, float y, float z, float heading);
+// Same, with a full entity matrix (GX 4x3 rows: SA model x / y / z axes and
+// the ped origin, in player-local GL space): CJ sitting in a vehicle. The
+// ped origin is the SA one (pelvis, lift() above the feet).
+void drawBasis(const s32 m[12]);
+float lift();
 
 // Total skinned vertices emitted per draw (for the HUD stats row).
 int vertCount();

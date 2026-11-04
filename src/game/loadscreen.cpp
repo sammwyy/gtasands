@@ -19,6 +19,8 @@
 #include "game/sfx.h"
 #include "game/streaming.h"
 #include "game/timecycle.h"
+#include "game/vehicle.h"
+#include "game/vehicledata.h"
 #include "game/weather.h"
 #include "game/world.h"
 #include "game/zones.h"
@@ -114,6 +116,7 @@ static bool jobCol() {                                 // collision index + reco
 	player::placeOnGround();
 	return true;
 }
+static bool jobVehicles() { veh::init(); return vehdata::initStep(); }   // vehicles.dveh tables
 static bool jobAudio() { return audio::initGameStep(); }   // surfaces, audio zones, in-game sounds
 static bool jobReport() {
 	char buf[96];
@@ -141,6 +144,7 @@ static bool (*const s_jobs[])() = {
 	jobRadar,
 	jobWorld,
 	jobCol,
+	jobVehicles,
 	jobAudio,
 	jobReport,
 };

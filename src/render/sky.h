@@ -14,6 +14,8 @@
 //   and the additive colour is split into polygon alpha * normalised colour.
 // - Translucent sprites need distinct polygon IDs to blend over each other
 //   and manual translucent sort to keep the original layering.
+namespace tex { struct Texture; }
+
 namespace sky {
 
 struct View {
@@ -32,5 +34,9 @@ void draw(const View& v);
 // Rain / sandstorm streaks, after the world (depth-tested against it). Uses
 // the world projection; sets up its own modelview from the view.
 void drawWeatherFx(const View& v);
+// particle.txd sprites for other effects (vehicle fire / explosions):
+// coronastar (luminance-as-alpha glow) and cloud1 (soft puff). May be null.
+const tex::Texture* glowTexture();
+const tex::Texture* puffTexture();
 
 }

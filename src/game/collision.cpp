@@ -286,7 +286,14 @@ bool castSegment(const float a[3], const float b[3], Hit& hit) {
 	hit.x = a[0] + (b[0] - a[0]) * t;
 	hit.y = a[1] + (b[1] - a[1]) * t;
 	hit.z = a[2] + (b[2] - a[2]) * t;
-	hit.nz = (float)worldNz(*bestN, best.n) * (1.0f / 4096.0f);
+	{
+		const int32_t nl[3] = { best.n[0], best.n[1], best.n[2] };
+		int32_t nw[3];
+		toWorldDir(*bestN, nl, nw);
+		hit.nx = (float)nw[0] * (1.0f / 4096.0f);
+		hit.ny = (float)nw[1] * (1.0f / 4096.0f);
+		hit.nz = (float)nw[2] * (1.0f / 4096.0f);
+	}
 	hit.surface = best.surface;
 	hit.light = best.light;
 	return true;
@@ -315,11 +322,9 @@ static void closestOnSegment(const int16_t* p, const int16_t* q, const int32_t c
 	}
 }
 
-bool pushSphere(float& x, float& y, float z, float r) {
-	if (!s_numNear) return false;
-	const u32 t0 = timing::ticks();
-	int32_t w[3] = { cu(x), cu(y), cu(z) };
-	const int32_t rc = (int32_t)(r * 128.0f);
+// walls: faces with |n.z| < 0.6 only and a horizontal push (CJ, the floor is
+// groundAt's); otherwise every face, pushed along the contact normal (cars).
+static bool sphereCore(int32_t w[3], int32_t rc, bool walls, uint8_t* surface) {
 	bool touched = false;
 	for (int i = 0; i < s_numNear; i++) {
 		const Near& n = s_near[i];
@@ -343,6 +348,7 @@ bool pushSphere(float& x, float& y, float z, float r) {
 			toWorldDir(n, pl, pw);
 			w[0] += pw[0];
 			w[1] += pw[1];
+			if (!walls) w[2] += pw[2];
 			toLocal(n, w, C);
 			touched = true;
 		};
@@ -355,12 +361,13 @@ bool pushSphere(float& x, float& y, float z, float r) {
 		};
 		forFaces(c, v, lo, hi, [&](const ds::WorldColFace& f, const int16_t* const tri[3]) {
 			const int32_t nz = worldNz(n, f.n);
-			if (nz > WALL_NZ || nz < -WALL_NZ) return;
+			if (walls && (nz > WALL_NZ || nz < -WALL_NZ)) return;
 			const int16_t* a = tri[0];
 			const int32_t s = (int32_t)(((int64_t)(C[0] - a[0]) * f.n[0] + (int64_t)(C[1] - a[1]) * f.n[1] +
 			                             (int64_t)(C[2] - a[2]) * f.n[2]) >> 12);
 			if (s < 0 || s >= rc) return;
 			const int32_t q[3] = { C[0] - ((f.n[0] * s) >> 12), C[1] - ((f.n[1] * s) >> 12), C[2] - ((f.n[2] * s) >> 12) };
+			if (surface) *surface = f.surface;
 			if (inside(tri, f.n, q)) {
 				const int32_t nd[3] = { f.n[0], f.n[1], f.n[2] };
 				push(nd, 4096, rc - s);
@@ -409,12 +416,34 @@ bool pushSphere(float& x, float& y, float z, float r) {
 			pushFrom(q, rc + s.r);
 		}
 	}
+	return touched;
+}
+
+bool pushSphere(float& x, float& y, float z, float r) {
+	if (!s_numNear) return false;
+	const u32 t0 = timing::ticks();
+	int32_t w[3] = { cu(x), cu(y), cu(z) };
+	const bool touched = sphereCore(w, (int32_t)(r * 128.0f), true, nullptr);
 	x = (float)w[0] * (1.0f / 128.0f);
 	y = (float)w[1] * (1.0f / 128.0f);
 	const u32 us = timing::usSince(t0);
 	s_queryUs += us;
 	s_pushUs += us;
 	return touched;
+}
+
+bool sphereContact(const float c[3], float r, float out[3], uint8_t& surface) {
+	if (!s_numNear) return false;
+	const u32 t0 = timing::ticks();
+	const int32_t w0[3] = { cu(c[0]), cu(c[1]), cu(c[2]) };
+	int32_t w[3] = { w0[0], w0[1], w0[2] };
+	surface = 0;
+	const bool touched = sphereCore(w, (int32_t)(r * 128.0f), false, &surface);
+	for (int k = 0; k < 3; k++) out[k] = (float)(w[k] - w0[k]) * (1.0f / 128.0f);
+	const u32 us = timing::usSince(t0);
+	s_queryUs += us;
+	s_pushUs += us;
+	return touched && (out[0] != 0.0f || out[1] != 0.0f || out[2] != 0.0f);
 }
 
 // ----------------------------------------------------------------------------

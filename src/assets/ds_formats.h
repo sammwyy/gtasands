@@ -239,6 +239,49 @@ struct WorldColNode { int16_t min[3], max[3]; uint16_t a, b; };
 // light = tColLighting (day low nibble, night high nibble).
 struct WorldColFace { uint16_t a, b, c; uint8_t surface, light; int16_t n[3]; uint16_t pad; };
 
+// ---------------------------------------------------------------- DVEH (vehicles, data/vehicles.dveh)
+// tools/gtasa/vehicles.py: vehicles.ide (cars section) + handling.cfg already
+// in game units (cHandlingDataMgr::ConvertDataToGameUnits: speeds per 1/50 s
+// step, accelerations per step^2) + carcols.dat + the surface adhesion tables.
+// Floats are IEEE singles (read on the ARM9 with soft float, never per vertex).
+struct VehHeader {
+	uint32_t magic;          // 'DVEH'
+	uint16_t version;        // 1
+	uint16_t numVehicles;
+	uint16_t numColours, numSurfaces;
+	uint32_t vehOffset;      // VehInfo[numVehicles]
+	uint32_t colourOffset;   // uint8_t rgbx[numColours][4] (carcols.dat col table)
+	uint32_t surfaceOffset;  // VehSurface[numSurfaces] (surfinfo.dat order = eSurfaceType)
+	float adhesive[6][6];    // SurfaceInfos_c::m_adhesiveLimits [group B][group A]
+};
+enum VehType : uint8_t {     // eVehicleType (CFileLoader::LoadVehicleObject)
+	VEH_CAR, VEH_MTRUCK, VEH_QUAD, VEH_HELI, VEH_PLANE, VEH_BOAT, VEH_TRAIN, VEH_FHELI, VEH_FPLANE,
+	VEH_BIKE, VEH_BMX, VEH_TRAILER, VEH_UNKNOWN = 0xFF
+};
+struct VehInfo {
+	char model[24];          // gta3.dspk entry = model + ".dff"
+	char txd[24];            // + ".txd" (txd parent: models/generic/vehicle.txd)
+	char gxt[8];             // game name key (TheText)
+	char anims[16];          // IDE anim group ("null" = standard ped.ifp set)
+	uint16_t modelId;        // 400..611
+	uint8_t type;            // VehType
+	uint8_t numColours;      // carcols pairs
+	uint32_t ideFlags;
+	uint8_t colours[8][2];   // (primary, secondary) carcols indices
+	float wheelScaleF, wheelScaleR;  // wheel diameter (m)
+	// tHandlingData
+	float mass, turnMass, dragMult, com[3];
+	float tractionMult, tractionLoss, tractionBias;
+	float maxVelocity, maxFlatVelocity, maxReverseVelocity, engineAccel, engineInertia;
+	uint8_t numGears, driveType, engineType, abs;   // 'F' / 'R' / '4', 'P' / 'D' / 'E'
+	float brakeDecel, brakeBias, steeringLock;      // steeringLock in degrees
+	float suspForce, suspDamping, suspHighSpdDamp, suspUpper, suspLower, suspBias, suspAntiDive;
+	float seatOffset, collisionDamageMult;          // damage mult already * 2000 / mass
+	uint32_t modelFlags, handlingFlags, value;
+	uint8_t frontLights, rearLights, animGroup, percentSubmerged;
+};
+struct VehSurface { uint8_t adhesionGroup; int8_t wetGrip; uint8_t skidmark, pad; };
+
 // ---------------------------------------------------------------- audio
 enum SoundFormat : uint8_t { SND_PCM8 = 0, SND_PCM16 = 1, SND_ADPCM = 2 };  // = DS SOUNDxCNT format bits
 struct SoundHeader {
@@ -302,6 +345,7 @@ static_assert(sizeof(WorldHeader) == 40 && sizeof(WorldModel) == 36 && sizeof(Wo
               sizeof(WorldSector) == 8 && sizeof(WorldInstance) == 32);
 static_assert(sizeof(WorldColIndex) == 12 && sizeof(WorldCol) == 24 && sizeof(WorldColSphere) == 12 &&
               sizeof(WorldColBox) == 16 && sizeof(WorldColNode) == 16 && sizeof(WorldColFace) == 16);
+static_assert(sizeof(VehHeader) == 168 && sizeof(VehInfo) == 228 && sizeof(VehSurface) == 4);
 static_assert(sizeof(SoundHeader) == 24 && sizeof(SfxPakBank) == 12 && sizeof(BankLookupHeader) == 12 && sizeof(StreamTrack) == 12);
 
 }

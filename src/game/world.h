@@ -69,6 +69,9 @@ void draw(const DrawView& v);
 // Drops every display list and world texture (the pause menu needs the
 // VRAM); streaming rebuilds them when drawing resumes.
 void suspend();
+// Frees the least recently used unreferenced map texture (vehicles ask when
+// VRAM is full). False when nothing can go.
+bool evictTexture();
 const Stats& stats();
 
 }

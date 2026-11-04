@@ -23,7 +23,7 @@ constexpr float PED_SPHERE_Z[3] = { 0.8f, 1.2f, 1.6f };   // above the feet
 struct Hit {
 	float t;                  // 0..1 along the segment
 	float x, y, z;            // SA world point
-	float nz;                 // world normal z (1 = flat floor)
+	float nx, ny, nz;         // world normal (nz 1 = flat floor)
 	uint8_t surface, light;   // COL surface type, tColLighting (day | night << 4)
 };
 
@@ -53,6 +53,11 @@ bool groundAt(float x, float y, float zTop, float zBottom, Hit& hit);
 // Sphere at (x, y, z) radius r vs walls (faces with |n.z| < 0.6), boxes and
 // spheres: (x, y) is pushed out horizontally. True if anything was touched.
 bool pushSphere(float& x, float& y, float z, float r);
+// Vehicle body spheres (CCollision::ProcessColModels, reduced): sphere at c
+// radius r vs every near face (front side), box and sphere. `out` = the 3D
+// displacement (m) that resolves the overlap (its direction is the contact
+// normal, its length the depth); surface = COL surface of the last face hit.
+bool sphereContact(const float c[3], float r, float out[3], uint8_t& surface);
 
 // REND "collision" overlay: near volumes within dbg::opts.colRange as
 // outlined wireframe on top of the scene (+ the ped spheres and ground hit).

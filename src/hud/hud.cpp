@@ -21,6 +21,9 @@
 #include "game/debugopts.h"
 #include "game/player.h"
 #include "game/world.h"
+#include "game/vehicle.h"
+#include "game/vehicledata.h"
+#include "game/vehiclemodel.h"
 #include "platform/video.h"
 #include "render/renderer.h"
 #endif
@@ -181,6 +184,80 @@ static void audTest(int f) {
 }
 #endif
 
+#if defined(GTASADS_DEBUG) && defined(GTASADS_VEHTEST)
+// Headless vehicle test (after the screenshot sequence): spawn a Greenwood
+// north of CJ (driver door facing him), Y to get in (go to door, open, getin,
+// close), drive west with a held d-pad up, brake, Y to get out, then set the
+// health under 250 (engine fire) until it blows up. gtasads_vehtest.txt gets
+// one line per 20 frames, shot6..shot10 the stages.
+static void vehTest(int f) {
+	static FILE* out;
+	static int id = -1;
+	auto log = [&](const char* what) {
+		if (!out) return;
+		const veh::Vehicle* v = veh::get(id);
+		fprintf(out, "%4d %-7s cj=%.2f,%.2f,%.2f hp=%d task=%d", f, what, player::g.x, player::g.y, player::g.z,
+		        (int)player::g.health, player::vehicleId());
+		if (v)
+			fprintf(out, " car=%.2f,%.2f,%.2f up=%.2f spd=%.1fkmh g=%u hp=%d st=%u susp=%.2f,%.2f,%.2f,%.2f contact=%u sleep=%d door=%.2f",
+			        v->pos[0], v->pos[1], v->pos[2], v->up[2], v->speedFwd * 180.0f, v->gear, (int)v->health, v->status,
+			        v->susp[0], v->susp[1], v->susp[2], v->susp[3], v->numContact, (int)v->asleep, v->door[0]);
+		const veh::Stats& vs = veh::stats();
+		const vehmdl::Stats& ms = vehmdl::stats();
+		fprintf(out, " | mdl=%u/%u tex=%u fail=%u vram=%luK lists=%luK tris=%u step=%luus draw=%luus fps=%lu polys=%d\n",
+		        ms.ready, ms.models, ms.textures, ms.texFailed, (unsigned long)(ms.texVram >> 10),
+		        (unsigned long)(ms.listBytes >> 10), vs.polys, (unsigned long)vs.stepUs, (unsigned long)vs.drawUs,
+		        timing::fps(), renderer::polyCount());
+	};
+	if (f == 600) {
+		player::respawn();
+		player::debugSetView(0.0f, 0.42f);
+		out = fopen("fat:/gtasads_vehtest.txt", "w");
+		id = veh::spawn(vehdata::findModel(492), player::g.x, player::g.y + 6.0f, player::g.z + 1.0f, 1.5708f, 0);
+		log("spawn");
+	}
+	if (f > 600 && f < 1900 && f % 20 == 0) log(f < 700 ? "park" : f < 900 ? "enter" : f < 1160 ? "drive" : f < 1420 ? "exit" : "fire");
+	if (f == 690) video::requestCapture("fat:/gtasads_shot6.dscr");
+	if (f == 700) input::debugHold(KEY_Y);
+	if (f == 703) input::debugHold(0);
+	if (f == 760) video::requestCapture("fat:/gtasads_shot7.dscr");
+	static int id2 = -1;
+	if (f == 905) {   // a second car across the road 30 m ahead: rammed at ~70 km/h
+		const veh::Vehicle* v = veh::get(id);
+		if (v) id2 = veh::spawn(vehdata::findModel(492), v->pos[0] - 30.0f, v->pos[1], v->pos[2] + 0.5f, 0.0f, 1);
+	}
+	if (f > 905 && f < 1160 && f % 20 == 10 && out) {
+		const veh::Vehicle* v = veh::get(id);
+		const veh::Vehicle* w = veh::get(id2);
+		if (v && w) {
+			fprintf(out, "%4d crash   car1 hp=%d dmg=", f, (int)v->health);
+			for (int k = vehmdl::COMP_DOOR_LF; k < vehmdl::COMP_COUNT; k++) fputc("o~x"[v->dmg[k]], out);
+			fprintf(out, " car2 pos=%.2f,%.2f hp=%d spd=%.1f sleep=%d dmg=", w->pos[0], w->pos[1], (int)w->health,
+			        w->speedFwd * 180.0f, (int)w->asleep);
+			for (int k = vehmdl::COMP_DOOR_LF; k < vehmdl::COMP_COUNT; k++) fputc("o~x"[w->dmg[k]], out);
+			fputc('\n', out);
+		}
+	}
+	if (f == 910) input::debugHold(KEY_UP);
+	if (f == 990) video::requestCapture("fat:/gtasads_shot8.dscr");
+	if (f == 1100) input::debugHold(KEY_DOWN);
+	if (f == 1160) input::debugHold(0);
+	if (f == 1180) input::debugHold(KEY_Y);
+	if (f == 1183) input::debugHold(0);
+	if (f == 1300) video::requestCapture("fat:/gtasads_shot9.dscr");
+	if (f == 1420) veh::setHealth(id, 249.0f);
+	if (f == 1585) video::requestCapture("fat:/gtasads_shot10.dscr");
+	if (f == 1910 && out) {
+		log("end");
+		char ab[320];
+		audio::statsLine(ab, sizeof ab);
+		fprintf(out, "%s\n", ab);
+		fclose(out);
+		out = nullptr;
+	}
+}
+#endif
+
 void draw() {
 	if (s_screen == Screen::GAME) {
 		if (s_gameActive && chud::ready()) {
@@ -195,6 +272,9 @@ void draw() {
 #endif
 #ifdef GTASADS_AUDTEST
 			audTest(s_gameFrames);
+#endif
+#ifdef GTASADS_VEHTEST
+			vehTest(s_gameFrames);
 #endif
 			// headless screenshots (tools/dsshot.py): one per compass direction
 			// (shot0 at the marker frame, then turn, give streaming 60 frames,

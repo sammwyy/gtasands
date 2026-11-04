@@ -759,7 +759,13 @@ static void drawSkeleton(void* ctx) {
 	glEnd();
 }
 
-void draw(float x, float y, float z, float heading) {
+static void drawPose(const m4x3* entity, float x, float y, float z, float heading);
+
+void draw(float x, float y, float z, float heading) { drawPose(nullptr, x, y, z, heading); }
+void drawBasis(const s32 m[12]) { drawPose((const m4x3*)m, 0.0f, 0.0f, 0.0f, 0.0f); }
+float lift() { return s_lift; }
+
+static void drawPose(const m4x3* entity, float x, float y, float z, float heading) {
 	const mdl::Model* skel = s_skel;
 	if (!skel) return;
 	const anim::Local* ptrs[SLOTS];
@@ -785,9 +791,13 @@ void draw(float x, float y, float z, float heading) {
 	// axis (SA heading is CCW-from-north; forward = (-sin h, cos h) so the
 	// GL yaw is +heading), position in world (SA x,y,z -> GL x,z,-y)
 	glPushMatrix();
-	glTranslatef(x, z + s_lift, -y);
-	glRotatef(heading * 57.2958f, 0.0f, 1.0f, 0.0f);
-	glRotatef(-90.0f, 1.0f, 0.0f, 0.0f);
+	if (entity) {
+		glMultMatrix4x3(entity);
+	} else {
+		glTranslatef(x, z + s_lift, -y);
+		glRotatef(heading * 57.2958f, 0.0f, 1.0f, 0.0f);
+		glRotatef(-90.0f, 1.0f, 0.0f, 0.0f);
+	}
 	glStoreMatrix(SLOT_BASE);
 	s_vertCount = 0;
 	for (int i = 0; i < NUM_PARTS && dbg::opts.drawCj; i++) {

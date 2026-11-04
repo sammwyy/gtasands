@@ -100,7 +100,7 @@ static void updateListener() {
 	const float fwd[3] = { -cp * sy, cp * cy, -sp };
 	const float right[3] = { cy, sy, 0.0f };
 	const float up[3] = { -sp * sy, sp * cy, cp };
-	const float target[3] = { player::g.x, player::g.y, player::viewZ() + player::CAM_LOOK_H };
+	const float target[3] = { player::g.x, player::g.y, player::viewZ() + player::camLookH() };
 	const float eye[3] = { target[0] - fwd[0] * d, target[1] - fwd[1] * d, target[2] - fwd[2] * d };
 	s_listenerZ = eye[2];
 	// GetPositionRelativeToCamera's offset uses the distance to the ped origin

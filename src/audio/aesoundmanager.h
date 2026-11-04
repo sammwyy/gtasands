@@ -24,7 +24,7 @@ enum Flags : uint16_t {
 };
 
 // CAEAudioEntity owners (AreSoundsOfThisEventPlayingForThisEntity & co).
-enum Owner : uint8_t { OWNER_NONE, OWNER_FRONTEND, OWNER_PED, OWNER_WEAPON, OWNER_WEATHER, OWNER_TWINLOOP, OWNER_SPEECH };
+enum Owner : uint8_t { OWNER_NONE, OWNER_FRONTEND, OWNER_PED, OWNER_WEAPON, OWNER_WEATHER, OWNER_TWINLOOP, OWNER_SPEECH, OWNER_VEHICLE };
 
 struct Sound;
 // CAEAudioEntity::UpdateParameters: playPosMs >= 0 every frame (with

@@ -5,6 +5,7 @@
 namespace pad {
 
 static Pad s_pad;
+static const Pad* s_override;
 static uint32_t s_lFrames;    // frames L has been held
 static bool s_lMoved;         // a direction was used while L was held (walk, not a tap)
 
@@ -40,7 +41,9 @@ void update(const input::State& in) {
 	p.enterExitJustDown = in.down & KEY_Y;
 }
 
-const Pad& get() { return s_pad; }
+const Pad& get() { return s_override ? *s_override : s_pad; }
+const Pad& raw() { return s_pad; }
+void setOverride(const Pad* p) { s_override = p; }
 
 void consumeEdges() {
 	s_pad.sprintJustDown = s_pad.jumpJustDown = s_pad.attackJustDown = false;

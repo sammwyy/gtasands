@@ -13,6 +13,9 @@
 #include "game/pad.h"
 #include "game/pedmove.h"
 #include "game/timecycle.h"
+#include "game/vehicle.h"
+#include "game/vehicledata.h"
+#include "game/vehiclemodel.h"
 #include "game/zones.h"
 #include "hud/hud.h"
 #include "platform/input.h"
@@ -201,6 +204,16 @@ static bool s_swung;             // AE_PED_SWING raised for the current punch
 static bool s_saidFall;          // CTX_GLOBAL_PAIN_CJ_HIGH_FALL said during this fall
 static float s_viewZ = SPAWN_Z;  // smoothed feet z: render / camera reference
 static float s_camDist = 3.6f;   // chase distance after the camera collision
+// vehicle tasks (see the Vehicles section below)
+enum CarTask : uint8_t { CT_NONE, CT_GOTO, CT_OPEN, CT_GETIN, CT_CLOSE, CT_DRIVE, CT_GETOUT, CT_CLOSEOUT };
+static CarTask s_carTask;
+static int s_car = -1;
+static int s_taskSteps;
+static bool s_wantExit, s_low;
+static float s_wastedT;
+static pad::Pad s_goPad;
+static float s_camCarDist = 6.0f, s_lookH = CAM_LOOK_H;
+static void endCarTask(bool onFoot);
 
 static float wrap(float a) {
 	while (a > 3.14159265f) a -= 6.2831853f;
@@ -329,6 +342,7 @@ void refillSprint() {
 }
 
 void respawn() {
+	if (s_carTask != CT_NONE) endCarTask(false);
 	g.x = SPAWN_X; g.y = SPAWN_Y; g.z = SPAWN_Z;
 	g.heading = 0.0f;
 	s_camYaw = 0.0f;
@@ -846,6 +860,7 @@ static void startFall() {
 static void collide() {
 	if (physics())
 		for (const float hz : col::PED_SPHERE_Z) col::pushSphere(g.x, g.y, g.z + hz, col::PED_RADIUS);
+	veh::pushPed(g.x, g.y, g.z + 1.0f, col::PED_RADIUS);
 	if (s_action == ACT_GLIDE) return;
 	float z;
 	if (floorAt(g.z + STEP_UP, g.z - SNAP_DOWN, z)) {
@@ -865,17 +880,276 @@ static void collide() {
 // CCam::Process_FollowPed's line of sight: CJ's head -> the eye. A wall in
 // between pulls the camera in at once; it eases back out when clear.
 static void updateCamera() {
-	const float want = dbg::opts.camDist;
+	const bool inCar = s_carTask != CT_NONE && s_carTask != CT_GOTO;
+	const float want = inCar ? s_camCarDist : dbg::opts.camDist;
 	float d = want;
 	if (physics()) {
 		const float cp = cosf(s_camPitch), sp = sinf(s_camPitch), len = want + CAM_MARGIN;
-		const float a[3] = { g.x, g.y, s_viewZ + CAM_LOOK_H };
+		const float a[3] = { g.x, g.y, s_viewZ + s_lookH };
 		const float b[3] = { a[0] + sinf(s_camYaw) * cp * len, a[1] - cosf(s_camYaw) * cp * len, a[2] + sp * len };
 		col::Hit h;
 		if (col::castSegment(a, b, h)) d = h.t * len - CAM_MARGIN;
 		if (d < 0.5f) d = 0.5f;
 	}
 	s_camDist = d < s_camDist ? d : s_camDist + (d - s_camDist) * 0.08f;
+}
+
+// ----------------------------------------------------------------------------
+// Vehicles: CTaskComplexEnterCarAsDriver (go to door, CAR_open_LHS,
+// CAR_getin_LHS, CAR_closedoor_LHS), CTaskSimpleCarDrive (CAR_sit + Drive_L/R
+// by the steer), CTaskComplexLeaveCar (CAR_getout_LHS, CAR_close_LHS).
+// The CAR_* clips are not velocity-extracted: the ped origin stays at the door
+// point D while their root translation carries the mesh into the seat, so
+// D = seat - root translation at the end of CAR_getin_LHS (ped.ifp:
+// (0.951, 0.486, -0.35), the low-car L variant (0.96, 0.51, -0.693)).
+// ----------------------------------------------------------------------------
+
+int vehicleId() { return s_carTask == CT_NONE ? -1 : s_car; }
+bool driving() { return s_carTask == CT_DRIVE; }
+float camLookH() { return s_lookH; }
+
+static const char* carClip(CarTask t) {
+	switch (t) {
+	case CT_OPEN: return "CAR_open_LHS";
+	case CT_GETIN: return s_low ? "CAR_getinL_LHS" : "CAR_getin_LHS";
+	case CT_CLOSE: return s_low ? "CAR_closedoorL_LHS" : "CAR_closedoor_LHS";
+	case CT_GETOUT: return s_low ? "CAR_getoutL_LHS" : "CAR_getout_LHS";
+	case CT_CLOSEOUT: return "CAR_close_LHS";
+	default: return nullptr;
+	}
+}
+
+// driver seat / door point (ped origin, car model space)
+static bool carPoints(const veh::Vehicle& v, float seat[3], float door[3]) {
+	const vehmdl::Model* m = vehmdl::get(v.model);
+	if (!m) return false;
+	memcpy(seat, m->seat, 12);
+	const float t[3] = { s_low ? 0.96f : 0.951f, s_low ? 0.51f : 0.486f, s_low ? -0.693f : -0.35f };
+	for (int k = 0; k < 3; k++) door[k] = seat[k] - t[k];
+	return true;
+}
+
+static float smooth01(float x, float a, float b) {
+	const float t = x <= a ? 0.0f : x >= b ? 1.0f : (x - a) / (b - a);
+	return t * t * (3.0f - 2.0f * t);
+}
+
+// the ped origin at a car-space point: g = its world xy, feet below it
+static void placeAt(const veh::Vehicle& v, const float l[3]) {
+	float w[3];
+	veh::toWorld(v, l, w);
+	g.x = w[0];
+	g.y = w[1];
+	g.z = w[2] - cj::lift();
+	g.heading = veh::heading(v);
+}
+
+bool attachedMatrix(float ox, float oy, float oz, s32 out[12]) {
+	if (s_carTask == CT_NONE || s_carTask == CT_GOTO) return false;
+	const veh::Vehicle* v = veh::get(s_car);
+	float seat[3], door[3];
+	if (!v || !carPoints(*v, seat, door)) return false;
+	veh::attachMatrix(*v, s_carTask == CT_DRIVE ? seat : door, ox, oy, oz, out);
+	return true;
+}
+
+static void endCarTask(bool onFoot) {
+	pad::setOverride(nullptr);
+	veh::Vehicle* v = veh::get(s_car);
+	if (v && s_carTask != CT_GOTO) {
+		float seat[3], door[3];
+		if (carPoints(*v, seat, door)) placeAt(*v, door);
+		veh::setDoor(s_car, veh::DOOR_LF, 0.0f);
+		if (s_carTask == CT_DRIVE) veh::setDriver(s_car, false);
+	}
+	s_carTask = CT_NONE;
+	s_car = -1;
+	g.inVehicle = false;
+	g.vehicleName = nullptr;
+	s_action = ACT_NONE;
+	if (onFoot) {
+		placeOnGround();
+		pedmove::reset(s_move);
+		poseOne(cj::motion().idle, true, false, true);
+	}
+}
+
+void leaveVehicleNow() { endCarTask(true); }
+
+static void startDriving() {
+	s_carTask = CT_DRIVE;
+	s_wantExit = false;
+	g.inVehicle = true;
+	veh::setDriver(s_car, true);
+	ds::VehInfo info;
+	const veh::Vehicle* v = veh::get(s_car);
+	if (v && vehdata::read(v->vehIndex, info)) g.vehicleName = TheText.get(info.gxt);
+}
+
+void enterVehicleNow(int id) {
+	veh::Vehicle* v = veh::get(id);
+	if (!v || v->status == veh::STATUS_WRECKED || !vehmdl::ready(v->model)) return;
+	if (s_carTask != CT_NONE) endCarTask(false);
+	s_car = id;
+	ds::VehInfo info;
+	s_low = vehdata::read(v->vehIndex, info) && (info.modelFlags & 4);
+	startDriving();
+}
+
+static void startCarTask(CarTask t) {
+	s_carTask = t;
+	s_taskSteps = 0;
+	poseOne(carClip(t), false, false, true);
+}
+
+// Y on foot: the nearest car with its driver door in reach
+static void tryEnter() {
+	const int id = veh::findEnterable(g.x, g.y, g.z, 5.0f);
+	if (id < 0) return;
+	veh::Vehicle* v = veh::get(id);
+	ds::VehInfo info;
+	if (!v || !vehdata::read(v->vehIndex, info)) return;
+	s_car = id;
+	s_low = info.modelFlags & 4;   // IS_LOW: the L clip set
+	s_carTask = CT_GOTO;
+	s_taskSteps = 0;
+	s_action = ACT_NONE;
+}
+
+// One 60 Hz step while a car task owns CJ. True = it did (no on-foot step).
+static bool carStep() {
+	veh::Vehicle* v = veh::get(s_car);
+	float seat[3], door[3];
+	if (!v || !carPoints(*v, seat, door)) {
+		endCarTask(true);
+		return false;
+	}
+	s_taskSteps++;
+	if (s_carTask == CT_GOTO) {
+		// CTaskComplexGoToCarDoorAndStandStill: walk at the door point with a
+		// scripted stick (camera-relative, like the real pad)
+		float w[3];
+		veh::toWorld(*v, door, w);
+		const float dx = w[0] - g.x, dy = w[1] - g.y, d = sqrtf(dx * dx + dy * dy);
+		if (d < 0.45f || s_taskSteps > 240) {
+			pad::setOverride(nullptr);
+			if (d > 1.5f) { endCarTask(true); return false; }
+			pedmove::suspend(s_move);
+			startCarTask(CT_OPEN);
+			return true;
+		}
+		const float ux = dx / d, uy = dy / d, cy = cosf(s_camYaw), sy = sinf(s_camYaw);
+		s_goPad = {};
+		s_goPad.walkUD = (int16_t)((-sy * ux + cy * uy) * 128.0f);
+		s_goPad.walkLR = (int16_t)((cy * ux + sy * uy) * 128.0f);
+		s_goPad.pedWalk = d < 1.2f;
+		pad::setOverride(&s_goPad);
+		return false;
+	}
+	pad::setOverride(nullptr);
+	if (s_carTask == CT_DRIVE) {
+		// CTaskSimpleCarDrive: the sit pose, the arms follow the wheel
+		const pad::Pad& pd = pad::raw();
+		const u32 held = input::get().held;
+		const float steer = (float)pd.walkLR / 128.0f;
+		float accel = (held & (KEY_UP | KEY_A)) ? 1.0f : 0.0f, brake = (held & (KEY_DOWN | KEY_B)) ? 1.0f : 0.0f;
+		if (pd.enterExitJustDown) s_wantExit = true;
+		if (s_wantExit) { accel = 0.0f; brake = v->speedFwd > 0.0f ? 1.0f : 0.0f; }
+		veh::setControls(s_car, steer, accel, brake, held & KEY_R, held & KEY_L);
+		placeAt(*v, seat);
+		const float s = v->rawSteer;
+		const char* sit = s_low ? "CAR_Lsit" : "CAR_sit";
+		const char* turnClip = s > 0.0f ? (s_low ? "Drive_LO_l" : "Drive_L") : (s_low ? "Drive_LO_R" : "Drive_R");
+		const float ws = fabsf(s) > 1.0f ? 1.0f : fabsf(s);
+		const cj::Clip c[2] = { { sit, 1.0f - ws * 0.999f, true, false, false, false, 0.0f },
+		                        { turnClip, ws * 0.999f + 0.001f, true, false, false, false, 0.0f } };
+		cj::pose(c, 2);
+		cj::advance(1);
+		g.speed = fabsf(v->speedFwd) * 50.0f;
+		if (s_wantExit && fabsf(v->speedFwd) < 0.06f) {
+			veh::setDriver(s_car, false);
+			g.vehicleName = nullptr;
+			startCarTask(CT_GETOUT);
+		}
+		return true;
+	}
+	// the enter / exit clips at the door point
+	const char* clip = carClip(s_carTask);
+	poseOne(clip, false, false, false);
+	cj::advance(1);
+	const float ph = cj::clipPhase(clip);
+	placeAt(*v, door);
+	switch (s_carTask) {
+	case CT_OPEN: veh::setDoor(s_car, veh::DOOR_LF, smooth01(ph, 0.2f, 0.65f)); break;
+	case CT_GETIN: veh::setDoor(s_car, veh::DOOR_LF, 1.0f); break;
+	case CT_CLOSE: veh::setDoor(s_car, veh::DOOR_LF, 1.0f - smooth01(ph, 0.15f, 0.6f)); break;
+	case CT_GETOUT: veh::setDoor(s_car, veh::DOOR_LF, smooth01(ph, 0.0f, 0.3f)); break;
+	case CT_CLOSEOUT: veh::setDoor(s_car, veh::DOOR_LF, 1.0f - smooth01(ph, 0.25f, 0.65f)); break;
+	default: break;
+	}
+	// a clip that never streamed in must not hang the task
+	const bool done = cj::clipEnded(clip) || (ph < 0.0f && s_taskSteps > 10) || s_taskSteps > 240;
+	if (done) {
+		switch (s_carTask) {
+		case CT_OPEN: startCarTask(CT_GETIN); break;
+		case CT_GETIN: startCarTask(CT_CLOSE); break;
+		case CT_CLOSE: veh::setDoor(s_car, veh::DOOR_LF, 0.0f); startDriving(); break;
+		case CT_GETOUT: startCarTask(CT_CLOSEOUT); break;
+		default: endCarTask(true); break;
+		}
+	}
+	return true;
+}
+
+void vehicleExploded(int id) {
+	if (id != s_car) return;
+	endCarTask(true);
+	g.health = 0.0f;
+}
+
+void explosionDamage(float x, float y, float, float damage) {
+	g.health -= damage;
+	if (g.health < 0.0f) g.health = 0.0f;
+	if (s_carTask != CT_NONE) return;
+	const float dx = g.x - x, dy = g.y - y, d = sqrtf(dx * dx + dy * dy) + 0.1f;
+	s_action = ACT_GLIDE;
+	s_jumpVX = dx / d * 6.0f;
+	s_jumpVY = dy / d * 6.0f;
+	s_jumpVZ = 5.0f;
+	s_glideClip = "FALL_fall";
+	poseOne(s_glideClip, true, false, true);
+}
+
+void hitByVehicle(float vx, float vy, float damage) {
+	if (s_carTask != CT_NONE && s_carTask != CT_GOTO) return;
+	if (s_carTask == CT_GOTO) endCarTask(false);
+	g.health -= damage;
+	if (g.health < 0.0f) g.health = 0.0f;
+	s_action = ACT_GLIDE;
+	s_jumpVX = vx * 0.8f;
+	s_jumpVY = vy * 0.8f;
+	s_jumpVZ = 3.0f;
+	s_glideClip = "FALL_fall";
+	poseOne(s_glideClip, true, false, true);
+}
+
+// CCam::Process_FollowCar_SA, reduced: behind the car (its velocity heading
+// once it moves), distance and height from the model's size
+static void updateCarCamera(const veh::Vehicle& v, bool looking) {
+	const vehmdl::Model* m = vehmdl::get(v.model);
+	const float len = m ? m->bmax[1] - m->bmin[1] : 4.5f;
+	const float top = m ? m->bmax[2] : 1.0f;
+	const float sp = sqrtf(v.moveSpeed[0] * v.moveSpeed[0] + v.moveSpeed[1] * v.moveSpeed[1]);
+	float target = veh::heading(v);
+	if (sp > 0.05f && v.speedFwd > 0.0f) target = atan2f(-v.moveSpeed[0], v.moveSpeed[1]);
+	if (!looking) {
+		const float d = wrap(target - s_camYaw);
+		s_camYaw = wrap(s_camYaw + d * (sp > 0.02f ? 0.12f : 0.05f));
+		s_camPitch += (0.22f - s_camPitch) * 0.05f;
+	}
+	const float want = len * 1.05f + 2.2f + sp * 4.0f;
+	s_camCarDist += (want - s_camCarDist) * 0.1f;
+	s_lookH += (top + 0.9f - s_lookH) * 0.2f;
 }
 
 void init() {
@@ -958,15 +1232,42 @@ void update() {
 	s_stepAcc %= 4;
 	if (steps > MAX_STEPS) steps = MAX_STEPS;
 	for (uint32_t i = 0; i < steps; i++) {
-		updateMove();
-		collide();
+		// Y on foot (not mid-jump / punch): CTaskComplexEnterCarAsDriver
+		if (s_carTask == CT_NONE && s_action == ACT_NONE && pad::raw().enterExitJustDown && g.health > 0.0f) tryEnter();
+		if (!(s_carTask != CT_NONE && carStep())) {
+			updateMove();
+			collide();
+		}
+		veh::step();
+		if (s_carTask == CT_DRIVE) {   // the driver follows the car it just moved
+			float seat[3], door[3];
+			const veh::Vehicle* cv = veh::get(s_car);
+			if (cv && carPoints(*cv, seat, door)) placeAt(*cv, seat);
+		}
 		if (i == 0) {
 			input::consumeEdges();
 			pad::consumeEdges();
 		}
 	}
+	// WASTED, reduced: a few seconds, then back to the Grove Street spawn
+	if (g.health <= 0.0f) {
+		if (s_carTask != CT_NONE) endCarTask(true);
+		if ((s_wastedT += (float)dv / 60.0f) > 3.0f) {
+			hud::log("wasted");
+			s_wastedT = 0.0f;
+			respawn();
+			g.health = g.maxHealth;
+		}
+	} else {
+		s_wastedT = 0.0f;
+	}
 	// render reference height: follows the feet, smoothed (stairs, jumps)
 	s_viewZ = fabsf(g.z - s_viewZ) > 4.0f ? g.z : s_viewZ + (g.z - s_viewZ) * 0.25f;
+	if (s_carTask != CT_NONE && s_carTask != CT_GOTO) {
+		if (const veh::Vehicle* cv = veh::get(s_car)) updateCarCamera(*cv, s_camDrag);
+	} else {
+		s_lookH += (CAM_LOOK_H - s_lookH) * 0.2f;
+	}
 	updateCamera();
 
 	const bool running = pedmove::isRunning(s_move) && !g.aiming;

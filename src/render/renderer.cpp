@@ -8,6 +8,7 @@
 #include "game/debugopts.h"
 #include "game/player.h"
 #include "game/timecycle.h"
+#include "game/vehicle.h"
 #include "game/weather.h"
 #include "game/world.h"
 #include "render/sky.h"
@@ -74,7 +75,7 @@ void draw() {
 	// north, so the eye is south of him (behind a north-facing ped). pitch is
 	// radians above the horizon, positive looking down. Player-local space
 	// keeps the view matrix inside the s20.12 range.
-	const float dist = player::camDist(), lookH = player::CAM_LOOK_H;
+	const float dist = player::camDist(), lookH = player::camLookH();
 	const float vz = player::viewZ();
 	const float horiz = cosf(pitch) * dist;
 	const float eyeH = lookH + sinf(pitch) * dist;
@@ -101,7 +102,11 @@ void draw() {
 	// emitted unit is one ground cell (8 SA units). Anchor delta stays small.
 	const int ax = (int)floorf(px * 0.125f), ay = (int)floorf(py * 0.125f);
 	const float adx = ax * 8.0f - px, adz = -(ay * 8.0f - py);
-	cj::draw(0.0f, 0.0f, player::g.z - vz, player::g.heading);
+	s32 attached[12];
+	if (player::attachedMatrix(px, py, vz, attached)) cj::drawBasis(attached);
+	else cj::draw(0.0f, 0.0f, player::g.z - vz, player::g.heading);
+	// vehicles right after CJ (their own light0: the sun), then the map's budget
+	veh::draw({ px, py, vz, px + elx, py + ely, vz + eyeH, yaw, pitch });
 	// debug collision overlay before the map: the map's polygon budget yields to it
 	col::drawDebug(px, py, vz, px, py, player::g.z);
 

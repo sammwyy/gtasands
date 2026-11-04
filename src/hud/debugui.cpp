@@ -1,5 +1,6 @@
 #include "hud/debugui.h"
 
+#include <math.h>
 #include <nds.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -18,6 +19,9 @@
 #include "game/hud/radar.h"
 #include "game/player.h"
 #include "game/timecycle.h"
+#include "game/vehicle.h"
+#include "game/vehicledata.h"
+#include "game/vehiclemodel.h"
 #include "game/weather.h"
 #include "game/world.h"
 #include "hud/hud.h"
@@ -214,6 +218,77 @@ static void pageMem() {
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 
+// GAME tab, rows 15..23: vehicles (spawn from vehicles.dveh, enter, damage)
+static int s_vehPick = -1;
+static int s_lastCar = -1;
+
+static int nextDrivable(int from, int dir) {
+	const int n = vehdata::count();
+	for (int k = 1; k <= n; k++) {
+		const int i = ((from + dir * k) % n + n) % n;
+		if (vehdata::drivable(i)) return i;
+	}
+	return -1;
+}
+
+static void pageVehicles() {
+	if (!vehdata::ready()) {
+		line(15, "\x1b[33mno vehicles.dveh\x1b[39m");
+		blank(16, 23);
+		return;
+	}
+	if (s_vehPick < 0) s_vehPick = vehdata::findModel(492) >= 0 ? vehdata::findModel(492) : nextDrivable(0, 1);
+	ds::VehInfo info;
+	const bool have = vehdata::read(s_vehPick, info);
+	line(15, "\x1b[33mcar\x1b[39m %-9.9s %d", have ? info.model : "?", have ? info.modelId : 0);
+	int c = 20;
+	if (button(15, c, "<")) s_vehPick = nextDrivable(s_vehPick, -1);
+	if (button(15, c, ">")) s_vehPick = nextDrivable(s_vehPick, 1);
+	put(16, 0, "");
+	c = 0;
+	const player::State& p = player::g;
+	if (button(16, c, "spawn")) {
+		// in front of CJ, side on
+		const float h = p.heading;
+		const int id = veh::spawn(s_vehPick, p.x - sinf(h) * 6.0f, p.y + cosf(h) * 6.0f, p.z + 1.0f, h + 1.5708f);
+		if (id >= 0) s_lastCar = id;
+	}
+	int cur = player::vehicleId() >= 0 ? player::vehicleId() : s_lastCar;
+	if (!veh::get(cur)) {
+		cur = -1;
+		for (int i = 0; i < veh::MAX && cur < 0; i++)
+			if (veh::get(i)) cur = i;
+	}
+	if (button(16, c, "enter") && cur >= 0) player::enterVehicleNow(cur);
+	if (button(16, c, "del all")) { veh::removeAll(); s_lastCar = -1; }
+	const veh::Vehicle* v = veh::get(cur);
+	if (v) {
+		static const char* const k_st[] = { "-", "phys", "PLAYER", "WRECK" };
+		line(17, "#%d %-6s hp%4d %3dkm/h g%d", cur, k_st[v->status & 3], (int)v->health,
+		     (int)(fabsf(v->speedFwd) * 50.0f * 3.6f), v->gear);
+		line(18, "susp %.2f %.2f %.2f %.2f %s", v->susp[0], v->susp[1], v->susp[2], v->susp[3], v->asleep ? "zz" : "");
+		char d[vehmdl::COMP_COUNT + 1];
+		for (int k = 0; k < vehmdl::COMP_COUNT; k++) d[k] = "o~x"[v->dmg[k] < 3 ? v->dmg[k] : 0];
+		d[vehmdl::COMP_COUNT] = 0;
+		line(19, "dmg %s skid %.1f", d + vehmdl::COMP_DOOR_LF, v->skid);
+	} else {
+		line(17, "(no car)");
+		blank(18, 19);
+	}
+	put(20, 0, "");
+	c = 0;
+	if (button(20, c, "repair")) veh::repair(cur);
+	if (button(20, c, "boom")) veh::blowUp(cur);
+	if (button(20, c, "flip")) veh::flip(cur);
+	if (button(20, c, "hp250") && v) veh::setHealth(cur, 249.0f);
+	const vehmdl::Stats& ms = vehmdl::stats();
+	const veh::Stats& vs = veh::stats();
+	line(21, "mdl %u/%u tex %u f%u %luK", ms.ready, ms.models, ms.textures, ms.texFailed, (unsigned long)(ms.texVram >> 10));
+	line(22, "cars %u awake %u tris %u st%lu dr%lu", vs.active, vs.awake, vs.polys, (unsigned long)vs.stepUs,
+	     (unsigned long)vs.drawUs);
+	blank(23, 23);
+}
+
 static void pageGame(bool inGame) {
 	if (!inGame) {
 		line(1, "\x1b[33m(start a game first)\x1b[39m");
@@ -296,7 +371,7 @@ static void pageGame(bool inGame) {
 	c = 0;
 	if (button(14, c, "respawn")) player::respawn();
 	if (button(14, c, "full heal")) { p.health = p.maxHealth; p.armour = p.maxArmour; player::refillSprint(); }
-	blank(15, 23);
+	pageVehicles();
 }
 
 static void toggle2(int row, const char* a, bool& va, const char* b, bool& vb);

@@ -47,11 +47,12 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `game/weather.*` | CWeather port |
 | `game/streaming.*` | open packs (`g_models` gta3, `g_player`, `g_anim`) |
 | `game/world.*` | streamed map: DWLD sector window, map model/texture streaming, GX list compile, culling + draw (section 6b) |
+| `game/vehicledata.*`, `game/vehiclemodel.*`, `game/vehicle.*` | vehicles (section 6d): DVEH tables, model streaming + per-atomic lit GX lists, CAutomobile physics / damage / fire / explosion / debris / draw |
 | `game/collision.*` | map collision: per-model COL records streamed from world.dwld, near list, segment cast / ground probe / sphere push, debug overlay (section 6c) |
 | `game/loadscreen.*` | CLoadingScreen + resumable init jobs |
 | `game/zones.*` | info.zon -> zone GXT names |
 | `game/sfx.*`, `game/intro.*` | frontend audio entity (menu beeps, whoosh, loading tune) on `src/audio`; DVID movie player |
-| `audio/` | audio engine (section 8b): hardware channels, bank/sound cache, sound manager, stream channel, ped / weapon / weather entities, ambience tracks, audio zones |
+| `audio/` | audio engine (section 8b): hardware channels, bank/sound cache, sound manager, stream channel, ped / weapon / weather / vehicle entities, ambience tracks, audio zones |
 | `game/menu/` | CMenuManager port (screens table verbatim) |
 | `game/text/` | CText (GXT), CFont |
 | `game/hud/` | CHud/CRadar ports on a CPU framebuffer (`subfb`), `hudtex`, `hudfont` |
@@ -69,11 +70,13 @@ timing::frameStart; input::poll
 state transitions (title -> menu -> loading -> ingame), SELECT = toggle bottom screen, START = pause menu
 video::beginFrame()                 // resets render env: no fog, default clear, auto sort
   menu | loadscreen::draw | renderer::draw      -> SEC_3D
-INGAME && !menu: col::update; player::update; weather::update; timecycle::update; world::update -> SEC_SIM
+INGAME && !menu: col::update; player::update (60 Hz steps: on foot / car task, veh::step);
+                 weather::update; timecycle::update; world::update; veh::update      -> SEC_SIM
 hud::draw()  (CPU framebuffer in RAM / debug console)                  -> SEC_HUD
 timing::frameEnd
 video::endFrame()   // glFlush(manual sort?) ; swiWaitForVBlank ; apply fog/clear registers
 world::vblank()     // staged map textures -> VRAM while the 3D engine is idle (any state)
+vehmdl::vblank()    // staged vehicle textures (asks world::evictTexture when VRAM is full)
 hud::present()      // DMA bottom framebuffer to VRAM C inside vblank
 ```
 Rendering happens before the simulation step, so draw uses last frame's sim/timecycle state.
@@ -100,7 +103,8 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
    constant-depth projections (see 5.), restores the projection.
 2. world light (`timecycle::worldLight`, darkened by `WetRoads`) for map/placeholder geometry,
    ped light (`timecycle::pedLight`) -> `cj::setLight`.
-3. view matrix, `cj::draw` (first, so the polygon budget never drops CJ; skeleton overlay inside),
+3. view matrix, `cj::draw` (first, so the polygon budget never drops CJ; skeleton overlay inside;
+   `cj::drawBasis` with the car matrix while CJ is attached to a car), `veh::draw` (own light0),
    `col::drawDebug` (REND collision overlay, before the map so the map budget yields to it),
    light0 = world light, `world::draw` (section 6b), placeholder ground grid + boxes only if there
    is no world, then `sky::drawWeatherFx`.
@@ -116,6 +120,7 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
 - Skinning = one dominant bone per vertex. After the pose blend, `shoulderBoneRotation` is applied.
 - CJ (and the map) are CCW-front like RW (checked on the dffs): `POLY_CULL_BACK`, which halved CJ
   from ~1200 to ~450 drawn polys. Sky/sprites stay `CULL_NONE`.
+- Vehicles: slot 11 = view, slot 10 = car body (section 6d).
 - Matrix slot 13 holds the view while the map draws (`MATRIX_RESTORE` + `MATRIX_MULT4x3` per
   instance), slot 12 while the collision overlay draws; CJ uses 14..30.
 - Lists that write `TEXIMAGE_PARAM`/`PLTT_BASE` themselves (map) must leave both registers at 0 and
@@ -271,6 +276,55 @@ CCollision / CColStore / CWorld::ProcessLineOfSight reduced to an on-foot player
   boxes, blue spheres, purple ped spheres, white ground hit) use it; REND: colls, outline,
   range, poly budget (`colPolys`, 5x per face with the outline).
 
+## 6d. Vehicles (`game/vehicledata.*`, `game/vehiclemodel.*`, `game/vehicle.*`, `audio/aevehicleaudio.*`)
+
+CVehicleModelInfo / cHandlingDataMgr / CAutomobile / CPhysical / CDamageManager / CAEVehicleAudioEntity, reduced to
+cars (`car`, `mtruck`; no bikes, boats, aircraft, trailers yet), pool of 8 (`veh::MAX`).
+- **Data** (offline, `tools/gtasa/vehicles.py`, section `[vehicles]` -> `data/vehicles.dveh`, `ds::Veh*`):
+  vehicles.ide cars + handling.cfg already through ConvertDataToGameUnits (speeds per 1/50 s step) + carcols
+  pairs + the surface adhesion matrix (surface.dat) and per-surface group / wet grip / skidmark (surfinfo.dat).
+  Runtime keeps a 4 B index per vehicle + colour/surface tables; a 228 B VehInfo is read on demand.
+- **Models** (`vehmdl`, 4 slots, refcounted): vehicle DFFs keep `*_dam` frames (`drop_damage = false` rule,
+  ratio 0.25, max 320 tris/geometry). Streamed like map models: DMDL read + textures staged (model TXD, then
+  `models/generic/vehicle.txd` as txd parent, 64-entry shared cache), uploaded in `vehmdl::vblank`, then one GX
+  list per atomic: DIF_AMB per material (diffuse = colour, ambient 5/8), NORMAL per vertex, light0 = sun
+  direction in the ped-light colour (dark for wrecks). Body colour placeholders (60,255,0 / 255,0,175) and the
+  four light slots are DIF_AMB words patched in place (`setColours`, only on change). Atomics are classified by
+  frame name: chassis, wheel (one geometry drawn at the 4 wheel dummies, scaled to the IDE wheel size, left
+  side turned 180 deg), components with `_ok/_dam` under their `*_dummy` hinge (doors, bonnet, boot, bumpers,
+  windscreen, wings); children follow their parent. Dummies: wheels, ped_frontseat (driver = mirrored x),
+  engine, exhaust. GX: body matrix x hinge matrix x door Rz x part-below matrix (all by the GE).
+- **Physics** (`veh::step`, inside player's 60 Hz loop, SA units with timestep 50/60): ProcessControlInputs,
+  ApplyGravity, 4 suspension lines (SetupSuspensionLines) cast with `col::castSegment`,
+  ApplySpringCollisionAlt + ApplySpringDampening, ProcessCarWheelPair / ProcessWheel (tyre adhesion from the
+  surface tables, wet roads, traction bias, handbrake), cTransmission gears + CalculateDriveAcceleration,
+  air resistance, Apply{Move,Turn}Speed, then 6-8 body spheres vs the map (`col::sphereContact`: 3D push-out +
+  impulse e=0.05 + friction) and car vs car sphere pairs. Cars > 10 m from the player (outside the collision
+  near list) are frozen; resting undriven cars sleep (m_nFakePhysics) until hit. ~0.9 ms per step for the
+  driven car (soft float).
+- **Damage**: impulse above mass/1500*25 -> health loss (collisionDamageMult*0.6) + the component at the impact
+  point (front: bumper -> bonnet -> windscreen, rear: bumper -> boot, sides: doors, top: windscreen): > 150 =
+  `_dam` mesh, accumulated > 2500 = falls off (debris pool: tumbling part with gravity / ground bounce).
+  Flipped and still -> health drains. Health < 250: engine fire, 5 s burn timer (per frame, also asleep) ->
+  BlowUpCar: wrecked, dark light, jump + spin, panels fly, fireball/smoke sprites (`sky::glowTexture/
+  puffTexture`), blast damage / knock-back on CJ (inside = wasted -> respawn after 3 s), nearby cars pushed.
+- **Player** (`player.cpp` car tasks): Y near a car (driver door within 5 m) -> CT_GOTO (scripted pad stick,
+  `pad::setOverride`) -> CAR_open_LHS -> CAR_getin_LHS -> CAR_closedoor_LHS -> CT_DRIVE (CAR_sit + Drive_L/R by
+  the steer) -> Y: brakes to a stop, CAR_getout_LHS -> CAR_close_LHS. IS_LOW cars use the L variants. The clips
+  are not extracted: the ped origin stays at the door point D = seat - getin end root translation, the door
+  ratio follows the clip phase (open / close sounds on the edges). Driving: d-pad L/R steer, UP/A gas,
+  DOWN/B brake/reverse, R handbrake, L horn. Camera: Process_FollowCar-ish (velocity heading, distance from
+  the model length, look height from its top). `player::g` follows the seat; HUD shows the GXT car name.
+  On foot CJ is pushed out of car boxes (`veh::pushPed`); a moving car knocks him down.
+- **Audio** (`aeveh`, settings table `audio/aevehiclesettings.inc` generated from gVehicleAudioSettings):
+  dummy engine idle/rev crossfade, player engine ID / AC (acceleration sweep per audio gear) / CRZ / wheel
+  spin with the player bank, horn, skid loop by surface, door open/close by door type, engine start, crash
+  thumps by impulse, ped hit, windscreen, part off, explosion, fire loop.
+- **Debug**: GAME tab rows 15-22 (pick a car `<` `>`, spawn in front, enter, delete, repair, boom, flip,
+  hp250, state / suspension / damage / perf rows). `GTASADS_VEHTEST` (AGENTS.md).
+- Not done: AI traffic, passengers, bikes/boats/planes, wheel collision with peds, skidmarks, lights corona,
+  tyre bursts, siren, radio, the vehicle's own COL (body spheres come from the bounds).
+
 ## 7. Bottom screen
 
 - `game/hud/subfb.*`: 96 KB RAM backbuffer DMA'd to sub BG3 (B16 bitmap, VRAM C) in vblank.
@@ -357,7 +411,7 @@ CCollision / CColStore / CWorld::ProcessLineOfSight reduced to an on-foot player
 - libc `_malloc_r` & co are replaced in `mem.cpp` (newlib dlmalloc/sbrk are not linked).
   `tlsf.cpp` is portable and passed a 400k-op host stress test (git history); keep it portable.
 - Pool budgets for peds/vehicles/objects are already declared in `budget.h`, plus the world ones
-  (`WORLD_*`: 192 model slots, 900 KB lists, 320 texture entries, 300 KB map VRAM, 96 sectors),
+  (`WORLD_*`: 192 model slots, 900 KB lists, 320 texture entries, 280 KB map VRAM (rest: vehicles), 96 sectors),
   collision `COL_CACHE_BYTES` 192 KB / `COL_NEAR_MAX` 48 (tag `col`).
 - `tex::` slots: 384 (PERM), most of them map textures.
 
@@ -431,7 +485,8 @@ TxdStore, Models/ (ModelInfo), Collision/ (incl. ColourSet), Animation/ (AnimMan
 Audio/ (AEBankLoader, AESoundManager, AEPed/Weapon/WeatherAudioEntity, AmbienceTrackManager,
 AudioZones), Renderer.cpp, World.cpp, Entity/, Pools/, Camera.cpp,
 Hud.cpp, Radar.cpp, TimeCycle.cpp, Weather.cpp, Clouds.cpp, Coronas.cpp, Clock.cpp,
-`app/app_light.cpp` (lighting setup), Scripts/ (SCM VM), Core/. Ported so far: Clock (in player),
+`app/app_light.cpp` (lighting setup), Scripts/ (SCM VM), Core/. Vehicles: Automobile.cpp, Vehicle.cpp (ProcessWheel), Physical.cpp, cTransmission.cpp, cHandlingDataMgr.cpp,
+Audio/Entities/AEVehicleAudioEntity.cpp (section 6d). Ported so far: Clock (in player),
 TimeCycle, Weather, Clouds (sky polys + Render), Coronas (sun only), Hud, Radar, MenuManager,
 LoadingScreen, Text/Font, ClothesBuilder (CJ), parts of Ped/PlayerPed control, FileLoader
 (LoadObjectTypes/LoadObjectInstance/LoadCollisionFile, offline in world.py), a CStreaming/CRenderer

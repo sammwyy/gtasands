@@ -8,6 +8,8 @@
 #include "game/player.h"
 #include "game/sfx.h"
 #include "game/timecycle.h"
+#include "game/vehicle.h"
+#include "game/vehiclemodel.h"
 #include "game/weather.h"
 #include "game/world.h"
 #include "game/menu/menu.h"
@@ -136,6 +138,7 @@ int main() {
 			weather::update(player::g.x, player::g.y, player::g.z);     // CWeather::Update
 			timecycle::update(player::g.x, player::g.y, player::g.z);   // CTimeCycle::Update
 			world::update(player::g.x, player::g.y);                    // sectors + model streaming
+			veh::update();                                              // vehicle models, timers, audio
 		}
 		audio::service();   // CAudioEngine::Service: entities, bank reads, channels, ambience stream
 		timing::setSection(timing::SEC_SIM, timing::usSince(t));
@@ -147,6 +150,7 @@ int main() {
 		timing::frameEnd();   // cpu = everything the frame did (3D + sim + HUD)
 		video::endFrame();
 		world::vblank();      // texture uploads while the 3D engine is idle
+		vehmdl::vblank();
 		hud::present();
 	}
 	return 0;

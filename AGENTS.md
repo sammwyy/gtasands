@@ -14,7 +14,9 @@ bottom-screen GTA HUD with radar, debug UI, time cycle + weather + sky/fog/rain,
 map (Grove Street / Ganton box from `[world] bounds`: sectors, map models + textures, culling,
 poly budget; no LODs yet) and map collision (COL baked into world.dwld: CJ walks on the real
 ground, walls stop him, falls off ledges, the camera is pulled in front of walls; REND tab
-overlays: skeleton + collision wireframe on top with an outline). 30 fps at the spawn.
+overlays: skeleton + collision wireframe on top with an outline), vehicles (ARCHITECTURE 6d: spawn from the
+debug GAME tab, enter/exit with the CAR_* anims, CAutomobile physics, damage panels, fire, explosion, engine /
+horn / skid / door / crash sounds). 30 fps at the spawn (~15-20 while driving fast).
 
 ## Toolchain
 - devkitPro at `~/devkitpro` (`source ~/devkitpro/devkitarm.sh`).
@@ -74,6 +76,10 @@ overlays: skeleton + collision wireframe on top with an outline). 30 fps at the 
   (capture units). `python3 tools/audwav.py sdcard/gtasads_aud_run.wav [--png out.png]` prints
   peak/RMS/clipping. Needs `timeout -s INT 170`; don't rebuild the ROM while it runs, and keep the
   melonDS window unfocused (key presses there move CJ and skew the numbers).
+- Vehicle test (DEBUG): `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DGTASADS_VEHTEST"` spawns a
+  Greenwood, presses Y (walk to door, open, getin, close), drives west into a second car, brakes, gets out,
+  sets the health under 250 (fire -> explosion). `gtasads_vehtest.txt` (car/CJ state per 20 frames, crash damage
+  lines), shot6..shot10. Needs `timeout -s INT 200`.
 - What stopped CJ there? `python3 tools/colnear.py X Y Z [R]` lists the baked collision
   (faces with world n.z, boxes) around a point.
 
@@ -114,9 +120,8 @@ while tuning. Current total ~413 MB of the 448 MB budget.
    on demand; the TXD table is resident).
 2. Performance: the HUD costs ~8 ms/frame and the map draw ~8 ms -> 30 fps; strips + chaining
    the list DMAs from the DMA IRQ (CPU free while the GE works) would bring back 60.
-3. Physics: ped vs world collision, ground z and collision lighting for `pedLight` are done
-   (ARCHITECTURE 6c). Next: rain splashes on real surfaces, ledge climbing, then vehicles from
-   handling.cfg (reuse `col::castSegment` / the BVH for wheels, a box/sphere set per car).
+3. Physics: ped vs world collision and cars are done (ARCHITECTURE 6c / 6d). Next: fixed-point vehicle step
+   (soft float ~0.9 ms/step), AI traffic on paths, bikes, skidmarks / headlight coronas, ledge climbing.
 4. Audio: engine done (ARCHITECTURE 8b: footsteps, weapons, weather bed, thunder, ambience
    stream). Next: collision sounds (CAECollisionAudioEntity), ped speech, radio on the stream channel.
 5. Scripts: SCM VM (`data/script/main.scm`), start with mission-less free roam.

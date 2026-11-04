@@ -116,6 +116,9 @@ static inline int balance(int c, float t) { return (int)((float)c * (1.0f - t));
 
 // ---- loading --------------------------------------------------------------------
 
+const tex::Texture* glowTexture() { return s_star; }
+const tex::Texture* puffTexture() { return s_cloud; }
+
 bool loadStep() {
 	if (s_star) return true;
 	TxdFile txd;

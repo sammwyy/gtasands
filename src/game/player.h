@@ -1,5 +1,7 @@
 #pragma once
 
+#include <nds/ndstypes.h>
+
 #include "game/text/gxt.h"
 
 // The slice of CPlayerInfo / CPlayerPedData / CWanted / CClock / CWeapon the
@@ -103,7 +105,24 @@ float camPitch();         // radians above the horizon; positive looks down
 // jumps don't jerk the camera. The GL origin of the frame sits here.
 float viewZ();
 float camDist();          // chase distance after the camera collision (<= dbg::opts.camDist)
-constexpr float CAM_LOOK_H = 0.85f;   // chase camera target above viewZ()
+constexpr float CAM_LOOK_H = 0.85f;   // chase camera target above viewZ() on foot
+float camLookH();         // the current one (higher behind a car)
+
+// Vehicles (game/vehicle): CTaskComplexEnterCarAsDriver / CTaskSimpleCarDrive /
+// CTaskComplexLeaveCar, reduced. Y near a car walks CJ to the driver door and
+// plays CAR_open / getin / closedoor; Y while driving brakes, then getout /
+// close. Driving: d-pad left/right steer, up or A accelerate, down or B
+// brake / reverse, R handbrake, L horn.
+int vehicleId();          // car CJ is entering / driving / leaving, -1 = on foot
+bool driving();           // sitting in it (CTaskSimpleCarDrive)
+void enterVehicleNow(int id);   // debug: straight into the driver seat
+void leaveVehicleNow();         // the car is gone: CJ stands at its door
+// CJ's entity matrix while attached to a car (player-local GL, origin = the
+// renderer's GL origin). False when on foot.
+bool attachedMatrix(float ox, float oy, float oz, s32 out[12]);
+void vehicleExploded(int id);   // inside a car that blew up
+void explosionDamage(float x, float y, float z, float damage);
+void hitByVehicle(float vx, float vy, float damage);   // m/s of the car
 // Puts CJ on the floor under him (collision probe around g.z, else from
 // 60 m above). The loading screen calls it once the collision is in.
 void placeOnGround();
