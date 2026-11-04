@@ -32,7 +32,8 @@ struct Motion {
 };
 
 // Loads the default outfit (SCM defaults: vest/jeansdenim/sneakerbincblk +
-// player_face head; hands reuse the torso texture like BODY_PART_TEX_NAMES).
+// player_face head). vest.dff is the whole torso; it and the hands sample the
+// player_torso+vest composite, like BODY_PART_TEX_NAMES / ConstructTextures.
 bool init();
 
 // Replaces the pose targets with these clips. A clip already playing keeps its

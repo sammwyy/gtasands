@@ -118,7 +118,14 @@ python3 tools/assets.py preview models/gta3.img:infernus.txd [TEX] --section gta
 - Dropped: 2dfx (lights/particles), night vertex colors, second UV set, material effects/reflection,
   COL face groups and shadow meshes, IFP beats, stream beat data. GXT/FXP/SCM are copied raw.
 - No tex4x4 (GL_COMPRESSED) yet; `nds_texcompress` exists in `~/devkitpro/tools/bin` if wanted.
-- Decimation is vertex clustering (fast, crude). Quadric error metrics would look better.
+- Decimation is vertex clustering by default (fast, crude, moves seam verts). `model.decimate = "qem"`
+  (used by `player_img`) does quadric half-edge collapses with open-edge/UV-seam verts locked and
+  same-bone collapses only -> CJ's runtime-assembled parts stay crack-free.
+- CJ assembly (`src/game/cj.cpp`) follows CClothesBuilder: the torso clothing dff (vest.dff) is the
+  whole torso incl. arms/neck (torso.dff is NOT drawn on top), textured with player_torso + vest
+  composited at runtime (PlaceTextureOnTopOfTexture); hands use the same composite.
+  After blending the pose, `CPed::ShoulderBoneRotation` is applied (bones 301/302 "breast" are CJ's
+  deltoids: take the upper arm matrix, halve the twist vs the clavicle). Skipping it = boxy shoulders.
 - Skinning is reduced to one dominant bone per vertex (meant for GX matrix-stack rigid skinning).
 - DSPK lookups ignore hash collisions (none in stock archives); TOC is 16 B/entry in RAM (gta3 = 256 KB).
 - Disabled by default (see resources.toml): ped speech paks SPC_EA/FA/GA/NA, all radio stations, cutscenes,

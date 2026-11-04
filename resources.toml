@@ -50,6 +50,8 @@ opaque = false            # ignore alpha entirely
 ratio = 0.5               # target triangle ratio after decimation (1.0 = untouched)
 min_tris = 64             # never decimate below this
 max_tris = 0              # hard cap per geometry (0 = none). DS limit: 2048 polys per FRAME
+decimate = "cluster"      # cluster (fast vertex clustering) | qem (quadric half-edge collapses: open/UV-seam
+                          # verts locked, same-bone collapses only; slower, much better, crack-free seams)
 uvs = true
 normals = false           # map geometry is prelit, normals only cost space
 vertex_colors = true      # prelit colors (RGB15)
@@ -129,7 +131,9 @@ kind = "img"
 src = "models/player.img"
 out = "models/player.dspk"
 texture = { max_size = 64 }
-model = { ratio = 0.5, normals = true }
+# qem: the parts are assembled at runtime, so seams (neck, wrists, waist) must
+# stay bit-exact or CJ shows cracks; clustering moved seam verts up to 10cm.
+model = { ratio = 0.5, normals = true, decimate = "qem" }
 
 [anim_img]                # streamed anim blocks
 kind = "img"

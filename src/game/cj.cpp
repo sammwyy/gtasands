@@ -1,35 +1,38 @@
 #include "game/cj.h"
 
+#include <math.h>
 #include <nds.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "assets/texture.h"
 #include "game/anim.h"
+#include "game/hud/hudtex.h"
 #include "game/streaming.h"
 #include "hud/hud.h"
 
 namespace cj {
 
-// The default outfit from main.scm: (model, txd, texture) triples.
-// vest.dff and torso.dff share the exact same mesh (324 verts, same skinning):
-// the vest is a reskin whose arm-region triangles sample fully transparent
-// texels in vest.txd (the "cut" -- CJ's skin shows through there). So we split
-// the shared topology: torso.dff draws only the triangles fully bound to the
-// neck/arm bones (real skin from player_torso.txd), vest.dff draws the rest
-// (opaque cloth). Every triangle is emitted exactly once -> no z-fighting.
-// hands.dff is a separate model part covering the forearm/hand/fingers.
-// legs/feet skin parts are not drawn (jeans+sneakers cover them completely).
-static constexpr u64 SKIN_NODES = (1ull << 4) | 0x1FC00ull | 0x1FC0000ull;
-struct PartDef { const char* dff; const char* txd; const char* tex; u64 onlyIn; u64 skipIn; };
+// The default outfit from main.scm: (model, txd, texture) triples. Like
+// CClothesBuilder::CreateSkinnedClump, the torso clothing model (vest.dff) IS
+// the whole torso incl. bare arms and neck; torso.dff is only the fallback
+// when no torso clothes are worn. Its "torso" texture is ConstructTextures'
+// composite: player_torso skin with the vest placed on top wherever the vest
+// texel is not transparent (PlaceTextureOnTopOfTexture). hands.dff samples
+// the same composite (BODY_PART_TEX_NAMES[2] = "torso"). txd == nullptr marks
+// a part that uses that composite.
+struct PartDef { const char* dff; const char* txd; const char* tex; };
 static const PartDef k_parts[] = {
-	{ "torso.dff",   "player_torso.txd",   "torso",          SKIN_NODES, 0 },
-	{ "vest.dff",    "vest.txd",           "vest",           0, SKIN_NODES },
-	{ "head.dff",    "player_face.txd",    "face",           0, 0 },
-	{ "hands.dff",   "hands.txd",          "torso8bit",      0, 0 },
-	{ "jeans.dff",   "jeansdenim.txd",     "legs",           0, 0 },
-	{ "sneaker.dff", "sneakerbincblk.txd", "sneakerbincblk", 0, 0 },
+	{ "vest.dff",    nullptr,              nullptr },
+	{ "head.dff",    "player_face.txd",    "face" },
+	{ "hands.dff",   nullptr,              nullptr },
+	{ "jeans.dff",   "jeansdenim.txd",     "legs" },
+	{ "sneaker.dff", "sneakerbincblk.txd", "sneakerbincblk" },
 };
+static constexpr const char* TORSO_BASE_TXD = "player_torso.txd";
+static constexpr const char* TORSO_BASE_TEX = "torso";
+static constexpr const char* TORSO_TOP_TXD = "vest.txd";
+static constexpr const char* TORSO_TOP_TEX = "vest";
 static constexpr int NUM_PARTS = sizeof(k_parts) / sizeof(k_parts[0]);
 
 struct Part {
@@ -77,15 +80,66 @@ static void* loadEntry(Pack& pack, const char* name) {
 }
 
 static int skinVerts(const Part& p, const mdl::Geometry& g);
+static void findShoulderBones(const mdl::Model* m);
+
+static void decodeFrom(const char* txdName, const char* texName, subfb::Sprite& out, int& w, int& h) {
+	out = { 0, 0, nullptr, nullptr };
+	w = h = 0;
+	void* txd = loadEntry(streaming::g_player, txdName);
+	const ds::TexHeader* t = hudtex::find(txd, texName);
+	if (t && hudtex::decodeSprite(t, out)) {
+		w = t->width;
+		h = t->height;
+	}
+	::free(txd);
+}
+
+// CClothesBuilder::ConstructTextures for the torso slot: copy the body skin,
+// then PlaceTextureOnTopOfTexture the clothing (alpha != 0 wins). Uploaded as
+// one direct-color texture shared by the torso and hands parts.
+static tex::Texture* buildTorsoTexture() {
+	subfb::Sprite base, top;
+	int bw, bh, tw, th;
+	decodeFrom(TORSO_BASE_TXD, TORSO_BASE_TEX, base, bw, bh);
+	decodeFrom(TORSO_TOP_TXD, TORSO_TOP_TEX, top, tw, th);
+	tex::Texture* res = nullptr;
+	if (bw || tw) {
+		const int w = bw ? bw : tw, h = bw ? bh : th;
+		const size_t texels = (size_t)w * h * 2;
+		u8* blob = (u8*)malloc(sizeof(ds::TexHeader) + texels);
+		if (blob) {
+			ds::TexHeader* hd = (ds::TexHeader*)blob;
+			*hd = { DS_FOURCC('D', 'T', 'E', 'X'), (uint16_t)w, (uint16_t)h, GL_RGBA, 0, 0, (uint32_t)texels };
+			u16* px = (u16*)(hd + 1);
+			for (int y = 0; y < h; y++) {
+				for (int x = 0; x < w; x++) {
+					u16 c = bw ? base.col[y * bw + x] : 0;
+					if (tw) {
+						const int i = (y * th / h) * tw + x * tw / w;
+						if (top.alpha[i]) c = top.col[i];
+					}
+					px[y * w + x] = c | BIT(15);
+				}
+			}
+			res = tex::load(blob);
+			::free(blob);
+		}
+	}
+	if (bw) hudtex::freeSprite(base);
+	if (tw) hudtex::freeSprite(top);
+	return res;
+}
 
 bool init() {
+	tex::Texture* torsoTex = buildTorsoTexture();
+	hud::log("cj torso tex: %s", torsoTex ? "ok" : "FAILED");
 	for (int i = 0; i < NUM_PARTS; i++) {
 		Part& p = s_parts[i];
 		p.def = &k_parts[i];
 		p.blob = loadEntry(streaming::g_player, p.def->dff);
 		p.m = mdl::load(p.blob);
-		p.tex = nullptr;
-		void* txd = loadEntry(streaming::g_player, p.def->txd);
+		p.tex = p.def->txd ? nullptr : torsoTex;
+		void* txd = p.def->txd ? loadEntry(streaming::g_player, p.def->txd) : nullptr;
 		if (txd) {
 			p.tex = tex::loadFromTxd(txd, p.def->tex);
 			if (!p.tex) p.tex = tex::loadFirst(txd);
@@ -97,6 +151,7 @@ bool init() {
 		         p.tex ? "ok" : "none");
 	}
 	if (!s_parts[0].m) return false;
+	findShoulderBones(s_parts[0].m);
 	for (int i = 0; i < SLOTS; i++) s_slots[i].alive = 0;
 	s_miss[0] = 0;
 	s_fat = s_muscle = 0;
@@ -317,6 +372,92 @@ static void girthFor(int16_t id, float& fatAdd, float& musAdd) {
 	}
 }
 
+// CPed::ShoulderBoneRotation (MODEL_PLAYER only, after the anim update). On
+// CJ the "breast" bones 301/302 are the deltoids: child of the upper arm,
+// skinning the top of the shoulder. Anims key them with a fixed pose that only
+// makes sense after this fix-up: the bone takes the upper arm's matrix, then
+// its X (twist) Euler angle relative to the clavicle is halved. Without it the
+// shoulder mesh sticks out as a box above the arm.
+struct ShoulderBones { int breast, upperArm, clavicle; };
+static ShoulderBones s_shoulders[2];
+
+static int nodeOf(const mdl::Model* m, int16_t boneId) {
+	for (int n = 0; n < m->numBones; n++)
+		if (m->nodes[n].boneId == boneId) return n;
+	return -1;
+}
+
+static void findShoulderBones(const mdl::Model* m) {
+	static const int16_t k_ids[2][3] = { { 302, 32, 31 }, { 301, 22, 21 } };   // L, R
+	for (int s = 0; s < 2; s++) {
+		ShoulderBones& b = s_shoulders[s];
+		b.breast = b.upperArm = b.clavicle = -1;
+		if (!m || !m->nodes) continue;
+		b.breast = nodeOf(m, k_ids[s][0]);
+		b.upperArm = nodeOf(m, k_ids[s][1]);
+		b.clavicle = nodeOf(m, k_ids[s][2]);
+	}
+}
+
+// CMatrix::ConvertToEulerAngles / ConvertFromEulerAngles for the one flag set
+// the original uses here: Tait-Bryan, ORDER_ZYX (index order 2,1,0, which
+// negates the angles) | SWAP_XZ. f is a row matrix (right, up, at).
+static constexpr int E1 = 2, E2 = 1, E3 = 0;
+static void toEulerZYXSwap(const float (&f)[3][3], float& x, float& y, float& z) {
+	const float cy = sqrtf(f[E1][E1] * f[E1][E1] + f[E2][E1] * f[E2][E1]);
+	if (cy > 1.0f / 524288.0f) {
+		x = atan2f(f[E3][E2], f[E3][E3]);
+		y = atan2f(-f[E3][E1], cy);
+		z = atan2f(f[E2][E1], f[E1][E1]);
+	} else {
+		x = atan2f(-f[E2][E3], f[E2][E2]);
+		y = atan2f(-f[E3][E1], cy);
+		z = 0.0f;
+	}
+	const float t = x; x = -z; y = -y; z = -t;
+}
+
+static void fromEulerZYXSwap(float x, float y, float z, float (&f)[3][3]) {
+	const float t = x; x = -z; y = -y; z = -t;
+	const float sx = sinf(x), cx = cosf(x), sy = sinf(y), cy = cosf(y), sz = sinf(z), cz = cosf(z);
+	f[E1][E1] = cy * cz;
+	f[E1][E2] = -(cx * sz) + cz * sx * sy;
+	f[E1][E3] = sx * sz + cx * cz * sy;
+	f[E2][E1] = cy * sz;
+	f[E2][E2] = cx * cz + sx * sy * sz;
+	f[E2][E3] = -(cz * sx) + cx * sy * sz;
+	f[E3][E1] = -sy;
+	f[E3][E2] = cy * sx;
+	f[E3][E3] = cx * cy;
+}
+
+static void shoulderBoneRotation(s32* world) {
+	for (const ShoulderBones& b : s_shoulders) {
+		if (b.breast < 0 || b.upperArm < 0 || b.clavicle < 0) continue;
+		const s32* U = world + b.upperArm * 12;
+		const s32* C = world + b.clavicle * 12;
+		s32* B = world + b.breast * 12;
+		// rel = U * inverse(C) (row vectors); C's 3x3 is orthonormal here
+		float rel[3][3], c[3][3];
+		for (int r = 0; r < 3; r++)
+			for (int k = 0; k < 3; k++) c[r][k] = (float)C[r * 3 + k] * (1.0f / 4096.0f);
+		for (int r = 0; r < 3; r++)
+			for (int k = 0; k < 3; k++)
+				rel[r][k] = ((float)U[r * 3] * c[k][0] + (float)U[r * 3 + 1] * c[k][1] +
+				             (float)U[r * 3 + 2] * c[k][2]) * (1.0f / 4096.0f);
+		float x, y, z;
+		toEulerZYXSwap(rel, x, y, z);
+		fromEulerZYXSwap(x * 0.5f, y, z, rel);
+		// back into hierarchy space: B = rel * C, position = the upper arm's
+		for (int r = 0; r < 3; r++)
+			for (int k = 0; k < 3; k++)
+				B[r * 3 + k] = (s32)((rel[r][0] * c[0][k] + rel[r][1] * c[1][k] + rel[r][2] * c[2][k]) * 4096.0f);
+		B[9] = U[9];
+		B[10] = U[10];
+		B[11] = U[11];
+	}
+}
+
 static void rebuildScales() {
 	for (int i = 0; i < anim::MAX_NODES; i++) s_scale[i] = 1 << 12;
 	const mdl::Model* m = s_parts[0].m;
@@ -420,11 +561,6 @@ static void drawPart(const Part& p) {
 				const uint16_t a = geo.idx[i] < nv ? geo.idx[i] : 0;
 				const uint16_t b = geo.idx[i + 1] < nv ? geo.idx[i + 1] : 0;
 				const uint16_t c = geo.idx[i + 2] < nv ? geo.idx[i + 2] : 0;
-				if (geo.bone && (p.def->onlyIn | p.def->skipIn)) {
-					const u64 t = (1ull << geo.bone[a]) | (1ull << geo.bone[b]) | (1ull << geo.bone[c]);
-					if (p.def->onlyIn && (t & ~p.def->onlyIn)) continue;
-					if (!(t & ~p.def->skipIn)) continue;
-				}
 				glTexCoord2t16(s_uv[a][0], s_uv[a][1]);
 				glVertex3v16(s_xyz[a][0], s_xyz[a][1], s_xyz[a][2]);
 				glTexCoord2t16(s_uv[b][0], s_uv[b][1]);
@@ -451,6 +587,7 @@ void draw(float x, float y, float z, float heading) {
 		n++;
 	}
 	anim::blendWorld(skel, ptrs, w, n, s_world);
+	shoulderBoneRotation(s_world);
 	if (skel && skel->nodes) {
 		for (int b = 0; b < skel->numBones && b < anim::MAX_NODES; b++) {
 			const s32 s = s_scale[b];

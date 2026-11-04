@@ -9,8 +9,8 @@ from .dsfmt import fx, fx16, name, pad4, rgb15
 VF_UV, VF_NORMAL, VF_COLOR, VF_BONE = 1, 2, 4, 8
 MF_SKINNED = 1
 
-DEFAULTS = dict(ratio=1.0, min_tris=64, max_tris=0, uvs=True, normals=False, vertex_colors=True,
-                skin=True, drop_damage=False, drop_vlo=True, drop_frames=[])
+DEFAULTS = dict(ratio=1.0, min_tris=64, max_tris=0, decimate='cluster', uvs=True, normals=False,
+                vertex_colors=True, skin=True, drop_damage=False, drop_vlo=True, drop_frames=[])
 
 
 # --- RW skinning (validated against gta-reversed / librw semantics) ----------
@@ -113,6 +113,116 @@ def decimate(verts, tris, target):
     return rep, out
 
 
+def decimate_qem(verts, tris, target, bone=None):
+    """Garland-Heckbert quadric decimation with half-edge collapses (u -> v, v keeps
+    its exact position/uv/bone, so no attribute is ever interpolated). Vertices on
+    an open edge of the index topology are never removed: that keeps part seams
+    (CJ's clothes meet the head/hands/legs there) and UV seams bit-exact. With
+    `bone`, only same-bone collapses are allowed so joints still bend cleanly
+    under dominant-bone skinning. Returns (None, tris) like decimate()."""
+    import heapq
+    if target >= len(tris) or not tris:
+        return None, tris
+    tris = [list(t) for t in tris]
+    nv = len(verts)
+    vt = [set() for _ in range(nv)]
+    edges = {}
+    for ti, t in enumerate(tris):
+        for k in range(3):
+            vt[t[k]].add(ti)
+            e = (min(t[k], t[(k + 1) % 3]), max(t[k], t[(k + 1) % 3]))
+            edges[e] = edges.get(e, 0) + 1
+    locked = [False] * nv
+    for (a, b), n in edges.items():
+        if n != 2:
+            locked[a] = locked[b] = True
+
+    def sub(a, b): return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+    def cross(a, b): return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+    def dot(a, b): return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+    def tri_n(t, ov=-1, nvx=-1):
+        p = [verts[nvx if i == ov else i] for i in t[:3]]
+        return cross(sub(p[1], p[0]), sub(p[2], p[0]))
+
+    Q = [[0.0] * 10 for _ in range(nv)]
+    for t in tris:
+        n = tri_n(t)
+        ln = dot(n, n) ** 0.5
+        if ln < 1e-12:
+            continue
+        a, b, c = n[0] / ln, n[1] / ln, n[2] / ln
+        d = -dot((a, b, c), verts[t[0]])
+        w = ln * 0.5
+        q = (a * a, a * b, a * c, a * d, b * b, b * c, b * d, c * c, c * d, d * d)
+        for i in t[:3]:
+            Qi = Q[i]
+            for k in range(10):
+                Qi[k] += q[k] * w
+
+    def cost(u, v):
+        q = [Q[u][k] + Q[v][k] for k in range(10)]
+        x, y, z = verts[v]
+        return (q[0] * x * x + 2 * q[1] * x * y + 2 * q[2] * x * z + 2 * q[3] * x + q[4] * y * y
+                + 2 * q[5] * y * z + 2 * q[6] * y + q[7] * z * z + 2 * q[8] * z + q[9])
+
+    def nbrs(u):
+        return {i for ti in vt[u] for i in tris[ti][:3]} - {u}
+
+    stamp = [0] * nv
+    heap = []
+
+    def push(u):
+        if locked[u]:
+            return
+        for v in nbrs(u):
+            if bone is None or bone[u] == bone[v]:
+                heapq.heappush(heap, (cost(u, v), u, v, stamp[u], stamp[v]))
+
+    for u in range(nv):
+        push(u)
+    alive = len(tris)
+    while alive > target and heap:
+        _c, u, v, su, sv = heapq.heappop(heap)
+        if su != stamp[u] or sv != stamp[v] or not vt[u]:
+            continue
+        shared = vt[u] & vt[v]
+        if not shared:
+            continue
+        # link condition: u and v may only share the apexes of their shared tris
+        if len(nbrs(u) & nbrs(v)) != len(shared):
+            continue
+        ok = True
+        for ti in vt[u] - shared:
+            n0, n1 = tri_n(tris[ti]), tri_n(tris[ti], u, v)
+            l1 = dot(n1, n1)
+            if l1 < 1e-14 or dot(n0, n1) <= 0.3 * (dot(n0, n0) * l1) ** 0.5:
+                ok = False
+                break
+        if not ok:
+            continue
+        for ti in shared:
+            for i in tris[ti][:3]:
+                vt[i].discard(ti)
+            alive -= 1
+        for ti in vt[u]:
+            t = tris[ti]
+            t[t.index(u)] = v
+            vt[v].add(ti)
+        vt[u] = set()
+        for k in range(10):
+            Q[v][k] += Q[u][k]
+        touched = nbrs(v) | {v}
+        for i in touched:
+            stamp[i] += 1
+        for i in touched:
+            push(i)
+    live = set()
+    for i in range(nv):
+        live |= vt[i]
+    return None, [tuple(tris[ti]) for ti in sorted(live)]
+
+
 def _exp_for(maxabs):
     """Smallest e so that maxabs*4096/2^e fits in s16."""
     e = math.ceil(math.log2(max(maxabs, 1e-6) * 4096 / 32767)) if maxabs > 0 else -4
@@ -125,8 +235,6 @@ def convert_geometry(g, p):
     target = max(p['min_tris'], int(len(tris) * p['ratio']))
     if p['max_tris']:
         target = min(target, p['max_tris'])
-    rep, tris = decimate(g.verts, tris, target)
-    pos = rep or g.verts
     use_uv = bool(p['uvs'] and g.uvs)
     use_n = bool(p['normals'] and g.normals)
     use_c = bool(p['vertex_colors'] and g.colors)
@@ -135,6 +243,11 @@ def convert_geometry(g, p):
     if use_b:
         sk = g.skin
         bone = [sk.indices[i * 4 + max(range(4), key=lambda k: sk.weights[i * 4 + k])] for i in range(nv)]
+    if p['decimate'] == 'qem':
+        rep, tris = decimate_qem(g.verts, tris, target, bone)
+    else:
+        rep, tris = decimate(g.verts, tris, target)
+    pos = rep or g.verts
 
     def attrs(i):
         return (pos[i],
