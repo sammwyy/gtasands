@@ -73,12 +73,21 @@ static void stepModels() {
 static void stepPlayer() { streaming::g_player.open("nitro:/models/player.dspk"); }
 static void stepAnim() { streaming::g_anim.open("nitro:/anim/anim.dspk"); }
 // ped.ifp is 294 clips / ~870KB. Holding the whole block crowds out the HUD
-// fonts and the pause-menu texture staging. CJ's on-foot set is eight clips
-// (~34KB). They are copied out; the rest of the file is never resident.
+// fonts and the pause-menu texture staging. Keep the complete on-foot control
+// set instead: locomotion, jump, unarmed aim/fight and the armed aim shuffle.
+// It is only about 105 KB after conversion, while leaving the rest of ped.ifp
+// off the heap. In particular, do not trim JUMP_* or FIGHTIDLE: player.cpp
+// switches to those clips immediately, so their absence made CJ freeze in the
+// locomotion pose while jumping or aiming.
 static bool keepClip(const char* raw) {
 	static const char* k[] = {
 		"idle_stance", "walk_player", "run_player", "sprint_civi",
-		"walk_start", "idle_tired", "run_stop", "run_stopr"
+		"walk_start", "idle_tired", "run_stop", "run_stopr",
+		"jump_launch", "jump_glide", "jump_land",
+		"fightidle", "fighta_1", "fighta_2", "fighta_3",
+		"fightsh_fwd", "fightsh_bwd", "fightsh_left", "fightsh_right",
+		"idle_armed", "gun_stand",
+		"gunmove_fwd", "gunmove_bwd", "gunmove_l", "gunmove_r",
 	};
 	char name[25];
 	int n = 0;
@@ -111,7 +120,8 @@ static void* loadPedClips(const char* path) {
 	}
 	const int numAnims = fileHdr[6] | (fileHdr[7] << 8);
 	struct Span { long off; long size; };
-	Span spans[8];
+	static constexpr int MAX_PED_CLIPS = 32;
+	Span spans[MAX_PED_CLIPS];
 	int kept = 0;
 	long bytes = 32;
 	for (int i = 0; i < numAnims; i++) {
@@ -122,7 +132,7 @@ static void* loadPedClips(const char* path) {
 		bool ok = true;
 		for (int s = 0; s < numSeqs && ok; s++) ok = skipSeq(f);
 		if (!ok) { fclose(f); return nullptr; }
-		if (kept < 8 && keepClip((const char*)ent)) {
+		if (kept < MAX_PED_CLIPS && keepClip((const char*)ent)) {
 			spans[kept].off = start;
 			spans[kept].size = ftell(f) - start;
 			bytes += spans[kept].size;

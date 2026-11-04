@@ -95,7 +95,7 @@ void draw() {
 	glEnable(GL_TEXTURE_2D);
 	glPopMatrix(1);
 
-	cj::draw(0.0f, 0.0f, 0.0f, player::g.heading);
+	cj::draw(0.0f, 0.0f, player::g.z - player::groundZ(), player::g.heading);
 }
 
 int polyCount() { int n = 0; glGetInt(GL_GET_POLYGON_RAM_COUNT, &n); return n; }

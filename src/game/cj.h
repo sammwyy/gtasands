@@ -35,8 +35,9 @@ struct Motion {
 // player_face head; hands reuse the torso texture like BODY_PART_TEX_NAMES).
 bool init();
 
-// Replaces the pose with these clips. A clip already playing keeps its time
-// unless `restart` or `sync` is set. Clips not listed are dropped.
+// Replaces the pose targets with these clips. A clip already playing keeps its
+// time unless `restart` or `sync` is set. Clips not listed blend out over a
+// few frames, so action transitions do not snap through the bind pose.
 void pose(const Clip* clips, int n);
 
 // 0..1 of a playing clip, or -1 when that name is not in the pose.

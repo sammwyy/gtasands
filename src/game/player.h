@@ -2,47 +2,104 @@
 
 #include "game/text/gxt.h"
 
-// CPlayerPed/CPlayerInfo/CWanted/CClock stand-in: the single snapshot the
-// in-game HUD reads every frame. Fed by the demo driver until real entities,
-// wanted logic and weapons land. All coordinates are SA world units
-// (-3000..3000), heading 0 = north, clockwise.
+// The slice of CPlayerInfo / CPlayerPedData / CWanted / CClock / CWeapon the
+// game actually runs today. A new game (CPlayerInfo::Clear + CStats::Init +
+// CClock::Initialise): Grove Street, $0, 100 health, no armour, no wanted,
+// fists. Nothing here drifts on its own. Stars, cash, fat and weapons move
+// only when something is earned or spent. eWeaponType ids match the original.
 namespace player {
 
+enum WeaponId : int {
+	WEAPON_UNARMED = 0,
+	WEAPON_BRASSKNUCKLE = 1,
+	WEAPON_GOLFCLUB = 2,
+	WEAPON_NIGHTSTICK = 3,
+	WEAPON_KNIFE = 4,
+	WEAPON_BASEBALLBAT = 5,
+	WEAPON_SHOVEL = 6,
+	WEAPON_POOLCUE = 7,
+	WEAPON_KATANA = 8,
+	WEAPON_CHAINSAW = 9,
+	WEAPON_DILDO1 = 10,
+	WEAPON_DILDO2 = 11,
+	WEAPON_VIBE1 = 12,
+	WEAPON_VIBE2 = 13,
+	WEAPON_FLOWERS = 14,
+	WEAPON_CANE = 15,
+	WEAPON_GRENADE = 16,
+	WEAPON_TEARGAS = 17,
+	WEAPON_MOLOTOV = 18,
+	WEAPON_PISTOL = 22,
+	WEAPON_PISTOL_SILENCED = 23,
+	WEAPON_DESERT_EAGLE = 24,
+	WEAPON_SHOTGUN = 25,
+	WEAPON_SAWNOFF = 26,
+	WEAPON_SPAS12 = 27,
+	WEAPON_MICRO_UZI = 28,
+	WEAPON_MP5 = 29,
+	WEAPON_AK47 = 30,
+	WEAPON_M4 = 31,
+	WEAPON_TEC9 = 32,
+	WEAPON_COUNTRYRIFLE = 33,
+	WEAPON_SNIPERRIFLE = 34,
+	WEAPON_RLAUNCHER = 35,
+	WEAPON_RLAUNCHER_HS = 36,
+	WEAPON_FLAMETHROWER = 37,
+	WEAPON_MINIGUN = 38,
+	WEAPON_SATCHEL = 39,
+	WEAPON_DETONATOR = 40,
+	WEAPON_SPRAYCAN = 41,
+	WEAPON_EXTINGUISHER = 42,
+	WEAPON_CAMERA = 43,
+	WEAPON_PARACHUTE = 46,
+};
+
+// What the HUD draws for the weapon in hand. Fists: txd and icon are null.
 struct Weapon {
-	const char* txd;     // dspk entry name ("ak47.txd"), nullptr = fist
-	const char* icon;    // texture inside that txd ("ak47icon"), nullptr = fist
+	const char* txd;
+	const char* icon;
 	int clip, total;
 };
 
 struct State {
 	float x, y, z;
-	float heading;        // radians, 0 = north
+	float heading;        // radians, 0 = north, clockwise
 	float speed;          // world units/sec -> radar zoom
 	float health;         // 0..maxHealth
 	float maxHealth;
 	float armour;         // 0..maxArmour
 	float maxArmour;
-	float breath;         // 0..maxBreath, only relevant < maxBreath
+	float breath;         // 0..maxBreath; hidden on the HUD while full
 	float maxBreath;
 	int money;
-	int wantedLevel;      // 0..6
+	int wantedLevel;      // 0..6, CWanted. Stays 0 until a crime is reported.
 	Weapon weapon;
-	const GxtChar* zoneName;    // nullptr = none shown
-	const GxtChar* vehicleName; // nullptr = none shown
+	int weaponType;       // WeaponId of the equipped slot
+	const GxtChar* zoneName;
+	const GxtChar* vehicleName; // nullptr until a vehicle is entered
 	float fat;            // STAT_FAT, 0..1000
 	float muscle;         // STAT_MUSCLE, 0..1000
-	float sprint;         // sprint energy left, 0..100
+	float sprint;         // sprint energy left, 0..100 (m_fTimeCanRun / max)
+	bool aiming;          // R held: free-aim / fight stance
+	bool inVehicle;       // no vehicle system yet; Y is the enter/exit edge
+	bool vehicleRequest;  // true on the frame Y was pressed
 };
 
 extern State g;
 
-// Game clock (CClock::ms_nGameClockHours/Minutes). 1 game minute = 1 real
-// second, like the original.
-extern unsigned g_clockH, g_clockM;
+// CClock. 1 game minute = 1 real second (CClock::Initialise(1000)).
+// Month is 1..12, day is 1..daysInMonth, weekday is 1..7 (a new game is 4).
+extern unsigned g_clockH, g_clockM, g_clockDay, g_clockMonth;
+extern int g_weekday;
 
 void init();
-void update();            // movement + anim + clock; call once per frame while INGAME
+void update();            // once per frame while INGAME and the menu is down
 float camYaw();           // chase camera heading, radians (0 = north, clockwise)
-float camPitch();         // radians above the horizon; positive looks down at CJ
+float camPitch();         // radians above the horizon; positive looks down
+float groundZ();          // flat ground until collision exists; jump lifts g.z
+
+// CPed::GiveWeapon. Same type in a slot adds ammo; a new type replaces it
+// and is selected. Melee has no ammo count.
+void giveWeapon(int type, int ammo);
 
 }

@@ -206,8 +206,8 @@ static void drawWeapon() {
 	if (s.col) subfb::blitScaled(s, ICON_X, ICON_Y, ICON_S, ICON_S);
 
 	// ammo: "reserve-clip" (DrawAmmo: totalAmmo-clip - clip), gothic under the icon
-	if (w.txd && w.total) {
-		char s2[12];
+	if (w.txd && w.total >= 0) {
+		char s2[24];
 		snprintf(s2, sizeof s2, "%d-%d", w.total - w.clip, w.clip);
 		hudfont::print(hudfont::STYLE_GOTHIC, ICON_X + ICON_S / 2, AMMO_Y, (const GxtChar*)s2,
 		               0.4f, 0.8f, c_lightBlue, hudfont::CENTER, 1, c_black);
@@ -279,9 +279,6 @@ bool init() {
 		hudtex::decodeSprite(hudtex::find(hud, "fist"), s_fist);
 		free(hud);
 	}
-	// demo blips: grove street save house + a waypoint
-	radar::setBlip(0, 2495.0f, -1665.0f, "radar_saveGame", 0, 0, 0);
-	radar::setBlip(1, 1500.0f, -900.0f, "radar_waypoint", 0, 0, 0);
 	s_ok = true;
 	return true;
 }

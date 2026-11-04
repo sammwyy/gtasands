@@ -41,6 +41,11 @@ struct Part {
 
 static Part s_parts[NUM_PARTS];
 static constexpr int SLOTS = 4;
+// AnimBlendAssociation uses a short blend-out rather than deleting the old
+// association when a new one is started. Locomotion already supplies its own
+// weights; this is the safety net for one-shot actions (jump, fight and aim)
+// that are submitted as a single clip by player.cpp.
+static constexpr float BLEND_OUT_PER_TICK = 8.0f / 60.0f;
 struct Slot {
 	anim::Player anim;
 	char name[24];
@@ -213,8 +218,19 @@ void pose(const Clip* clips, int n) {
 		}
 		keep[s] = 1;
 	}
-	for (int i = 0; i < SLOTS; i++)
-		if (!keep[i]) s_slots[i].alive = 0;
+	for (int i = 0; i < SLOTS; i++) {
+		Slot& sl = s_slots[i];
+		if (!sl.alive || keep[i]) continue;
+		// Preserve the final pose of the outgoing association long enough to
+		// blend it against the first pose of the incoming clip. This matters
+		// most at launch -> glide -> land and at the fight/aim shuffles, which
+		// do not have the locomotion state's explicit chained weights.
+		sl.weight -= BLEND_OUT_PER_TICK;
+		if (sl.weight <= 0.0f) {
+			sl.weight = 0.0f;
+			sl.alive = 0;
+		}
+	}
 }
 
 float clipPhase(const char* name) {
