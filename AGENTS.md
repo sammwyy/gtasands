@@ -126,7 +126,10 @@ python3 tools/assets.py preview models/gta3.img:infernus.txd [TEX] --section gta
   composited at runtime (PlaceTextureOnTopOfTexture); hands use the same composite.
   After blending the pose, `CPed::ShoulderBoneRotation` is applied (bones 301/302 "breast" are CJ's
   deltoids: take the upper arm matrix, halve the twist vs the clavicle). Skipping it = boxy shoulders.
-- Skinning is reduced to one dominant bone per vertex (meant for GX matrix-stack rigid skinning).
+- Skinning is reduced to one dominant bone per vertex: CJ is skinned on the GX matrix stack. Each
+  part is compiled once into a packed display list (`render/gxlist.*`) with MTX_RESTORE per bone
+  change (slots 30 down, max 16 bones/part; entity matrix in slot 14); per frame the CPU only
+  evaluates the skeleton and stores entity*world*invBone per used bone, then DMAs the list.
 - DSPK lookups ignore hash collisions (none in stock archives); TOC is 16 B/entry in RAM (gta3 = 256 KB).
 - Disabled by default (see resources.toml): ped speech paks SPC_EA/FA/GA/NA, all radio stations, cutscenes,
   `cutscene.img`, `cuts.img`, movies.
@@ -157,6 +160,36 @@ in hot paths, replace RW with our formats/renderer, keep memory pools small and 
 8. Scripts: SCM VM (`data/script/main.scm`) - large; start with a minimal mission-less free roam.
 Profile constantly with the HUD stats (CPU us/frame, polys/verts) and tune resources.toml to fit.
 
+## Memory manager (`src/mem/`) — use it for every allocation
+- Regions carved once from the crt0 heap (`mem/budget.h`): SYS (TLSF, libc
+  malloc/new only — `_malloc_r` & co are replaced in mem.cpp, newlib's
+  dlmalloc/sbrk are not linked), SCRATCH (LIFO stack, `mem::Scratch` RAII,
+  spills to STREAM), PERM (bump, never freed), STREAM (TLSF, everything else).
+- `mem::alloc(n, TAG_x)` / `mem::free`, `mem::perm`, `mem::Scratch s; s.alloc(n)`.
+  Every allocation is tagged; `mem::summary`, `mem::stats`, `mem::check`.
+- `mem::Pool<T>` = CPool port (byte map, handles) for fixed-count objects:
+  textures, anim clips, radar tiles; budgets for peds/vehicles/objects are
+  declared in budget.h for when those systems land.
+- Temp file reads (TXD entries, DMDL staging, display-list build) go to scratch;
+  loose TXDs are read per entry via `assets/txdfile.*`, never whole.
+- Static BSS is ~130 KB (was 1.75 MB); STREAM has ~2.9 MB in DS mode.
+- `tlsf.cpp` passes a 400k-op host stress test (see git history); keep it portable.
+
+## Debug UI (bottom screen, SELECT)
+- `src/hud/debugui.*`: touch tabs LOG / PERF / MEM / GAME / REND on the text console.
+  GAME = quick actions (wanted, health, armour, money, weapons, fat/muscle, sprint, clock,
+  outfit presets `cj::setOutfit`, respawn); REND = `dbg::opts` (`game/debugopts.h`: CJ mesh,
+  skeleton overlay, ground, fixed step, sim speed/pause, camera distance, HUD repaint).
+  Touch drives the camera only on the GAME screen. `hud::log` only fills a 32-line ring.
+- Timing: `timing::sectionUs(SEC_3D/SEC_SIM/SEC_HUD)`; cpu now includes the HUD.
+- Player sim is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4, button
+  edges only on the first step) so animation speed no longer depends on fps.
+- Headless check without touching ~/.config: copy it to /tmp/melcfg/melonDS, enable [DLDI]
+  there (FolderSync -> repo/sdcard, ImagePath /tmp/melcfg/dldi.bin) and run
+  `XDG_CONFIG_HOME=/tmp/melcfg timeout -s INT 30 melonds gtasads.nds` (SIGINT, not TERM:
+  melonDS only writes the DLDI image on a clean exit). The hudok marker now includes
+  mem summary, per-tag bytes, fps/cpu sections and the last log lines.
+
 ## Bottom-screen game HUD (current milestone)
 The bottom screen boots into a real software-rendered GTA HUD (default
 `hud::Screen::GAME`); `SELECT` toggles to the debug console and back
@@ -177,13 +210,14 @@ flat sky clear.
   `game/text/font.cpp` (16-col grid, fonts.dat prop widths, ~color~ codes,
   pricedown/subfont remaps, edge drop shadow) rasterizing coverage maps.
 - `src/game/hud/radar.*`: CRadar port — rotating map (world->radar by
-  heading). ALL 144 radarNN.txd tiles are decoded+box-filtered at init
-  into a 1.15MB static arena — zero runtime file I/O/decoding (a tile
-  miss on FAT costs ms and tanks fps). Incremental world-coord marching
-  (no per-pixel divides; kQ is world-units-per-pixel, offsets stay in
-  screen px — do NOT divide by R again). Dynamic range 300-900 with a
-  32px mip per tile for range>MIP_RANGE, north marker, blips
-  (`radar::setBlip`), `radar_centre` player arrow.
+  heading). Tiles come pre-baked from `models/radar.dsrt` (pipeline section
+  `[radar]`, `tools/gtasa/ds_radar.py`: RGB15 64px + 32px mip, area-filtered
+  from the PC DXT source, fixed stride, no TOC/decoding) and stream into two
+  mem::Pools (16 full / 36 mip slots, ~200 KB) around the player, nearest
+  ring first, max 12 KB of reads per frame; `radar::prefetch()` fills the
+  window under the loading bar. Inner loop marches in texel space (two adds
+  + shifts per pixel). Dynamic range 300-900, mip above MIP_RANGE, north
+  marker, blips (`radar::setBlip`, hud.txd read per sprite), player arrow.
 - `src/game/hud/chud.*`: CHud port — clock, money, wanted stars (font2 `]`
   glyph + flash), weapon icon (`*icon` tex from weapon dspk txds, fist
   otherwise), ammo `reserve-clip`, health/armor/breath bars (DrawBarChart
@@ -192,6 +226,11 @@ flat sky clear.
   (clock, money, bars, wanted stars), bottom-right zone/vehicle names.
   NOTE: glyph quads are 32*sw px wide but advance is prop*sw — right-edge
   anchoring must account for the overhang (see hudfont::print RIGHT).
+  Dirty-region drawing: the RAM backbuffer persists, so only the radar box
+  is repainted every frame; stats/weapon blocks repaint when a hash of what
+  they show changes, names every frame while visible (HUD went 33 ms -> ~8).
+  `chud::invalidate()` forces a full repaint. Init is `chud::initStep()`
+  (loading-screen job); `hud::setGameActive()` gates drawing to INGAME.
 - `tools/hosthud/`: host harness — compiles the same hud/player/zones
   sources with an nds.h stub and dumps the framebuffer to PPM
   (`./hosthud [frame] [out.ppm]`), for visual iteration without hardware.
@@ -227,11 +266,20 @@ The DS boots into a *port* of the PC frontend, not a recreation:
   `models/txd/loadscs.txd` (the boot title, fade in/hold/fade out, skippable);
   `begin()` shows random loadsc0..14 artwork (256x256 pal256 DTXD) +
   DrawBarChart port (bottom-left, 180x10, light gray + black border), fade in/out,
-  progress = min(stepFraction, minTime/90vbl). Step list = real init work:
-  free frontend VRAM -> splash -> open streaming packs -> ped.ifp.
-- `src/game/streaming.{h,cpp}`: `Pack g_models/g_player/g_anim` (gta3/player/anim
-  DSPKs) opened at load, TOC resident for the future streaming milestone;
-  `g_pedIfp` = resident anim/ped.ifp blob.
+  progress = min(jobFraction, minTime/90vbl). Init work is a list of
+  resumable jobs run with a 10 ms/frame budget (the screen never freezes):
+  free frontend VRAM -> splash -> loading tune (ADPCM, 1 channel/slice) ->
+  gta3 open + sparse TOC index (16 KB/slice) -> player/anim packs -> ped
+  anim block -> CJ (one part / one pinned clip per slice) -> player state ->
+  HUD (one font atlas per slice, radar, sprites) -> zones -> radar prefetch.
+  New heavy init work must be added as a job, never inline in a frame.
+- `src/game/streaming.{h,cpp}`: `Pack g_models/g_player/g_anim`. `Pack`
+  keeps small TOCs resident; gta3 (16k entries) keeps a sparse index (first
+  hash per 64-entry page) + 4-page LRU, `find()` returns the entry by value.
+- `src/game/animstore.*`: DANM v2 blocks (header + per-clip directory, see
+  ds_formats.h) keep only the directory resident; clips are read on first
+  play, refcounted, LRU-evicted over budget::ANIM_CACHE_BYTES. The player's
+  25 on-foot clips are pinned at load (~100 KB); fat/muscle blocks open lazily.
 - Menu textures are freed on Start Game (VRAM) and lazily reloaded on pause-menu
   open via `CMenuManager::ensureTextures` (sprite::alpha() added for fade quads).
 - `sprite::draw()` maps v=0 to the top texel row (upright); `drawUV()` is the raw
