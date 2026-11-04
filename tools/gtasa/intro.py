@@ -10,7 +10,7 @@ import struct
 import subprocess
 import tempfile
 
-W, H = 256, 192
+W, H = 256, 256  # letterboxed to the DS texture size (pad keeps aspect)
 
 
 def convert(src, dst, fps=10, rate=22050):
@@ -24,7 +24,8 @@ def convert(src, dst, fps=10, rate=22050):
     subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', pal_png,
                     '-f', 'rawvideo', '-pix_fmt', 'rgb24', pal_raw], check=True)
     subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', src, '-i', pal_png,
-                    '-lavfi', f'[0:v]scale={W}:{H},fps={fps}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3',
+                    '-lavfi', f'[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease,'
+                              f'pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,fps={fps}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3',
                     '-f', 'rawvideo', '-pix_fmt', 'pal8', frames], check=True)
     subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', src, '-vn', '-ac', '1',
                     '-ar', str(rate), '-f', 's16le', audio], check=True)

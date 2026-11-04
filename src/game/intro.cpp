@@ -51,21 +51,19 @@ static bool playDvid(const char* path) {
 	TMR = (u16)-(int)(16777216 / dh.audioRate);
 	PNT = 0;
 	LEN = (u16)(65536 / 4);
-	CNT_H = 64 << 8;
+	CNT_H = 64; // pan center (bits 16-22 of SCHANNEL_CNT)
 	CNT_L = 127 | (1u << 10) | (1u << 12) | (1u << 15); // vol,loop,pcm16,enable
 
-	// fabricate a pal256 DTEX around the frame buffer; DS textures need powers
-	// of two -> video rows go into a 256x256 texture (bottom rows stay black)
-	memset(s_dtex + 16, 0, 65536);
+	// frames are already 256x256 letterboxed -> texture is the frame verbatim
 	ds::TexHeader* th = (ds::TexHeader*)s_dtex;
 	th->magic = DS_FOURCC('D', 'T', 'E', 'X');
 	th->width = dh.w;
-	th->height = dh.h == dh.w ? dh.h : dh.w; // 192 -> 256
+	th->height = dh.h;
 	th->format = 4; // GL_RGB256
 	th->flags = 0;
 	th->numColors = 256;
-	th->texelBytes = (u32)th->width * th->height;
-	memcpy(s_dtex + 16 + th->texelBytes, dh.palette, 512);
+	th->texelBytes = frameBytes;
+	memcpy(s_dtex + 16 + frameBytes, dh.palette, 512);
 
 	const int framesPerVblank = 60 / (dh.fps ? dh.fps : 10);
 	bool done = false;
