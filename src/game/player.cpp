@@ -31,6 +31,7 @@ static constexpr float SPAWN_X = 2495.0f, SPAWN_Y = -1664.0f, SPAWN_Z = 13.5f;
 static float s_camYaw;          // chase camera heading (SA convention)
 static float s_camPitch;        // radians above horizontal; + looks down
 static float s_betaSpeed;
+static int s_betaSign;          // committed yaw direction across the ±pi cut
 static int s_zoneTimer;
 
 // On-foot anim flow, the part of CPlayerPed::SetRealMoveAnim this port uses.
@@ -75,6 +76,7 @@ void init() {
 	s_camYaw = 0;
 	s_camPitch = 0.42f;     // a little above CJ, the default follow-ped framing
 	s_betaSpeed = 0;
+	s_betaSign = 0;
 	s_zoneTimer = 0;
 	s_phase = PH_IDLE;
 	s_ratio = 0;
@@ -99,10 +101,28 @@ void init() {
 static constexpr float CAM_TIMESTEP = 0.5f;
 
 static void followCam(float targetYaw) {
-	const float diff = wrap(targetYaw - s_camYaw);
-	const float desired = diff * 0.10f;          // topSpeed
+	float diff = wrap(targetYaw - s_camYaw);
+	const float absDiff = fabsf(diff);
+	// wrap() flips sign at ±pi. That angle is the eye in front of CJ, and a
+	// speed still near zero reverses every frame, so the view slides across
+	// his front and chatters left/right. Past ~150 deg, keep the direction
+	// already in progress until the eye is back behind him.
+	if (absDiff > 2.6f) {
+		if (s_betaSign == 0)
+			s_betaSign = (s_betaSpeed < 0.0f || (s_betaSpeed == 0.0f && diff < 0.0f)) ? -1 : 1;
+		diff = (float)s_betaSign * absDiff;
+	} else if (absDiff < 0.8f) {
+		s_betaSign = 0;
+	}
+
+	// Ped yaws at most 0.1 rad/frame. Steady lag while turning is that rate
+	// over (timestep * topSpeed); 0.50 leaves ~0.3 rad, so the eye stays
+	// behind instead of stalling near the front. Cap stops a 180 from snapping.
+	float desired = diff * 0.50f;
+	if (desired > 0.35f) desired = 0.35f;
+	if (desired < -0.35f) desired = -0.35f;
 	const float gap = desired - s_betaSpeed;
-	float step = fabsf(gap) * 0.020f * CAM_TIMESTEP; // speedStep
+	float step = fabsf(gap) * 0.25f * CAM_TIMESTEP;
 	if (step > fabsf(gap)) step = fabsf(gap);
 	s_betaSpeed += gap > 0.0f ? step : -step;
 	s_camYaw = wrap(s_camYaw + fminf(CAM_TIMESTEP, 10.0f) * s_betaSpeed);
@@ -270,7 +290,7 @@ static void updateMove() {
 
 	if (!looking && (moving || s_phase == PH_START || s_phase == PH_MOVE || s_phase == PH_STOP))
 		followCam(g.heading);
-	else s_betaSpeed = 0.0f;
+	else { s_betaSpeed = 0.0f; s_betaSign = 0; }
 }
 
 // Leftovers from the demo driver: wanted steps, weapon cycling, health/armour
