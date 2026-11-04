@@ -21,7 +21,7 @@ class Geometry:
 
 
 class Model:
-    __slots__ = ('frames', 'geometries', 'atomics')
+    __slots__ = ('frames', 'geometries', 'atomics', 'hanim')
 
 
 def _finite(vs):
@@ -34,10 +34,10 @@ def parse(data):
     if not clump:
         raise ValueError('no clump')
     m = Model()
-    m.frames, m.geometries, m.atomics = [], [], []
+    m.frames, m.geometries, m.atomics, m.hanim = [], [], [], []
     for t, s, e, _ in rw.chunks(data, *clump):
         if t == rw.FRAMELIST:
-            m.frames = _frames(data, s, e)
+            m.frames, m.hanim = _frames(data, s, e)
         elif t == rw.GEOMETRYLIST:
             m.geometries = [_geometry(data, gs, ge) for gs, ge in rw.find_all(data, s, e, rw.GEOMETRY)]
         elif t == rw.ATOMIC:
@@ -50,6 +50,7 @@ def _frames(data, s, e):
     o, _ = rw.find(data, s, e, rw.STRUCT)
     n, = struct.unpack_from('<I', data, o)
     frames = []
+    hanim = []
     for i in range(n):
         v = struct.unpack_from('<12fiI', data, o + 4 + i * 56)
         f = Frame()
@@ -61,7 +62,19 @@ def _frames(data, s, e):
                 f.name = rw.string(data, cs, ce)
             elif t == rw.HANIM:
                 f.bone_id = struct.unpack_from('<Ii', data, cs)[1]
-    return frames
+                nodes = _hanim_nodes(data, cs, ce)
+                if nodes:
+                    hanim.extend(nodes)
+    return frames, hanim
+
+
+def _hanim_nodes(data, s, e):
+    """The one frame carrying the hierarchy list. rw.hanim header: version?/id/
+    numNodes/flags/maxKeySize then nodes {nodeID, frameIndex, flags}."""
+    version, _id, n = struct.unpack_from('<iIi', data, s)
+    if n <= 0 or s + 20 + n * 12 > e:
+        return None
+    return [struct.unpack_from('<iIi', data, s + 20 + i * 12) for i in range(n)]
 
 
 def _geometry(data, s, e):

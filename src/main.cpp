@@ -19,7 +19,6 @@
 enum class AppState { TITLE, MENU, LOADING, INGAME };
 
 static AppState s_state = AppState::TITLE;
-static float yaw = 30, pitch = 25, dist = 22;
 
 static void boot() {
 	video::init();
@@ -107,15 +106,9 @@ int main() {
 		} else if (s_state == AppState::TITLE || s_state == AppState::LOADING) {
 			loadscreen::draw();
 		} else {
-			if (in.held & KEY_LEFT) yaw -= 2;
-			if (in.held & KEY_RIGHT) yaw += 2;
-			if (in.held & KEY_UP && pitch < 85) pitch += 1;
-			if (in.held & KEY_DOWN && pitch > 5) pitch -= 1;
-			if (in.held & KEY_L && dist > 5) dist -= 0.5f;
-			if (in.held & KEY_R && dist < 60) dist += 0.5f;
-			renderer::draw(yaw, pitch, dist);
+			renderer::draw();
 		}
-		if (s_state == AppState::INGAME) player::update();
+		if (s_state == AppState::INGAME && !FrontEndMenuManager.m_bMenuActive) player::update();
 		timing::frameEnd();
 		// bottom screen renders into a RAM backbuffer (safe mid-frame), then
 		// a ~0.6ms DMA pushes it to VRAM C inside vblank -> no tearing

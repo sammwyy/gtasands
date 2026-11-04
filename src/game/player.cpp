@@ -1,15 +1,17 @@
 #include "game/player.h"
 
+#include <nds.h>
 #include <math.h>
 #include <string.h>
 
+#include "game/cj.h"
 #include "game/zones.h"
+#include "platform/input.h"
 #include "platform/timing.h"
 
-// Demo driver: a fake CJ doing laps around Los Santos so the HUD has real
-// world data to show (scrolling radar, changing zone names) until real
-// gameplay state exists. Everything below is throwaway-but-shaped-like-the-
-// real-thing code.
+// CPlayerPed/CPlayerInfo/CWanted/CClock stand-in: the single snapshot the
+// in-game HUD reads every frame. Position/heading/speed are real now (D-pad
+// driven); the rest is still the demo driver until real systems land.
 namespace player {
 
 State g;
@@ -23,12 +25,24 @@ static const Weapon k_weapons[] = {
 };
 static const int k_wantedSteps[] = { 0, 1, 2, 3, 4, 5, 6, 3, 0 };
 
-static u32 s_startVbl;      // vblank counter at init (demo clock base)
+// Grove Street (the classic new-game spawn), SA units.
+static constexpr float SPAWN_X = 2495.0f, SPAWN_Y = -1664.0f, SPAWN_Z = 13.5f;
+
+static float s_camYaw;          // chase camera heading (SA convention)
 static int s_zoneTimer;
+
+// radians -> [-pi, pi]
+static float wrap(float a) {
+	while (a > 3.14159265f) a -= 6.2831853f;
+	while (a < -3.14159265f) a += 6.2831853f;
+	return a;
+}
+
+float camYaw() { return s_camYaw; }
 
 void init() {
 	g = {};
-	g.x = 1800.0f; g.y = -1650.0f; g.z = 13.5f;
+	g.x = SPAWN_X; g.y = SPAWN_Y; g.z = SPAWN_Z;
 	g.health = g.maxHealth = 100.0f;
 	g.armour = 50.0f;
 	g.maxArmour = 100.0f;
@@ -38,55 +52,78 @@ void init() {
 	g.wantedLevel = 0;
 	g.weapon = k_weapons[0];
 	g_clockH = 12; g_clockM = 0;
-	s_startVbl = timing::vblanks();
+	s_camYaw = 0;
 	s_zoneTimer = 0;
+	cj::init();
 }
 
-// Demo path: circle around downtown LS.
+// D-pad moves camera-relative (up = away from camera) like the original.
+// B (bottom) = run, A (right) = sprint. L/R nudge the camera; it otherwise
+// settles behind the movement direction.
+static void updateMove() {
+	const input::State& in = input::get();
+	const float dt = 1.0f / 60.0f;
+	const float ix = (in.held & KEY_RIGHT ? 1.0f : 0.0f) - (in.held & KEY_LEFT ? 1.0f : 0.0f);
+	const float iy = (in.held & KEY_UP ? 1.0f : 0.0f) - (in.held & KEY_DOWN ? 1.0f : 0.0f);
+
+	if (in.held & KEY_L) s_camYaw -= 2.4f * dt;
+	if (in.held & KEY_R) s_camYaw += 2.4f * dt;
+
+	if (ix != 0.0f || iy != 0.0f) {
+		// camera-relative wish direction in SA xy
+		const float dx = -sinf(s_camYaw) * iy + cosf(s_camYaw) * ix;
+		const float dy =  cosf(s_camYaw) * iy + sinf(s_camYaw) * ix;
+		const float target = atan2f(-dx, dy); // facing = (-sin h, cos h)
+		g.heading += wrap(target - g.heading) * (1.0f - expf(-12.0f * dt));
+		const float vmax = in.held & KEY_A ? 10.0f : in.held & KEY_B ? 6.0f : 2.5f;
+		g.speed += (vmax - g.speed) * (1.0f - expf(-8.0f * dt));
+		g.x += -sinf(g.heading) * g.speed * dt;
+		g.y +=  cosf(g.heading) * g.speed * dt;
+		// idle camera drift behind the move direction
+		s_camYaw += wrap(target - s_camYaw) * (1.0f - expf(-2.0f * dt));
+	} else {
+		g.speed += (0.0f - g.speed) * (1.0f - expf(-10.0f * dt));
+	}
+
+	const char* an = g.speed > 7.0f ? "sprint_civi" :
+	                 g.speed > 3.5f ? "run_civi" :
+	                 g.speed > 0.4f ? "WALK_player" : "IDLE_stance";
+	cj::setAnim(an);
+	cj::advance(1);
+}
+
+// Leftovers from the demo driver: wanted steps, weapon cycling, health/armour
+// wiggle and the breath cycle so every HUD widget still has data to chew on.
 static void updateDemo() {
-	const u32 v = timing::vblanks() - s_startVbl;
+	const u32 v = timing::vblanks();
+	static u32 s_t0;
+	if (!s_t0) s_t0 = v;
+	const u32 t = v - s_t0;
 
-	// circular path, ~75s per lap
-	const float ang = (float)v * (2.0f * 3.14159265f) / (60.0f * 75.0f);
-	const float r = 400.0f, cx = 1550.0f, cy = -1650.0f;
-	g.x = cx + r * cosf(ang);
-	g.y = cy + r * sinf(ang);
-	// SA facing = (-sin h, cos h) must equal velocity (-sin a, cos a) -> h = a
-	g.heading = ang;
-	g.speed = r * (2.0f * 3.14159265f) / (60.0f * 75.0f);
+	g.wantedLevel = k_wantedSteps[(t / 300) % (sizeof k_wantedSteps / sizeof k_wantedSteps[0])];
+	g.weapon = k_weapons[(t / 480) % (sizeof k_weapons / sizeof k_weapons[0])];
+	g.vehicleName = (t % 1200) < 300 ? (const GxtChar*)"LANDSTALKER" : nullptr;
+	g.health = g.maxHealth * (0.55f + 0.45f * sinf((float)t / 300.0f));
+	g.armour = 50.0f + 45.0f * sinf((float)t / 200.0f + 1.0f);
 
-	// wanted level steps every ~5s
-	g.wantedLevel = k_wantedSteps[(v / 300) % (sizeof k_wantedSteps / sizeof k_wantedSteps[0])];
-
-	// weapon swap every ~8s
-	g.weapon = k_weapons[(v / 480) % (sizeof k_weapons / sizeof k_weapons[0])];
-
-	// vehicle name every ~20s for ~5s (LANDSTALKER is a real GXT key)
-	g.vehicleName = (v % 1200) < 300 ? (const GxtChar*)"LANDSTALKER" : nullptr;
-
-	// health/armour slowly wiggle so bars feel alive
-	g.health = g.maxHealth * (0.55f + 0.45f * sinf((float)v / 300.0f));
-	g.armour = 50.0f + 45.0f * sinf((float)v / 200.0f + 1.0f);
-
-	// oxygen: ~40s dive cycle — 15s underwater drains 212->0, then a fast
-	// surface refill; the HUD hides the bar while full like the PC
-	const int ph = (int)(v % 2400);
+	const int ph = (int)(t % 2400);
 	g.breath = ph < 900 ? 212.0f * (1.0f - (float)ph / 900.0f)
 	                    : 212.0f + (float)(ph - 900) * 0.4f;
 	if (g.breath > 300.0f) g.breath = 300.0f;
 
-	// game clock: 1 min per real second
-	const u32 mins = v / 60;
+	const u32 mins = t / 60;
 	g_clockH = (12 + mins / 60) % 24;
 	g_clockM = mins % 60;
+}
 
-	// zone name every ~0.5s
+void update() {
+	updateMove();
+	updateDemo();
+
 	if (--s_zoneTimer <= 0) {
 		s_zoneTimer = 30;
 		g.zoneName = zones::nameAt(g.x, g.y);
 	}
 }
-
-void update() { updateDemo(); }
 
 }

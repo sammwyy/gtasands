@@ -38,6 +38,7 @@ extern State g;
 extern unsigned g_clockH, g_clockM;
 
 void init();
-void update();            // advances the demo driver + clock; call once per frame while INGAME
+void update();            // movement + anim + clock; call once per frame while INGAME
+float camYaw();           // chase camera heading, radians (0 = north, clockwise)
 
 }

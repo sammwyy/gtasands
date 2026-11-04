@@ -55,6 +55,13 @@ ifeq ($(FAT),1)
 OPT += -DGTASADS_FAT
 endif
 
+# QUICKTEST=1: skip intro movies, auto-start the game, force the GAME hud
+# screen (headless smoke path). Built under build-quick/ by `make run-quick`.
+QUICKTEST ?= 0
+ifeq ($(QUICKTEST),1)
+OPT += -DGTASADS_QUICKTEST
+endif
+
 CFLAGS   := -g -Wall -Wextra $(OPT) -ffunction-sections -fdata-sections \
             $(ARCH) $(INCLUDE) -DARM9
 CXXFLAGS := $(CFLAGS) -std=gnu++17 -fno-rtti -fno-exceptions
@@ -152,7 +159,7 @@ else
   endif
 endif
 
-.PHONY: $(BUILD) all clean run sdcard dldi sd assets sync distclean compdb
+.PHONY: $(BUILD) all clean run build-quick sdcard dldi sd assets sync distclean compdb
 
 all: $(BUILD)
 
@@ -160,6 +167,11 @@ ASSET_DEPS := resources.toml $(wildcard tools/*.py tools/gtasa/*.py)
 
 $(BUILD): $(NITRO)/.stamp
 	@mkdir -p $@
+	@# OPT flags are baked into the objects and make can't see flag changes:
+	@# wipe *.o when the OPT signature differs from the last build (QUICKTEST,
+	@# FAT, DEBUG toggles no longer need `make clean`)
+	@f=$@/.optsig; sig="$(OPT)"; \
+	if [ "`cat $$f 2>/dev/null`" != "$$sig" ]; then rm -f $@/*.o; echo "$$sig" > $$f; fi
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
 # ASSETS=0 skips the asset pipeline (packs whatever is already in nitrofs/)
@@ -177,8 +189,17 @@ assets:
 sync:
 	@python3 tools/assets.py sync
 
-run: $(BUILD)
+# run the last rom built (`make build` or `make build-quick` -> gtasads.nds);
+# falls back to a normal build if none exists
+run:
+	@[ -f $(TARGET).nds ] || $(MAKE) --no-print-directory $(BUILD)
 	$(EMU) $(OUTPUT).nds
+
+# quicktest smoke path: recompiles with -DGTASADS_QUICKTEST (skips intro
+# movies, auto-starts the game); same build/ dir - the .optsig stamp below
+# forces a rebuild when the flags change
+build-quick:
+	@$(MAKE) --no-print-directory QUICKTEST=1
 
 # stage everything the SD card needs: sdcard/gtasads/ -> copy to the SD root
 sdcard: $(BUILD)

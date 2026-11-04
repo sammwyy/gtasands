@@ -17,11 +17,16 @@ side. No game logic ported yet. See "Roadmap" for what to do next.
 ## Build / run
 - `make -j16` -> `gtasads.nds`. Runs the asset build first if `resources.toml` or `tools/**.py` changed.
   Must stay warning-free (`-Wall -Wextra`, libnds headers are `-isystem`).
-- `make run` - build + launch melonDS. `make ASSETS=0` - skip the asset pipeline (fast code iteration).
+- `make build` / `make -j16` -> normal ROM. `make build-quick` -> same ROM with
+  `-DGTASADS_QUICKTEST` (skips intro movies, auto-starts the game, forces the GAME hud
+  screen - headless smoke path). Both write `gtasads.nds`; `make run` launches it (builds
+  first if missing). A `build/.optsig` stamp forces recompilation when OPT flags change,
+  so toggling QUICKTEST/FAT/DEBUG no longer needs `make clean`.
+- `make ASSETS=0` - skip the asset pipeline (fast code iteration).
 - `make FAT=1` - SD-backed build: assets are NOT embedded; at runtime they are read from
   `sd:/gtasads/` (devoptab `nitro:` -> `fat:` redirect in `platform/fs.cpp`). Produces a ~350 KB
   .nds that boots as homebrew under TWiLight Menu++ — the ~400 MB NitroFS build crashes
-  nds-bootstrap's homebrew loader ("an error occurred"). Requires `make clean` when toggling.
+  nds-bootstrap's homebrew loader ("an error occurred").
 - `make sdcard` - stage `sdcard/gtasads/` (full asset tree) + `sdcard/gtasads.nds`; copy both to
   the SD root to run on hardware (DSi + TWiLight: no DLDI patch needed, DSi SD driver is used).
 - `make dldi` - patch `gtasads.nds` with `tools/dldi/r4tfv2.dldi` so melonDS's virtual flashcart

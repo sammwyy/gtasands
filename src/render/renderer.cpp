@@ -1,50 +1,98 @@
 #include "render/renderer.h"
 
 #include <nds.h>
+#include <math.h>
+
+#include "game/cj.h"
+#include "game/player.h"
 
 namespace renderer {
 
-static void quad(float x0, float z0, float x1, float z1, float y) {
-	glVertex3f(x0, y, z0);
-	glVertex3f(x1, y, z0);
-	glVertex3f(x1, y, z1);
-	glVertex3f(x0, y, z1);
+// --- world geometry ---------------------------------------------------------
+// Everything is emitted in player-local space: DS matrix registers are s20.12
+// (+-2048), so absolute SA coords (~2500) overflow and clip the whole frame.
+// The view transform only sees deltas, which stay tiny.
+
+static void cellQuad(int cx, int cz, u16 color) {
+	// CCW when seen from +y (above) so backface culling keeps it
+	glColor(color);
+	glTexCoord2t16(0, 0);
+	glVertex3v16(inttov16(cx), 0, inttov16(cz));
+	glVertex3v16(inttov16(cx), 0, inttov16(cz + 1));
+	glVertex3v16(inttov16(cx + 1), 0, inttov16(cz + 1));
+	glVertex3v16(inttov16(cx + 1), 0, inttov16(cz));
 }
 
-static void cube(float x, float z, float s, float h) {
+// A placeholder landmark: world-anchored box so motion reads. cx/cy are
+// player-local SA deltas, s = half size, hgt = height. Vertices are emitted
+// relative to the current anchor (adx, adz) at 1/8 of the scale(8) matrix.
+static void box(float cx, float cy, float s, float hgt, float adx, float adz) {
+	const float x0 = (cx - s - adx) * 0.125f, x1 = (cx + s - adx) * 0.125f;
+	const float z0 = (-cy - s - adz) * 0.125f, z1 = (-cy + s - adz) * 0.125f; // SA y -> GL -z
+	const float t = hgt * 0.125f;
+	if (x1 < -7.5f || x0 > 7.5f || z1 < -7.5f || z0 > 7.5f) return; // outside v16 range
+	glPolyFmt(POLY_ALPHA(31) | POLY_CULL_NONE);
 	glBegin(GL_QUADS);
-	glColor3b(200, 190, 170);
-	quad(x - s, z - s, x + s, z + s, h);
 	glColor3b(150, 140, 120);
-	glVertex3f(x - s, 0, z + s); glVertex3f(x + s, 0, z + s); glVertex3f(x + s, h, z + s); glVertex3f(x - s, h, z + s);
-	glVertex3f(x + s, 0, z - s); glVertex3f(x - s, 0, z - s); glVertex3f(x - s, h, z - s); glVertex3f(x + s, h, z - s);
+	glTexCoord2t16(0, 0);
+	glVertex3v16(floattov16(x0), 0, floattov16(z1)); glVertex3v16(floattov16(x1), 0, floattov16(z1));
+	glVertex3v16(floattov16(x1), floattov16(t), floattov16(z1)); glVertex3v16(floattov16(x0), floattov16(t), floattov16(z1));
+	glVertex3v16(floattov16(x1), 0, floattov16(z0)); glVertex3v16(floattov16(x0), 0, floattov16(z0));
+	glVertex3v16(floattov16(x0), floattov16(t), floattov16(z0)); glVertex3v16(floattov16(x1), floattov16(t), floattov16(z0));
 	glColor3b(110, 100, 90);
-	glVertex3f(x + s, 0, z + s); glVertex3f(x + s, 0, z - s); glVertex3f(x + s, h, z - s); glVertex3f(x + s, h, z + s);
-	glVertex3f(x - s, 0, z - s); glVertex3f(x - s, 0, z + s); glVertex3f(x - s, h, z + s); glVertex3f(x - s, h, z - s);
+	glVertex3v16(floattov16(x1), 0, floattov16(z1)); glVertex3v16(floattov16(x1), 0, floattov16(z0));
+	glVertex3v16(floattov16(x1), floattov16(t), floattov16(z0)); glVertex3v16(floattov16(x1), floattov16(t), floattov16(z1));
+	glVertex3v16(floattov16(x0), 0, floattov16(z0)); glVertex3v16(floattov16(x0), 0, floattov16(z1));
+	glVertex3v16(floattov16(x0), floattov16(t), floattov16(z1)); glVertex3v16(floattov16(x0), floattov16(t), floattov16(z0));
+	glColor3b(200, 190, 170);
+	glVertex3v16(floattov16(x0), floattov16(t), floattov16(z0)); glVertex3v16(floattov16(x1), floattov16(t), floattov16(z0));
+	glVertex3v16(floattov16(x1), floattov16(t), floattov16(z1)); glVertex3v16(floattov16(x0), floattov16(t), floattov16(z1));
 	glEnd();
+	glPolyFmt(POLY_ALPHA(31) | POLY_CULL_BACK);
 }
 
 void init() {
 	glPolyFmt(POLY_ALPHA(31) | POLY_CULL_BACK);
 }
 
-void draw(float camYaw, float camPitch, float camDist) {
-	glTranslatef(0, 0, -camDist);
-	glRotatef(camPitch, 1, 0, 0);
-	glRotatef(camYaw, 0, 1, 0);
+void draw() {
+	const float px = player::g.x, py = player::g.y;
+	const float cy = player::camYaw();
 
-	glBindTexture(GL_TEXTURE_2D, 0);
+	// chase camera: eye sits `dist` behind the look direction at eyeH, tilted
+	// so the view axis hits the player's torso (lookH). In player-local space
+	// the eye offset is fixed and small: SA(elx, ely, eyeH) -> GL(elx, eyeH, -ely).
+	const float dist = 2.4f, eyeH = 1.6f, lookH = 0.9f;
+	const float tilt = atan2f(eyeH - lookH, dist) * 57.2958f;
+	const float elx = sinf(cy) * dist;
+	const float ely = -cosf(cy) * dist;
+	glLoadIdentity();
+	glRotatef(tilt, 1.0f, 0.0f, 0.0f);              // pitch down at the player
+	glRotatef(-cy * 57.2958f, 0.0f, 1.0f, 0.0f);    // camera yaw (0 = north)
+	glTranslatef(-elx, -eyeH, ely);
+
+	// world patch: anchor on the cell grid nearest the player, scale 8 -> one
+	// emitted unit is one ground cell (8 SA units). Anchor delta stays small.
+	const int ax = (int)floorf(px * 0.125f), ay = (int)floorf(py * 0.125f);
+	const float adx = ax * 8.0f - px, adz = -(ay * 8.0f - py);
+	glPushMatrix();
+	glTranslatef(adx, 0.0f, adz);
+	glScalef(8.0f, 8.0f, 8.0f);
+	glDisable(GL_TEXTURE_2D);
 	glBegin(GL_QUADS);
-	for (int i = -4; i < 4; i++)
-		for (int j = -4; j < 4; j++) {
-			if ((i + j) & 1) glColor3b(60, 110, 50); else glColor3b(70, 70, 75);
-			quad(i * 4.0f, j * 4.0f, (i + 1) * 4.0f, (j + 1) * 4.0f, 0);
+	for (int i = -6; i < 6; i++)
+		for (int j = -6; j < 6; j++) {
+			const int cx = ax + i, cyi = ay + j;    // absolute cell coords (colour only)
+			cellQuad(i, -j - 1, (cx + cyi) & 1 ? RGB15(9, 15, 7) : RGB15(10, 10, 11));
 		}
 	glEnd();
+	box(2488.0f - px, -1674.0f - py, 1.5f, 6.0f, adx, adz);
+	box(2502.0f - px, -1652.0f - py, 2.0f, 9.0f, adx, adz);
+	box(2495.0f - px, -1640.0f - py, 1.0f, 3.0f, adx, adz);
+	glEnable(GL_TEXTURE_2D);
+	glPopMatrix(1);
 
-	cube(-6, -6, 1.5f, 6);
-	cube(6, -4, 2.0f, 9);
-	cube(0, 7, 1.0f, 3);
+	cj::draw(0.0f, 0.0f, 0.0f, player::g.heading);
 }
 
 int polyCount() { int n = 0; glGetInt(GL_GET_POLYGON_RAM_COUNT, &n); return n; }

@@ -61,7 +61,7 @@ void drawStats() {
 	printf("\x1b[2;0Hfps %3lu  cpu %6lu us (%3lu%%)  ", timing::fps(), timing::frameUs(), timing::frameUs() * 100 / 16715);
 	printf("\x1b[3;0Hpolys %4d/2048  verts %4d/6144 ", renderer::polyCount(), renderer::vertCount());
 	printf("\x1b[5;0Htouch %s %3d,%3d   ", in.touching ? "on " : "off", in.touchX, in.touchY);
-	printf("\x1b[7;0H\x1b[36mDPad orbit  L/R zoom  SELECT hud\x1b[39m");
+	printf("\x1b[7;0H\x1b[36mDPad move  B run A sprint  SELECT hud\x1b[39m");
 	printf("\x1b[9;0H--------------------------------");
 	consoleSetWindow(&s_console, 0, 10, 32, 14);
 	consoleSelect(prev);

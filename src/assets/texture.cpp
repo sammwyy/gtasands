@@ -50,6 +50,13 @@ Texture* loadFromTxd(const void* dtxd, const char* name) {
 	return nullptr;
 }
 
+Texture* loadFirst(const void* dtxd) {
+	const ds::TxdHeader* th = (const ds::TxdHeader*)dtxd;
+	if (!dtxd || th->magic != DS_FOURCC('D', 'T', 'X', 'D') || !th->count) return nullptr;
+	const ds::TxdEntry* e = (const ds::TxdEntry*)((const u8*)dtxd + sizeof(ds::TxdHeader));
+	return load((const u8*)dtxd + e->offset);
+}
+
 void unload(Texture* t) {
 	if (t && t->id) {
 		glDeleteTextures(1, &t->id);

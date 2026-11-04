@@ -13,6 +13,62 @@ DEFAULTS = dict(ratio=1.0, min_tris=64, max_tris=0, uvs=True, normals=False, ver
                 skin=True, drop_damage=False, drop_vlo=True, drop_frames=[])
 
 
+# --- RW skinning (validated against gta-reversed / librw semantics) ----------
+# Points are row vectors: p' = p * M. Matrix product is left-to-right:
+# LTM[node] = local * LTM[parent], skin matrix = invBone * LTM.
+def _mm(a, b):
+    """Row-vector affine product a*b: R=Ra.Rb, t=ta.Rb+tb."""
+    out = [0.0] * 12
+    for r in range(3):
+        for c in range(3):
+            out[r * 3 + c] = sum(a[r * 3 + k] * b[k * 3 + c] for k in range(3))
+    for r in range(3):
+        out[9 + r] = sum(a[9 + c] * b[c * 3 + r] for c in range(3)) + b[9 + r]
+    return out
+
+
+def _invm(m):
+    """Row-vector affine inverse (m stores rows right/up/at/pos, 12 floats)."""
+    a, b_, c = m[0], m[1], m[2]
+    d, e, f = m[3], m[4], m[5]
+    g, h, i2 = m[6], m[7], m[8]
+    det = a * (e * i2 - f * h) - b_ * (d * i2 - f * g) + c * (d * h - e * g)
+    r = [[(e * i2 - f * h) / det, (c * h - b_ * i2) / det, (b_ * f - c * e) / det],
+         [(f * g - d * i2) / det, (a * i2 - c * g) / det, (c * d - a * f) / det],
+         [(d * h - e * g) / det, (b_ * g - a * h) / det, (a * e - b_ * d) / det]]
+    t = [-sum(m[9 + c] * r[c][j] for c in range(3)) for j in range(3)]
+    return [r[0][0], r[0][1], r[0][2], r[1][0], r[1][1], r[1][2],
+            r[2][0], r[2][1], r[2][2]] + t
+
+
+def _xf(m, v):
+    """Row-vector point transform: v * M."""
+    return [sum(v[c] * m[c * 3 + r] for c in range(3)) + m[9 + r] for r in range(3)]
+
+
+def _ib4(mtx):
+    """16-float RW matrix -> 12-float row layout (drop the pad column)."""
+    return [mtx[0], mtx[1], mtx[2], mtx[4], mtx[5], mtx[6],
+            mtx[8], mtx[9], mtx[10], mtx[12], mtx[13], mtx[14]]
+
+
+def _hanim_table(m, num_bones):
+    """Node table in hAnim order: (bone_id, parent_node). The node list lives
+    in the hAnim chunk; children delimit via push(2)/pop(1) flags."""
+    parents, stack, parent = [], [], -1
+    for _nid, _fidx, flags in m.hanim:
+        parents.append(parent)
+        if flags & 2:
+            stack.append(parent)
+        parent = len(parents) - 1
+        if flags & 1:
+            parent = stack.pop() if stack else -1
+    table = [(nid, parents[i]) for i, (nid, _f, _fl) in enumerate(m.hanim)]
+    if len(table) < num_bones:  # pad degenerate tail (never hit for SA peds)
+        table += [(table[-1][0] + 1, len(table) - 1)] * (num_bones - len(table))
+    return table[:num_bones]
+
+
 def decimate(verts, tris, target):
     """Vertex clustering on a uniform grid; binary-searches the grid resolution so the
     surviving triangle count is the largest <= target. Returns (vertex->rep position, tris)."""
@@ -163,15 +219,29 @@ def convert_dff(data, p):
     skin = next((m.geometries[g].skin for g in used if m.geometries[g].skin), None) if p['skin'] else None
     sph = max((m.geometries[g].sphere for g in used), key=lambda s: s[3], default=(0, 0, 0, 0))
 
-    out = bytearray(struct.pack('<4sHHHHHH4i', b'DMDL', 1, MF_SKINNED if skin else 0, len(m.frames), len(geoms),
+    out = bytearray(struct.pack('<4sHHHHHH4i', b'DMDL', 2, MF_SKINNED if skin else 0, len(m.frames), len(geoms),
                                 len(atoms), skin.num_bones if skin else 0, *(fx(v) for v in sph)))
     for f in m.frames:
         out += name(f.name, 24) + struct.pack('<hh9hH3i', f.parent, f.bone_id, *(fx16(r) for r in f.rot), 0, *(fx(v) for v in f.pos))
     for f, g in atoms:
         out += struct.pack('<HH', f, gmap[g])
     if skin:
-        for mtx in skin.inv_matrices:
-            out += struct.pack('<12i', *(fx(mtx[r * 4 + c]) for r in range(4) for c in range(3)))
+        ib = [_ib4(mtx) for mtx in skin.inv_matrices]
+        for mtx in ib:
+            out += struct.pack('<12i', *(fx(v) for v in mtx))
+        # hAnim node order (verts' skin index == node index): parent chain +
+        # bone id for seq matching, plus the two derived locals the runtime
+        # needs so it never inverts matrices on the ARM9.
+        nodes = _hanim_table(m, skin.num_bones)
+        for nid, parent in nodes:
+            out += struct.pack('<hh', parent, nid)
+        bindw = [_invm(i) for i in ib]
+        for i, (_nid, parent) in enumerate(nodes):
+            loc = bindw[i] if parent < 0 else _mm(bindw[i], ib[parent])
+            out += struct.pack('<12i', *(fx(v) for v in loc))
+        for i, (_nid, parent) in enumerate(nodes):
+            bp = (0.0, 0.0, 0.0) if parent < 0 else _xf(ib[parent], bindw[i][9:12])
+            out += struct.pack('<3i', *(fx(v) for v in bp))
     base = len(out) + 4 * len(geoms)
     offs = []
     for b in geoms:

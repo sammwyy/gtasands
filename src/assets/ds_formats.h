@@ -70,8 +70,16 @@ struct ModelHeader {
 	fx32 sphere[4];          // bounding sphere center xyz + radius
 	// ModelFrame frames[numFrames]
 	// ModelAtomic atomics[numAtomics]
-	// fx32 invBone[numBones][4][3]   (if MDL_SKINNED; rows: right, up, at, pos)
+	// -- v2, if MDL_SKINNED, numBones entries each:
+	// fx32 invBone[numBones][4][3]   (rows: right, up, at, pos)
+	// ModelNode nodes[numBones]      (hAnim order; vert bone index == node index)
+	// fx32 bindLocal[numBones][4][3] (bindW * invBone[parent]; root = bindW)
+	// fx32 bonePos[numBones][3]      (bindW.pos * invBone[parent]; root = 0)
 	// uint32_t geometryOffsets[numGeometries]  (absolute in blob)
+};
+struct ModelNode {
+	int16_t parent;          // parent node index, -1 at the hierarchy root
+	int16_t boneId;          // hAnim bone id (matches AnimSeq::boneTag)
 };
 struct ModelFrame {
 	char name[24];
@@ -203,7 +211,8 @@ struct StreamTrack {
 
 static_assert(sizeof(PackHeader) == 16 && sizeof(PackEntry) == 16);
 static_assert(sizeof(TxdEntry) == 40 && sizeof(TexHeader) == 16);
-static_assert(sizeof(ModelHeader) == 32 && sizeof(ModelFrame) == 60 && sizeof(GeometryHeader) == 24 && sizeof(GeometryMaterial) == 44);
+static_assert(sizeof(ModelHeader) == 32 && sizeof(ModelFrame) == 60 && sizeof(ModelNode) == 4 &&
+              sizeof(GeometryHeader) == 24 && sizeof(GeometryMaterial) == 44);
 static_assert(sizeof(ColModel) == 76 && sizeof(ColSphere) == 20 && sizeof(ColBox) == 28 && sizeof(ColFace) == 8);
 static_assert(sizeof(AnimHeader) == 32 && sizeof(AnimEntry) == 28 && sizeof(AnimSeq) == 32);
 static_assert(sizeof(SoundHeader) == 24 && sizeof(SfxPakBank) == 12 && sizeof(BankLookupHeader) == 12 && sizeof(StreamTrack) == 12);

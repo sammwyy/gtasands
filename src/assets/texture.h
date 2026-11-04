@@ -19,6 +19,8 @@ struct Texture {
 Texture* load(const void* blob);
 // Finds `name` inside a DTXD blob and uploads it.
 Texture* loadFromTxd(const void* dtxd, const char* name);
+// Uploads the first texture inside a DTXD blob.
+Texture* loadFirst(const void* dtxd);
 void unload(Texture* t);
 void clear();
 int loadedCount();
