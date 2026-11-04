@@ -294,13 +294,11 @@ void draw() {
 	drawWanted(drawBars());
 	drawWeapon();
 	drawNames();
-#ifdef GTASADS_QUICKTEST
-	// fps probe so emulator screenshots can verify HUD render cost
+	// fps counter in the empty corner the round radar leaves
 	char fb[8];
 	snprintf(fb, sizeof fb, "%lu", timing::fps());
 	hudfont::print(hudfont::STYLE_GOTHIC, 5, 178, (const GxtChar*)fb,
 	               0.5f, 0.8f, c_lightGray, hudfont::LEFT, 1, c_black);
-#endif
 }
 
 void stats(char* buf, int n) {
