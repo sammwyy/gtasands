@@ -130,3 +130,19 @@ in hot paths, replace RW with our formats/renderer, keep memory pools small and 
 7. Audio: DSND playback via libnds sound API (ARM7), SFX banks, ambience/radio streaming ring buffer.
 8. Scripts: SCM VM (`data/script/main.scm`) - large; start with a minimal mission-less free roam.
 Profile constantly with the HUD stats (CPU us/frame, polys/verts) and tune resources.toml to fit.
+
+## Frontend port (current milestone)
+The DS boots into a *port* of the PC frontend, not a recreation:
+- `src/game/menu/screens.{h,cpp}`: `aScreens` table, enums and sprite names ported verbatim
+  from `Frontend/MenuManager_Internal.h` + `FrontendScreensPC.h` (PC build, USE_EU_STUFF off -> EN/ES).
+- `src/game/menu/menu.{h,cpp}`: CMenuManager port - SwitchToNewScreen, UserInput (DPad nav,
+  A=enter, B=back, L/R sliders), ProcessMenuOptions (toggles/cycles/language/sliders),
+  DrawBackground/DrawStandardMenus/DisplaySlider, virtual 640x480 coords compressed by ortho.
+  Game deps are stubs (no saves -> all slots SLOT_FREE, no audio, no stats/map radar tiles yet).
+- `src/game/text/gxt.{h,cpp}`: CText (GXT TKEY/TDAT, CRC32 uppercase hash, american/spanish.gxt).
+- `src/game/text/font.{h,cpp}`: CFont (fonts.dat prop widths, glyph UV math, ~codes~, drop shadow).
+- `src/render/sprite2d.*`: ortho 2D quads on the 3D engine; `src/assets/texture.*`: DTEX->VRAM loader.
+- main.cpp: MENU (title) -> Start Game -> INGAME placeholder scene; START = pause menu; Quit -> powerOff.
+- Gaps vs the PC frontend: pano strip drawn only on the title screen, radio station list is text
+  (no logo sprites yet), Stats/Brief empty, no mouse, no settings persistence, controls-redefine
+  screen stub, no radar map zooming, fonts are a3i5 256px (font text slightly less crisp).

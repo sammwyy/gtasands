@@ -145,11 +145,19 @@ out = ""
 kind = "files"
 src = ["models/*.txd", "models/generic/*", "models/grass/*", "models/coll/*.col", "models/txd/*.txd", "models/effects.fxp"]
 out = ""
-remove = ["*btns.txd", "*sixaxis.txd", "models/fronten*.txd", "models/txd/intro*"]
+remove = ["*btns.txd", "*sixaxis.txd", "models/txd/intro*"]
 
-[[models_loose.rule]]     # HUD/fonts go to the 2D sub engine: keep them crisp
-match = ["models/hud.txd", "models/fonts.txd"]
+[[models_loose.rule]]     # font textures: a3i5 glyphs at 256x256 (512 would not fit VRAM)
+match = "models/fonts.txd"
+texture = { scale = 0.5, max_size = 256 }
+
+[[models_loose.rule]]     # HUD textures go to the 2D sub engine: keep them crisp
+match = "models/hud.txd"
 texture = { scale = 1.0, max_size = 256 }
+
+[[models_loose.rule]]     # frontend menu art
+match = "models/fronten*.txd"
+texture = { scale = 0.5, max_size = 256, auto_colors = 256 }
 
 [[models_loose.rule]]
 match = "models/particle.txd"
@@ -164,7 +172,7 @@ remove = ["data/icons/*", "*.ico", "*.bmp", "audioevents.txt"]
 
 [text]
 kind = "copy"
-src = ["text/american.gxt"]
+src = ["text/american.gxt", "text/spanish.gxt"]
 out = ""
 
 # -----------------------------------------------------------------------------

@@ -14,6 +14,7 @@ void init() {
 	vramSetBankA(VRAM_A_TEXTURE);
 	vramSetBankB(VRAM_B_TEXTURE);
 	vramSetBankC(VRAM_C_SUB_BG);
+	vramSetBankD(VRAM_D_TEXTURE);
 	vramSetBankE(VRAM_E_TEX_PALETTE);
 
 	glInit();
