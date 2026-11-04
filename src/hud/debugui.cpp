@@ -6,6 +6,10 @@
 #include <string.h>
 
 #include "assets/texture.h"
+#include "audio/aebankloader.h"
+#include "audio/aesoundmanager.h"
+#include "audio/aestream.h"
+#include "audio/audioengine.h"
 #include "game/animstore.h"
 #include "game/cj.h"
 #include "game/collision.h"
@@ -162,7 +166,12 @@ static void pagePerf() {
 	const col::Stats& cs = col::stats();
 	line(19, "col %3u %3luK near %2u miss %2u", cs.models, (unsigned long)(cs.bytes >> 10), cs.nearCount, cs.missing);
 	line(20, "col us u%4u q%4u loads %lu", cs.updateUs, cs.queryUs, (unsigned long)cs.loads);
-	blank(21, 23);
+	const aesound::Stats& as = aesound::stats();
+	line(21, "snd %2u/%2u ch steal %lu us %4lu", as.active, as.physical, (unsigned long)as.stolen,
+	     (unsigned long)audio::stats().serviceUs);
+	line(22, "steps %lu land %lu shots %lu", (unsigned long)audio::stats().footsteps,
+	     (unsigned long)audio::stats().landings, (unsigned long)audio::stats().shots);
+	blank(23, 23);
 }
 
 static void regionRow(int row, const char* name, mem::Region r) {
@@ -195,7 +204,12 @@ static void pageMem() {
 	int c = 0;
 	if (button(16, c, "check heap")) s_heapCheck = mem::check() ? 1 : 0;
 	if (button(16, c, "trim anims")) animstore::trim(0);
-	blank(17, 23);
+	const aebank::Stats& ab = aebank::stats();
+	line(17, "audio %3u snd %3luK/%uK q%u f%u", ab.resident, (unsigned long)(ab.bytes >> 10),
+	     (unsigned)(mem::budget::AUDIO_CACHE_BYTES >> 10), ab.queued, ab.failed);
+	line(18, "audio loads %lu evict %lu trk %ld", (unsigned long)ab.loads, (unsigned long)ab.evictions,
+	     aestream::stats().trackId == ~0u ? -1L : (long)aestream::stats().trackId);
+	blank(19, 23);
 }
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }

@@ -7,11 +7,16 @@ ifeq ($(strip $(DEVKITARM)),)
 $(error "Please set DEVKITARM in your environment. export DEVKITARM=<path to>devkitARM")
 endif
 
-GAME_TITLE     := GTA San Andreas DS
-GAME_SUBTITLE1 := gta-reversed port
-GAME_SUBTITLE2 := sammwy
+GAME_TITLE     := GTA: San Andreas DS
+GAME_SUBTITLE1 := Port by Sammwy
 
 include $(DEVKITARM)/ds_rules
+
+# two-line banner (ds_rules always adds a third line, defaulting to devkitpro.org);
+# the icon is icon.bmp (32x32, 16 colours), picked up automatically below
+%.nds: %.elf
+	$(SILENTCMD)ndstool -c $@ -9 $< $(_ARM7_ELF) -b $(GAME_ICON) "$(GAME_TITLE);$(GAME_SUBTITLE1)" $(_ADDFILES)
+	$(SILENTMSG) built ... $(notdir $@)
 
 rwildcard = $(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
 

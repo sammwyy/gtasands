@@ -50,7 +50,8 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `game/collision.*` | map collision: per-model COL records streamed from world.dwld, near list, segment cast / ground probe / sphere push, debug overlay (section 6c) |
 | `game/loadscreen.*` | CLoadingScreen + resumable init jobs |
 | `game/zones.*` | info.zon -> zone GXT names |
-| `game/sfx.*`, `game/intro.*` | frontend SFX/loading tune; DVID movie player |
+| `game/sfx.*`, `game/intro.*` | frontend audio entity (menu beeps, whoosh, loading tune) on `src/audio`; DVID movie player |
+| `audio/` | audio engine (section 8b): hardware channels, bank/sound cache, sound manager, stream channel, ped / weapon / weather entities, ambience tracks, audio zones |
 | `game/menu/` | CMenuManager port (screens table verbatim) |
 | `game/text/` | CText (GXT), CFont |
 | `game/hud/` | CHud/CRadar ports on a CPU framebuffer (`subfb`), `hudtex`, `hudfont` |
@@ -300,8 +301,49 @@ CCollision / CColStore / CWorld::ProcessLineOfSight reduced to an on-foot player
   textures (+ first timecycle update), HUD init, zones, radar prefetch, world (open + preload),
   collision (index + records around CJ, then `player::placeOnGround`), mem report.
   **New heavy init work must be a job.**
-- Intro: DVID (pal8 256x256 @10 fps + PCM16) on a bitmap BG. SFX: `genrl.dsfx` banks 59/60
-  (frontend), 82 (loading tunes), IMA-ADPCM decoded to PCM16.
+- Intro: DVID (pal8 256x256 @10 fps + PCM16) on a bitmap BG (libnds `soundPlaySample`, before
+  the audio engine starts). Frontend SFX: `game/sfx` on the engine below.
+
+## 8b. Audio (`src/audio/`, CAudioEngine & co)
+
+- **Hardware** (`aehardware`, CAEAudioHardware): calico's ARM7 driver directly (`soundPreparePcm`,
+  auto-updated `soundGetActiveChannels`). Channels 0..13 = sound manager, 14 = stream. DSND
+  IMA-ADPCM plays natively; loops restart at `1 + loopStart/8` words (the mixer saves the ADPCM
+  state there). Volumes are linear 11-bit (`aesound::volumeFromDb`, quarter-dB table).
+- **Bank loader** (`aebankloader`, CAEBankLoader): per *sound*, not per bank slot. `banks.dsbl`
+  + pak bank tables resident (PERM), pak files stay open, bank offset tables in a 16-entry LRU.
+  `find(bank, id)` = resident handle or -1 + a queued read (EnsureSoundBankIsLoaded returning
+  false); `service()` reads the queue under a time budget. LRU over `AUDIO_CACHE_BYTES` 256 KB,
+  entries played by a channel (refs) or pinned never go. In game ~55-140 KB.
+- **Sound manager** (`aesoundmanager`, CAESoundManager/CAESound): 32 virtual sounds (`Params` =
+  tSoundPlayParams: bank, id, pos, dB, rolloff, speed, variance, flags, owner, event, update
+  callback). Per frame: owner `update(sound, playPosMs)` (REQUEST_UPDATES; -1 once at the end),
+  CalculateVolume (volume - headroom + `gSoundDistAttenuationTable` (`aeattenuation.inc`) +
+  directional mike), pan from the camera basis (FRONT_END: x -1..1). Channels go to the loudest
+  (uncancellable keep theirs, frontend beeps first); a lost loop restarts later, a one-shot can only
+  start within 100 ms (ADPCM can't be entered mid-stream). START_PERCENTAGE on loops = a start
+  delay. Pool full -> the quietest one-shot is stolen. Mix: effects fader (menu SFX volume) +
+  `MIX_GAIN_DB` 12 + a sum-of-gains limiter (gun fire). Paused (pause menu): non-UNPAUSABLE
+  sounds go silent.
+- **Listener**: `audio::service` builds it from the chase camera (SA axes) every frame;
+  GetPositionRelativeToCamera's 0.5 m forward offset.
+- **Entities**: `aepedaudio` (HandleFootstepEvent by surface from `data/surfaud.dat` -> FEET
+  banks, landing / collapse, punch swing, CJ pain PAIN_A_CARL boxing / high fall), `aeweaponaudio`
+  (PlayGunSounds table per gun, reload A/B), `aeweatheraudio` (city noise L/R, wind gusts, rain
+  twin loops `aetwinloop` + drops, thunder after CWeather's WhenToPlayLightningSound). Raised from
+  `player.cpp` (PlayFootSteps: lead cycle phase crossing 1/15 and 1/2+1/15 with > 0.5 cycle weight;
+  ACT_LAND; ACT_PUNCH phase 0.2; fireOne / reload) and `weather.cpp`.
+- **Stream** (`aestream`, CAEStreamingChannel): one mono track from `audio/streams/*.dsst`,
+  software IMA-ADPCM into a 16 KB PCM16 ring (the mixer's ADPCM can't loop a ring); play position
+  from the CPU timer and the channel timer. ~16k samples/s, ~0.5 ms/frame. Resumes the last track.
+- **Ambience** (`aeambience`, CAEAmbienceTrackManager): sandstorm -> track 167, else the active
+  audio zone's track (`audiozones`, `data/maps/audiozon.ipl`, all interiors so far); fades
+  -0.4 dB/frame out, starts at -34 dB, +1 dB/frame in. No radio / water tracks.
+- Loading job `jobAudio` (`audio::initGameStep`: surfaud, audio zones, preload). `EventVol.dat`
+  (`[audio_config]` copy section) gives GetDefaultVolume per event.
+- Cost: ~0.4 ms/frame idle (4 ambient loops), ~0.6 rain, ~0.9 under M4 fire; soft-float bound.
+- Debug: PERF rows 21-22, MEM rows 17-18, `aud:` line in hudok / coltest; `GTASADS_AUDTEST`
+  (AGENTS.md) records the mixer with the capture units to WAVs (`tools/audwav.py`).
 
 ## 9. Memory (`src/mem/`)
 
@@ -386,7 +428,8 @@ CCollision / CColStore / CWorld::ProcessLineOfSight reduced to an on-foot player
 
 Streaming.cpp/StreamingInfo (model streaming), FileLoader.cpp (gta.dat, IDE, IPL), IplStore,
 TxdStore, Models/ (ModelInfo), Collision/ (incl. ColourSet), Animation/ (AnimManager),
-Audio/ (AEBankLoader, AETrackLoader), Renderer.cpp, World.cpp, Entity/, Pools/, Camera.cpp,
+Audio/ (AEBankLoader, AESoundManager, AEPed/Weapon/WeatherAudioEntity, AmbienceTrackManager,
+AudioZones), Renderer.cpp, World.cpp, Entity/, Pools/, Camera.cpp,
 Hud.cpp, Radar.cpp, TimeCycle.cpp, Weather.cpp, Clouds.cpp, Coronas.cpp, Clock.cpp,
 `app/app_light.cpp` (lighting setup), Scripts/ (SCM VM), Core/. Ported so far: Clock (in player),
 TimeCycle, Weather, Clouds (sky polys + Render), Coronas (sun only), Hud, Radar, MenuManager,

@@ -8,6 +8,7 @@
 
 #include "assets/texture.h"
 #include "assets/txdfile.h"
+#include "audio/audioengine.h"
 #include "game/animstore.h"
 #include "game/cj.h"
 #include "game/collision.h"
@@ -113,6 +114,7 @@ static bool jobCol() {                                 // collision index + reco
 	player::placeOnGround();
 	return true;
 }
+static bool jobAudio() { return audio::initGameStep(); }   // surfaces, audio zones, in-game sounds
 static bool jobReport() {
 	char buf[96];
 	mem::summary(buf, sizeof buf);
@@ -139,6 +141,7 @@ static bool (*const s_jobs[])() = {
 	jobRadar,
 	jobWorld,
 	jobCol,
+	jobAudio,
 	jobReport,
 };
 static constexpr int NUM_JOBS = sizeof(s_jobs) / sizeof(s_jobs[0]);

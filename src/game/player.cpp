@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "audio/aepedaudio.h"
+#include "audio/aeweaponaudio.h"
 #include "game/cj.h"
 #include "game/collision.h"
 #include "game/debugopts.h"
@@ -193,6 +195,10 @@ static constexpr float SNAP_DOWN = 0.4f;
 static constexpr float FALL_PROBE = 80.0f;     // a floor this far below makes walking off a ledge a fall
 static constexpr float COLLAPSE_VZ = -12.0f;   // landing faster than this: FALL_collapse
 static constexpr float CAM_MARGIN = 0.3f;      // camera kept this far in front of a wall
+static uint8_t s_surface;        // m_nContactSurface: COL surface of the last floor under the feet
+static float s_footPhase = -1.0f; // lead cycle phase at the last step (CPed::PlayFootSteps)
+static bool s_swung;             // AE_PED_SWING raised for the current punch
+static bool s_saidFall;          // CTX_GLOBAL_PAIN_CJ_HIGH_FALL said during this fall
 static float s_viewZ = SPAWN_Z;  // smoothed feet z: render / camera reference
 static float s_camDist = 3.6f;   // chase distance after the camera collision
 
@@ -219,6 +225,7 @@ static bool floorAt(float top, float bottom, float& z) {
 	col::Hit h;
 	if (!col::groundAt(g.x, g.y, top, bottom, h)) return false;
 	z = h.z;
+	s_surface = h.surface;
 	timecycle::setSurfaceLight(h.light);
 	return true;
 }
@@ -234,6 +241,9 @@ void debugSetView(float yaw, float pitch) {
 	s_camPitch = pitch;
 }
 #endif
+
+// Sound position: the ped origin (CPed::GetPosition is ~1 m above the feet)
+static aeped::Pos pedPos() { return { g.x, g.y, g.z + 1.0f }; }
 
 static const WepDef* defFor(int type) {
 	for (unsigned i = 0; i < sizeof k_weps / sizeof k_weps[0]; i++)
@@ -264,6 +274,7 @@ static void equip(int slot) {
 	s_reload = 0;
 	s_fireCd = 0;
 	syncWeapon();
+	aeweapon::prepare(s_slots[slot].type);   // the gun's sounds stream in before the first shot
 }
 
 void giveWeapon(int type, int ammo) {
@@ -357,7 +368,11 @@ static bool fireOne() {
 	if (s.clip <= 0 || s.total <= 0) return false;
 	s.clip--;
 	s.total--;
-	if (s.clip == 0 && s.total > 0) s_reload = 54; // ~0.9s, then the clip fills
+	if (s.clip == 0 && s.total > 0) {
+		s_reload = 54; // ~0.9s, then the clip fills
+		const aeped::Pos p = pedPos();
+		aeweapon::reload(s.type, false, p.x, p.y, p.z);
+	}
 	syncWeapon();
 	return true;
 }
@@ -522,15 +537,27 @@ static void poseOne(const char* name, bool loop, bool extract, bool restart) {
 static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee,
                          bool moveHeld, bool sprintHeld) {
 	if (s_reload > 0) {
-		if (--s_reload == 0) refillClip();
+		if (--s_reload == 0) {
+			refillClip();
+			const aeped::Pos p = pedPos();
+			aeweapon::reload(s_slots[s_slot].type, true, p.x, p.y, p.z);
+		}
 	}
 	if (s_fireCd > 0) s_fireCd--;
 
 	if (s_action == ACT_PUNCH) {
 		const char* name = k_punch[s_combo];
 		const float ph = cj::clipPhase(name);
+		// CTaskSimpleFight: the swing sound as the strike comes through, CJ's
+		// boxing grunt with it (the speech context's 3 s repeat time)
+		if (!s_swung && ph >= 0.2f) {
+			s_swung = true;
+			aeped::swing(s_slots[s_slot].type, pedPos());
+			aeped::sayPain(aeped::PAIN_CJ_BOXING, pedPos());
+		}
 		if (attackDown && melee && ph >= 0.45f && s_combo < 2) {
 			s_combo++;
+			s_swung = false;
 			// Fight clips carry the authored lunge on the root (FIGHT_* are
 			// CAN_EXTRACT_VELOCITY). Extracting it moves the ped for real.
 			poseOne(k_punch[s_combo], false, true, true);
@@ -565,6 +592,11 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 			s_jumpVX += fx * (JUMP_MIN_RISE_FWD - fwd);
 			s_jumpVY += fy * (JUMP_MIN_RISE_FWD - fwd);
 		}
+		// CTaskSimpleInAir: a long fall (-20 m/s) makes CJ yell, once
+		if (s_jumpVZ <= -20.0f && !s_saidFall) {
+			s_saidFall = true;
+			aeped::sayPain(aeped::PAIN_CJ_HIGH_FALL, pedPos());
+		}
 		g.x += s_jumpVX * DT;
 		g.y += s_jumpVY * DT;
 		const float zPrev = g.z;
@@ -585,6 +617,9 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 			s_landClip = vz < COLLAPSE_VZ ? "FALL_collapse" : runLand ? "JUMP_land" : "FALL_land";
 			s_landSpeed = runLand && sprintHeld && vz >= COLLAPSE_VZ ? 2 : 1;
 			s_action = ACT_LAND;
+			s_saidFall = false;
+			// AE_PED_COLLAPSE_AFTER_FALL / AE_PED_LAND_ON_FEET_AFTER_FALL
+			aeped::landing(vz < COLLAPSE_VZ, s_surface, pedPos());
 			poseOne(s_landClip, false, true, true);
 		} else {
 			poseOne(s_glideClip, true, false, false);
@@ -626,8 +661,29 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 	if (attackDown && melee) {
 		s_action = ACT_PUNCH;
 		s_combo = 0;
+		s_swung = false;
 		poseOne(k_punch[0], false, true, true);
 	}
+}
+
+// CPed::PlayFootSteps: a step when the leading walk / run / sprint cycle
+// passes 1/15 of its length (one foot) and 1/2 + 1/15 (the other), once the
+// cycles carry more than half the blend. Volume / pitch by the move state.
+static void playFootSteps() {
+	const float w = pedmove::cycleWeight(s_move, pedmove::CYCLE_WALK) + pedmove::cycleWeight(s_move, pedmove::CYCLE_RUN) +
+	                pedmove::cycleWeight(s_move, pedmove::CYCLE_SPRINT);
+	const cj::Motion mo = cj::motion();
+	const pedmove::Cycle c = pedmove::dominantCycle(s_move);
+	const char* cyc = c == pedmove::CYCLE_SPRINT ? mo.sprint : c == pedmove::CYCLE_RUN ? mo.run : mo.walk;
+	const float ph = w > 0.5f ? cj::clipPhase(cyc) : -1.0f;
+	const float prev = s_footPhase;
+	s_footPhase = ph;
+	if (ph < 0.0f || prev < 0.0f) return;
+	auto crossed = [&](float t) { return prev <= ph ? prev < t && ph >= t : prev < t || ph >= t; };
+	const float vol = c == pedmove::CYCLE_SPRINT ? 0.0f : c == pedmove::CYCLE_RUN ? -6.0f : -12.0f;
+	const float speed = c == pedmove::CYCLE_SPRINT ? 1.2f : c == pedmove::CYCLE_RUN ? 1.1f : 0.9f;
+	if (crossed(1.0f / 15.0f)) aeped::footstep(true, vol, speed, s_surface, pedPos());
+	if (crossed(0.5f + 1.0f / 15.0f)) aeped::footstep(false, vol, speed, s_surface, pedPos());
 }
 
 static void updateMove() {
@@ -687,12 +743,17 @@ static void updateMove() {
 	if (!melee && !inAction) {
 		const bool trigger = wep.automatic ? pd.attack : pd.attackJustDown;
 		const int gap = wep.automatic ? 5 : 16;
-		if (trigger && s_fireCd == 0 && fireOne()) s_fireCd = gap;
+		if (trigger && s_fireCd == 0 && fireOne()) {
+			s_fireCd = gap;
+			const aeped::Pos p = pedPos();
+			aeweapon::fire(wep.type, p.x, p.y, p.z);   // CAEWeaponAudioEntity::WeaponFire
+		}
 	}
 
 	updateAction(pd.jumpJustDown && !g.aiming, pd.attackJustDown, g.aiming, melee, hasMoveInput,
 	             pd.sprint && sprinting);
 	if (s_action != ACT_NONE) {
+		s_footPhase = -1.0f;   // bIsInTheAir / an action owns the legs: no steps
 		cj::advance(s_action == ACT_LAND ? s_landSpeed : 1);
 		float mx, my;
 		cj::rootDelta(mx, my);
@@ -745,6 +806,8 @@ static void updateMove() {
 	}
 
 	cj::advance(1);
+	if (!g.aiming) playFootSteps();
+	else s_footPhase = -1.0f;
 	float mx, my;
 	cj::rootDelta(mx, my);
 	if (sprinting && sprintR > 1.0f) {
@@ -771,6 +834,7 @@ static void updateMove() {
 // the step's velocity and FALL_fall.
 static void startFall() {
 	s_action = ACT_GLIDE;
+	s_saidFall = false;
 	s_jumpVX = s_stepVX;
 	s_jumpVY = s_stepVY;
 	s_jumpVZ = 0.0f;

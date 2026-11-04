@@ -7,7 +7,7 @@
 // the fraction of the current hour (InterpolationValue). Everything the sky,
 // the time cycle and the effects need is derived from those two types.
 // Not ported: rain splashes / haze particles (no FX system or collision yet),
-// heat-haze post FX, tunnels, underwater, weather audio (thunder) and pad shake.
+// heat-haze post FX, tunnels, underwater and pad shake. Thunder: audio/aeweatheraudio.
 namespace weather {
 
 enum Type : s16 {

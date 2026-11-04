@@ -233,6 +233,11 @@ audio = { sample_rate = 11025, format = "adpcm" }
 match = "SCRIPT"
 audio = { sample_rate = 8000 }
 
+[audio_config]            # EventVol.dat: default dB per audio event (CAEAudioEntity::GetDefaultVolume)
+kind = "copy"
+src = ["audio/CONFIG/EventVol.dat"]
+out = ""
+
 # Streams: AA (misc), ADVERTS, AMBIENCE, BEATS (dance/lowrider minigames),
 # CUTSCENE, and radio stations: CH Playback FM, CO K-Rose, CR K-DST,
 # DS Bounce FM, HC SF-UR, MH Radio Los Santos, MR Radio X, NJ CSR 103.9,

@@ -9,7 +9,7 @@ asset pipeline and formats, optimisation strategies, porting map). Use it instea
 the code base; open source files only for the parts you are changing, and update
 ARCHITECTURE.md when a system changes or a new one lands.
 
-Current state: frontend + loading screen + intro, CJ (clothes, anims, locomotion, jump/fight/aim),
+Current state: frontend + loading screen + intro, audio engine (SFX + ambience), CJ (clothes, anims, locomotion, jump/fight/aim),
 bottom-screen GTA HUD with radar, debug UI, time cycle + weather + sky/fog/rain, the streamed
 map (Grove Street / Ganton box from `[world] bounds`: sectors, map models + textures, culling,
 poly budget; no LODs yet) and map collision (COL baked into world.dwld: CJ walks on the real
@@ -68,6 +68,12 @@ overlays: skeleton + collision wireframe on top with an outline). 30 fps at the 
   runs CJ north / west with a held d-pad (`input::debugHold`), drops him from 6 m and writes
   `gtasads_coltest.txt` (pos, camera distance, near list per 20 frames) + shot6 / shot7.
   Needs `timeout -s INT 140`. `tools/dsshot.py IN OUT --scale 3` zooms to check 1-px outlines.
+- Audio test (DEBUG): `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DGTASADS_AUDTEST"`
+  runs, jumps, punches, rain + lightning, M4 bursts, sandstorm after the screenshot sequence;
+  `gtasads_audtest.txt` = `aud:` stats per phase, `gtasads_aud_<phase>.wav` = the real mixer output
+  (capture units). `python3 tools/audwav.py sdcard/gtasads_aud_run.wav [--png out.png]` prints
+  peak/RMS/clipping. Needs `timeout -s INT 170`; don't rebuild the ROM while it runs, and keep the
+  melonDS window unfocused (key presses there move CJ and skew the numbers).
 - What stopped CJ there? `python3 tools/colnear.py X Y Z [R]` lists the baked collision
   (faces with world n.z, boxes) around a point.
 
@@ -111,6 +117,7 @@ while tuning. Current total ~413 MB of the 448 MB budget.
 3. Physics: ped vs world collision, ground z and collision lighting for `pedLight` are done
    (ARCHITECTURE 6c). Next: rain splashes on real surfaces, ledge climbing, then vehicles from
    handling.cfg (reuse `col::castSegment` / the BVH for wheels, a box/sphere set per car).
-4. Audio: DSND via the ARM7 sound API, SFX banks (thunder for lightning), ambience streams.
+4. Audio: engine done (ARCHITECTURE 8b: footsteps, weapons, weather bed, thunder, ambience
+   stream). Next: collision sounds (CAECollisionAudioEntity), ped speech, radio on the stream channel.
 5. Scripts: SCM VM (`data/script/main.scm`), start with mission-less free roam.
 Profile constantly (PERF tab, hudok marker) and tune resources.toml to fit.

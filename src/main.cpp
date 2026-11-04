@@ -1,6 +1,7 @@
 #include <nds.h>
 #include <stdlib.h>
 
+#include "audio/audioengine.h"
 #include "game/collision.h"
 #include "game/intro.h"
 #include "game/loadscreen.h"
@@ -76,6 +77,7 @@ int main() {
 		if (FrontEndMenuManager.m_WantsStartGame) {
 			FrontEndMenuManager.m_WantsStartGame = false;
 			hud::setGameActive(false);
+			audio::setGameActive(false);   // the weather bed / ambience stop while the new game loads
 			loadscreen::begin();
 			s_state = AppState::LOADING;
 		}
@@ -89,6 +91,7 @@ int main() {
 		if (s_state == AppState::LOADING && loadscreen::update()) {
 			loadscreen::end();   // the loading jobs already set up CJ, the HUD and player state
 			hud::setGameActive(true);
+			audio::setGameActive(true);
 			s_state = AppState::INGAME;
 		}
 		// SELECT toggles the bottom screen: debug UI <-> real game HUD (any state)
@@ -134,6 +137,7 @@ int main() {
 			timecycle::update(player::g.x, player::g.y, player::g.z);   // CTimeCycle::Update
 			world::update(player::g.x, player::g.y);                    // sectors + model streaming
 		}
+		audio::service();   // CAudioEngine::Service: entities, bank reads, channels, ambience stream
 		timing::setSection(timing::SEC_SIM, timing::usSince(t));
 		// bottom screen renders into a RAM backbuffer (safe mid-frame), then
 		// a ~0.6ms DMA pushes it to VRAM C inside vblank -> no tearing

@@ -32,6 +32,13 @@ constexpr size_t WORLD_LIST_BYTES = 900 * 1024;   // compiled map-object display
 constexpr size_t WORLD_TEX_VRAM = 300 * 1024;     // map textures in VRAM (LRU over refcount 0); 384K total
 constexpr size_t COL_CACHE_BYTES = 192 * 1024;    // map collision records around the player (LRU)
 constexpr int COL_NEAR_MAX = 48;                  // collision instances queried by the player / camera
+// Audio (src/audio): resident DSND sounds, LRU over unused + unpinned ones.
+// In game ~110 KB (feet, weather loops, weapon, pain); the loading tune adds
+// ~100 KB while it plays (frontend + preload overlap stays under this).
+constexpr size_t AUDIO_CACHE_BYTES = 256 * 1024;
+constexpr int AUDIO_CACHE_ENTRIES = 128;          // (bank, sound) entries
+constexpr int AUDIO_SOUNDS = 32;                  // CAESoundManager virtual sounds (PC: 300)
+constexpr size_t AUDIO_STREAM_RING = 16 * 1024;   // ambience track PCM16 ring (0.5 s at 16 kHz)
 
 // Streamed world (game/world.cpp)
 constexpr int WORLD_MODEL_SLOTS = 192;    // map models resident (display list + textures)

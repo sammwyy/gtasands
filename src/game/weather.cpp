@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdlib.h>
 
+#include "audio/aeweatheraudio.h"
 #include "game/debugopts.h"
 #include "game/player.h"
 #include "game/timecycle.h"
@@ -164,7 +165,12 @@ void setToAppropriateTypeNow(float x, float y) {
 bool isRainy() { return g.rain >= 0.2f; }
 
 static u32 s_debugFlash;
-void debugFlash() { s_debugFlash = timing::vblanks() + 10; }
+static u32 s_thunderAtMs;   // WhenToPlayLightningSound
+void debugFlash() {
+	s_debugFlash = timing::vblanks() + 10;
+	g.lightningDuration = 10;
+	s_thunderAtMs = timing::vblanks() * 50u / 3u + (20 - 10) * 150;
+}
 
 static u32 s_lastVbl;
 
@@ -198,6 +204,7 @@ void update(float camX, float camY, float camZ) {
 			if (randomBool(9.4f)) {
 				g.lightningBurst = false;
 				g.lightningDuration = vbl - g.lightningStart < 20 ? vbl - g.lightningStart : 20;
+				s_thunderAtMs = (20 - g.lightningDuration) * 150 + timeMs;   // light travels faster
 				g.lightningFlash = false;
 			} else if (timeMs - g.lightningFlashLastChange > 50) {
 				const bool was = g.lightningFlash;
@@ -213,6 +220,10 @@ void update(float camX, float camY, float camZ) {
 		}
 	} else {
 		g.lightningFlash = g.lightningBurst = false;
+	}
+	if (s_thunderAtMs && timeMs > s_thunderAtMs) {
+		aeweather::thunder();   // m_WeatherAudioEntity.AddAudioEvent(AE_THUNDER)
+		s_thunderAtMs = 0;
 	}
 	if (vbl < s_debugFlash) g.lightningFlash = (vbl >> 1) & 1;
 	if (!dbg::opts.weatherFx) g.lightningFlash = false;

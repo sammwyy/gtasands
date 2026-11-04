@@ -13,6 +13,8 @@
 #include "platform/input.h"
 #include "platform/timing.h"
 #ifdef GTASADS_DEBUG
+#include "audio/aehardware.h"
+#include "audio/audioengine.h"
 #include "game/collision.h"
 #include "game/timecycle.h"
 #include "game/weather.h"
@@ -84,8 +86,9 @@ static void colTest(int f) {
 	static FILE* out;
 	auto pos = [&](const char* what) {
 		if (!out) return;
-		fprintf(out, "%4d %-6s pos=%.2f,%.2f,%.2f cam=%.2f near=%u miss=%u\n", f, what, player::g.x, player::g.y,
-		        player::g.z, player::camDist(), col::stats().nearCount, col::stats().missing);
+		fprintf(out, "%4d %-6s pos=%.2f,%.2f,%.2f cam=%.2f near=%u miss=%u steps=%lu land=%lu\n", f, what, player::g.x,
+		        player::g.y, player::g.z, player::camDist(), col::stats().nearCount, col::stats().missing,
+		        (unsigned long)audio::stats().footsteps, (unsigned long)audio::stats().landings);
 	};
 	if (f == 1) dbg::opts.collision = dbg::opts.skeleton = true;
 	if (f == 600) {
@@ -109,6 +112,69 @@ static void colTest(int f) {
 	}
 	if (f > 960 && f <= 1040 && f % 8 == 0) pos("fall");
 	if (f == 1041 && out) {
+		char ab[320];
+		audio::statsLine(ab, sizeof ab);
+		fprintf(out, "%s\n", ab);
+		fclose(out);
+		out = nullptr;
+	}
+}
+#endif
+
+#if defined(GTASADS_DEBUG) && defined(GTASADS_AUDTEST)
+// Headless audio test (after the screenshot sequence): run, jump, punch,
+// rain + a lightning flash (thunder), M4 bursts, then a sandstorm (the
+// ambience stream). Writes the audio stats line per phase to
+// gtasads_audtest.txt and records the mixer output (both capture units) of
+// each phase to gtasads_aud_<phase>.wav (tools/audwav.py prints levels).
+static void audTest(int f) {
+	static FILE* out;
+	static char capPath[40];
+	auto log = [&](const char* what) {
+		if (!out) return;
+		char ab[320];
+		audio::statsLine(ab, sizeof ab);
+		fprintf(out, "%4d %-8s %s\n", f, what, ab);
+	};
+	auto cap = [&](const char* what, float seconds) {
+		if (capPath[0] || !aehw::captureStart((uint32_t)(seconds * 16384.0f), 16384)) return;
+		snprintf(capPath, sizeof capPath, "fat:/gtasads_aud_%s.wav", what);
+	};
+	if (capPath[0] && !aehw::captureBusy()) {
+		aehw::captureSave(capPath);
+		capPath[0] = 0;
+	}
+	if (f == 600) {
+		player::respawn();
+		player::debugSetView(0.0f, 0.42f);
+		out = fopen("fat:/gtasads_audtest.txt", "w");
+		log("spawn");
+	}
+	if (f == 605) cap("run", 2.5f);
+	if (f == 610) input::debugHold(KEY_UP);
+	if (f == 680) log("run");
+	if (f == 690) input::debugHold(0);
+	if (f == 700) input::debugHold(KEY_X);
+	if (f == 704) input::debugHold(0);
+	if (f == 770) log("jump");
+	if (f == 780) input::debugHold(KEY_A);
+	if (f == 784) input::debugHold(0);
+	if (f == 820) log("punch");
+	if (f == 830) weather::forceWeatherNow(weather::RAINY_SF);
+	if (f == 940) cap("rain", 2.0f);
+	if (f == 960) log("rain");
+	if (f == 970) weather::debugFlash();
+	if (f == 1005) cap("thunder", 3.0f);
+	if (f == 1090) log("thunder");
+	if (f == 1095) player::giveWeapon(player::WEAPON_M4, 500);
+	if (f == 1110) input::debugHold(KEY_A);
+	if (f == 1112) cap("m4", 2.0f);
+	if (f == 1170) input::debugHold(0);
+	if (f == 1172) log("m4");
+	if (f == 1180) weather::forceWeatherNow(weather::SANDSTORM_DESERT);
+	if (f == 1340) cap("sand", 2.0f);
+	if (f == 1420) log("sand");
+	if (f == 1421 && out) {
 		fclose(out);
 		out = nullptr;
 	}
@@ -126,6 +192,9 @@ void draw() {
 			++s_gameFrames;
 #ifdef GTASADS_COLTEST
 			colTest(s_gameFrames);
+#endif
+#ifdef GTASADS_AUDTEST
+			audTest(s_gameFrames);
 #endif
 			// headless screenshots (tools/dsshot.py): one per compass direction
 			// (shot0 at the marker frame, then turn, give streaming 60 frames,
@@ -162,6 +231,9 @@ void draw() {
 				        (unsigned long)cs.loads, cs.updateUs, cs.queryUs, cs.pushUs, (unsigned long)cs.faceTests,
 				        cs.debugFaces, player::g.x, player::g.y,
 				        player::g.z, player::viewZ(), player::camDist());
+				char ab[320];
+				audio::statsLine(ab, sizeof ab);
+				fprintf(f, "%s\n", ab);
 			};
 			if (s_gameFrames == 120 + 5 * 90 + 2) {
 				char mb[128];
