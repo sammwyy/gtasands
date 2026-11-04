@@ -99,7 +99,14 @@ void init();
 void update();            // once per frame while INGAME and the menu is down
 float camYaw();           // chase camera heading, radians (0 = north, clockwise)
 float camPitch();         // radians above the horizon; positive looks down
-float groundZ();          // flat ground until collision exists; jump lifts g.z
+// Render / camera reference height: CJ's feet z (g.z), smoothed so stairs and
+// jumps don't jerk the camera. The GL origin of the frame sits here.
+float viewZ();
+float camDist();          // chase distance after the camera collision (<= dbg::opts.camDist)
+constexpr float CAM_LOOK_H = 0.85f;   // chase camera target above viewZ()
+// Puts CJ on the floor under him (collision probe around g.z, else from
+// 60 m above). The loading screen calls it once the collision is in.
+void placeOnGround();
 #ifdef GTASADS_DEBUG
 void debugSetView(float yaw, float pitch);   // headless tests: face + camera heading
 #endif

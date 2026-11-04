@@ -1,6 +1,7 @@
 #include <nds.h>
 #include <stdlib.h>
 
+#include "game/collision.h"
 #include "game/intro.h"
 #include "game/loadscreen.h"
 #include "game/player.h"
@@ -127,6 +128,7 @@ int main() {
 		timing::setSection(timing::SEC_3D, timing::usSince(t));
 		t = timing::ticks();
 		if (s_state == AppState::INGAME && !FrontEndMenuManager.m_bMenuActive) {
+			col::update(player::g.x, player::g.y, player::g.z);        // collision near list + streaming
 			player::update();
 			weather::update(player::g.x, player::g.y, player::g.z);     // CWeather::Update
 			timecycle::update(player::g.x, player::g.y, player::g.z);   // CTimeCycle::Update

@@ -8,6 +8,7 @@
 #include "assets/texture.h"
 #include "game/animstore.h"
 #include "game/cj.h"
+#include "game/collision.h"
 #include "game/debugopts.h"
 #include "game/hud/chud.h"
 #include "game/hud/radar.h"
@@ -158,7 +159,10 @@ static void pagePerf() {
 	line(17, "mdl %3u+%2u %3luK sec%2u i%4u", w.modelsReady, w.modelsLoading,
 	     (unsigned long)(w.listBytes >> 10), w.sectors, w.instances);
 	line(18, "tex %3u fail %2u vram %3luK", w.textures, w.texFailed, (unsigned long)(w.texVram >> 10));
-	blank(19, 23);
+	const col::Stats& cs = col::stats();
+	line(19, "col %3u %3luK near %2u miss %2u", cs.models, (unsigned long)(cs.bytes >> 10), cs.nearCount, cs.missing);
+	line(20, "col us u%4u q%4u loads %lu", cs.updateUs, cs.queryUs, (unsigned long)cs.loads);
+	blank(21, 23);
 }
 
 static void regionRow(int row, const char* name, mem::Region r) {
@@ -281,6 +285,8 @@ static void pageGame(bool inGame) {
 	blank(15, 23);
 }
 
+static void toggle2(int row, const char* a, bool& va, const char* b, bool& vb);
+
 static void toggleRow(int row, const char* name, bool& v) {
 	line(row, "%s", name);
 	int c = 18;
@@ -314,7 +320,16 @@ static void pageRend() {
 	c = 22;
 	if (button(10, c, "-") && o.worldPolys > 400) o.worldPolys -= 100;
 	if (button(10, c, "+") && o.worldPolys < 2048) o.worldPolys += 100;
-	blank(11, 23);
+	toggle2(11, "colls", o.collision, "outline", o.colOutline);
+	line(12, "col range %2dm  polys %4d", o.colRange, o.colPolys);
+	c = 0;
+	put(13, 0, "");
+	if (button(13, c, "r-") && o.colRange > 2) o.colRange -= 2;
+	if (button(13, c, "r+") && o.colRange < 40) o.colRange += 2;
+	if (button(13, c, "p-") && o.colPolys > 100) o.colPolys -= 100;
+	if (button(13, c, "p+") && o.colPolys < 1800) o.colPolys += 100;
+	toggleRow(14, "physics (col)", o.physics);
+	blank(15, 23);
 }
 
 // Two toggles on one row: name at col 0 / 13, buttons at col 7 / 24.

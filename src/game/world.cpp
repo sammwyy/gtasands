@@ -64,13 +64,7 @@ struct TexEntry {
 	uint32_t lastUse;
 };
 
-// An instance as kept in RAM: same 32 bytes as ds::WorldInstance, but the
-// rotation rows are already converted to GL axes (SA (x,y,z) -> GL (x,z,-y)).
-struct Inst {
-	int32_t pos[3];           // SA, 20.12
-	int16_t m[9];             // GL basis rows right/forward/up, 4.12
-	uint16_t model;
-};
+using Inst = Instance;
 static_assert(sizeof(Inst) == sizeof(ds::WorldInstance));
 
 struct Sector {
@@ -119,6 +113,23 @@ static inline int32_t iabs(int32_t v) { return v < 0 ? -v : v; }
 
 bool ready() { return s_file && s_slots; }
 const Stats& stats() { return s_stats; }
+
+int sectors(SectorView* out, int max) {
+	int n = 0;
+	for (const Sector& sc : s_sectors) {
+		if (!sc.used || !sc.count || n >= max) continue;
+		out[n++] = { sc.inst, sc.count, { sc.c[0], sc.c[1], sc.c[2] }, sc.reach };
+	}
+	return n;
+}
+
+bool readAt(uint32_t offset, void* dst, uint32_t bytes) {
+	return s_file && !fseek(s_file, (long)offset, SEEK_SET) && fread(dst, 1, bytes, s_file) == bytes;
+}
+
+uint32_t colOffset() { return s_file ? s_hdr.colOffset : 0; }
+bool sectorsPending() { return s_windowDirty; }
+int numModels() { return s_file ? s_hdr.numModels : 0; }
 
 // ----------------------------------------------------------------------------
 // Textures (CTxdStore-lite): one entry per (txd, texture name), refcounted by
@@ -743,7 +754,7 @@ static bool open() {
 	s_file = fopen("nitro:/data/world.dwld", "rb");
 	if (!s_file) return false;
 	if (fread(&s_hdr, sizeof s_hdr, 1, s_file) != 1 || s_hdr.magic != DS_FOURCC('D', 'W', 'L', 'D') ||
-	    s_hdr.version != 1 || !s_hdr.numModels) {
+	    s_hdr.version != 4 || !s_hdr.numModels) {
 		fclose(s_file);
 		s_file = nullptr;
 		return false;
@@ -793,7 +804,7 @@ bool initStep() {
 	const float px = player::g.x, py = player::g.y;
 	s_frame++;
 	updateSectors(px, py, 64);
-	scan(makeCam(px, py, player::groundZ() + 2.0f, 0.0f, 0.0f, false));
+	scan(makeCam(px, py, player::g.z + 2.0f, 0.0f, 0.0f, false));
 	const bool idle = s_numWant == 0;
 	stream(PRELOAD_US, 4);
 	bool pending = false;

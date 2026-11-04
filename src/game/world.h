@@ -22,6 +22,28 @@ struct DrawView {
 	float originX, originY, originZ; // SA point that maps to the GL origin (player-local space)
 };
 
+// An instance as kept in RAM: same 32 bytes as ds::WorldInstance, but the
+// rotation rows are already converted to GL axes (SA (x,y,z) -> GL (x,z,-y)).
+struct Instance {
+	int32_t pos[3];           // SA, 20.12
+	int16_t m[9];             // GL basis rows right/forward/up, 4.12
+	uint16_t model;
+};
+
+// Loaded sector window, for game/collision (instances stay valid until the
+// next world::update).
+struct SectorView {
+	const Instance* inst;
+	int count;
+	int32_t c[3], reach;      // bounding sphere (render radii), 1/16 m
+};
+int sectors(SectorView* out, int max);
+// Raw access to world.dwld (collision records live in it).
+bool readAt(uint32_t offset, void* dst, uint32_t bytes);
+uint32_t colOffset();         // ds::WorldHeader::colOffset (0 = no file)
+bool sectorsPending();        // the window around the player is still loading sectors
+int numModels();
+
 struct Stats {
 	uint16_t sectors, instances;    // loaded window
 	uint16_t candidates, drawn;     // in range / submitted last frame

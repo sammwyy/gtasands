@@ -10,6 +10,7 @@
 #include "assets/txdfile.h"
 #include "game/animstore.h"
 #include "game/cj.h"
+#include "game/collision.h"
 #include "game/hud/chud.h"
 #include "game/hud/radar.h"
 #include "game/menu/menu.h"
@@ -107,6 +108,11 @@ static bool jobSky() {
 }
 static bool jobWeather() { weather::init(); return true; }
 static bool jobWorld() { return world::initStep(); }   // open world.dwld + LoadScene around the player
+static bool jobCol() {                                 // collision index + records around the player
+	if (!col::initStep()) return false;
+	player::placeOnGround();
+	return true;
+}
 static bool jobReport() {
 	char buf[96];
 	mem::summary(buf, sizeof buf);
@@ -132,6 +138,7 @@ static bool (*const s_jobs[])() = {
 	jobZones,
 	jobRadar,
 	jobWorld,
+	jobCol,
 	jobReport,
 };
 static constexpr int NUM_JOBS = sizeof(s_jobs) / sizeof(s_jobs[0]);

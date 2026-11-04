@@ -182,7 +182,7 @@ struct RadarHeader {
 // gridW x gridH sector grid (row-major from the south-west corner, x fastest).
 struct WorldHeader {
 	uint32_t magic;          // 'DWLD'
-	uint16_t version;        // 1
+	uint16_t version;        // 4
 	uint16_t sectorSize;     // metres
 	int16_t originX, originY; // SA coords of sector (0,0)'s south-west corner
 	uint16_t gridW, gridH;
@@ -191,6 +191,7 @@ struct WorldHeader {
 	uint32_t modelsOffset;   // WorldModel[numModels], then WorldTxd[numTxds]
 	uint32_t sectorsOffset;  // WorldSector[gridW * gridH]
 	uint32_t instancesOffset; // WorldInstance[numInstances], grouped by sector
+	uint32_t colOffset;      // WorldColIndex[numModels], then the WorldCol records
 };
 struct WorldModel {
 	char name[24];           // pack entry = name + ".dff"
@@ -214,6 +215,29 @@ struct WorldInstance {
 	fx16 rot[9];             // rows right, forward, up (SA world = x*right + y*fwd + z*up + pos)
 	uint16_t model;          // WorldModel index
 };
+// Map collision (the model's COL from the gta3.img .col archives), model
+// space, 1/128 m units ("cu", like COL2+ vertices). Read per model on demand.
+struct WorldColIndex {
+	uint32_t offset, size;   // absolute in file; offset 0 = no collision
+	uint16_t radius;         // 1/16 m, sphere around the model origin holding every volume
+	uint16_t pad;
+};
+struct WorldCol {
+	int16_t bmin[3], bmax[3];
+	uint16_t numSpheres, numBoxes, numNodes, numVerts;
+	uint16_t numFaces, pad;
+	// WorldColSphere spheres[numSpheres]; WorldColBox boxes[numBoxes]
+	// WorldColNode nodes[numNodes] (node 0 = root); WorldColFace faces[numFaces]
+	// int16_t verts[numVerts][3] (padded to 4)
+};
+struct WorldColSphere { int16_t c[3]; uint16_t r; uint8_t surface, light, pad[2]; };
+struct WorldColBox { int16_t min[3], max[3]; uint8_t surface, light, pad[2]; };
+// Face BVH (median split, <= 6 faces per leaf). Leaf: b & 0x8000, faces
+// [a, a + (b & 0x7FFF)); inner: children a and b.
+struct WorldColNode { int16_t min[3], max[3]; uint16_t a, b; };
+// Front side: n = (v[b] - v[a]) x (v[c] - v[a]) (re-wound from COL's (c-a)x(b-a)).
+// light = tColLighting (day low nibble, night high nibble).
+struct WorldColFace { uint16_t a, b, c; uint8_t surface, light; int16_t n[3]; uint16_t pad; };
 
 // ---------------------------------------------------------------- audio
 enum SoundFormat : uint8_t { SND_PCM8 = 0, SND_PCM16 = 1, SND_ADPCM = 2 };  // = DS SOUNDxCNT format bits
@@ -274,8 +298,10 @@ static_assert(sizeof(ColModel) == 76 && sizeof(ColSphere) == 20 && sizeof(ColBox
 static_assert(sizeof(AnimHeader) == 32 && sizeof(AnimEntry) == 28 && sizeof(AnimSeq) == 32 &&
               sizeof(AnimDirEntry) == 32);
 static_assert(sizeof(RadarHeader) == 24);
-static_assert(sizeof(WorldHeader) == 36 && sizeof(WorldModel) == 36 && sizeof(WorldTxd) == 28 &&
+static_assert(sizeof(WorldHeader) == 40 && sizeof(WorldModel) == 36 && sizeof(WorldTxd) == 28 &&
               sizeof(WorldSector) == 8 && sizeof(WorldInstance) == 32);
+static_assert(sizeof(WorldColIndex) == 12 && sizeof(WorldCol) == 24 && sizeof(WorldColSphere) == 12 &&
+              sizeof(WorldColBox) == 16 && sizeof(WorldColNode) == 16 && sizeof(WorldColFace) == 16);
 static_assert(sizeof(SoundHeader) == 24 && sizeof(SfxPakBank) == 12 && sizeof(BankLookupHeader) == 12 && sizeof(StreamTrack) == 12);
 
 }

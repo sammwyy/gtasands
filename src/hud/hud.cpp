@@ -13,6 +13,7 @@
 #include "platform/input.h"
 #include "platform/timing.h"
 #ifdef GTASADS_DEBUG
+#include "game/collision.h"
 #include "game/timecycle.h"
 #include "game/weather.h"
 #include "game/debugopts.h"
@@ -74,6 +75,46 @@ void logClear() {
 	s_logSeq++;
 }
 
+#if defined(GTASADS_DEBUG) && defined(GTASADS_COLTEST)
+// Headless collision test (after the screenshot sequence): overlays on, run
+// north then east from the spawn with a held d-pad (walls must stop CJ),
+// drop him from 6 m (must land on the floor), log to gtasads_coltest.txt and
+// capture shot6 / shot7 at the end of each run.
+static void colTest(int f) {
+	static FILE* out;
+	auto pos = [&](const char* what) {
+		if (!out) return;
+		fprintf(out, "%4d %-6s pos=%.2f,%.2f,%.2f cam=%.2f near=%u miss=%u\n", f, what, player::g.x, player::g.y,
+		        player::g.z, player::camDist(), col::stats().nearCount, col::stats().missing);
+	};
+	if (f == 1) dbg::opts.collision = dbg::opts.skeleton = true;
+	if (f == 600) {
+		player::respawn();
+		player::debugSetView(0.0f, 0.42f);
+		out = fopen("fat:/gtasads_coltest.txt", "w");
+		pos("spawn");
+	}
+	if (f == 620 || f == 800) input::debugHold(KEY_UP);
+	if (f == 790) {
+		player::debugSetView(1.5708f, 0.42f);
+		dbg::opts.collision = dbg::opts.skeleton = false;   // shot7: plain render (camera collision)
+	}
+	if (f > 620 && f <= 940 && f % 20 == 0) pos(f < 790 ? "north" : "east");
+	if (f == 770 || f == 940) input::debugHold(0);
+	if (f == 780) video::requestCapture("fat:/gtasads_shot6.dscr");
+	if (f == 950) video::requestCapture("fat:/gtasads_shot7.dscr");
+	if (f == 960) {
+		pos("drop");
+		player::g.z += 6.0f;
+	}
+	if (f > 960 && f <= 1040 && f % 8 == 0) pos("fall");
+	if (f == 1041 && out) {
+		fclose(out);
+		out = nullptr;
+	}
+}
+#endif
+
 void draw() {
 	if (s_screen == Screen::GAME) {
 		if (s_gameActive && chud::ready()) {
@@ -83,6 +124,9 @@ void draw() {
 			// the SD so headless test runs can confirm the full path rendered
 			static int s_gameFrames;
 			++s_gameFrames;
+#ifdef GTASADS_COLTEST
+			colTest(s_gameFrames);
+#endif
 			// headless screenshots (tools/dsshot.py): one per compass direction
 			// (shot0 at the marker frame, then turn, give streaming 60 frames,
 			// capture), a bird's eye view (shot4), then a teleport 150 m west to
@@ -111,6 +155,13 @@ void draw() {
 				        (unsigned long)(ws.listBytes >> 10), (unsigned long)(ws.texVram >> 10),
 				        (unsigned long)ws.loads, (unsigned long)ws.uploads, ws.polysBefore, ws.polysAfter,
 				        ws.updateUs, ws.drawUs, ws.scanUs);
+				const col::Stats& cs = col::stats();
+				fprintf(f, "col: models=%u bytes=%luK near=%u wants=%u miss=%u loads=%lu upd=%uus query=%uus push=%uus "
+				        "ftests=%lu dbgfaces=%u pos=%.2f,%.2f,%.2f viewz=%.2f camdist=%.2f\n",
+				        cs.models, (unsigned long)(cs.bytes >> 10), cs.nearCount, cs.wants, cs.missing,
+				        (unsigned long)cs.loads, cs.updateUs, cs.queryUs, cs.pushUs, (unsigned long)cs.faceTests,
+				        cs.debugFaces, player::g.x, player::g.y,
+				        player::g.z, player::viewZ(), player::camDist());
 			};
 			if (s_gameFrames == 120 + 5 * 90 + 2) {
 				char mb[128];

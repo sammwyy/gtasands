@@ -10,9 +10,11 @@ the code base; open source files only for the parts you are changing, and update
 ARCHITECTURE.md when a system changes or a new one lands.
 
 Current state: frontend + loading screen + intro, CJ (clothes, anims, locomotion, jump/fight/aim),
-bottom-screen GTA HUD with radar, debug UI, time cycle + weather + sky/fog/rain, and the streamed
+bottom-screen GTA HUD with radar, debug UI, time cycle + weather + sky/fog/rain, the streamed
 map (Grove Street / Ganton box from `[world] bounds`: sectors, map models + textures, culling,
-poly budget; no LODs, no collision yet -> CJ walks on a flat z = 13.5). 30 fps at the spawn.
+poly budget; no LODs yet) and map collision (COL baked into world.dwld: CJ walks on the real
+ground, walls stop him, falls off ledges, the camera is pulled in front of walls; REND tab
+overlays: skeleton + collision wireframe on top with an outline). 30 fps at the spawn.
 
 ## Toolchain
 - devkitPro at `~/devkitpro` (`source ~/devkitpro/devkitarm.sh`).
@@ -61,6 +63,13 @@ poly budget; no LODs, no collision yet -> CJ walks on a flat z = 13.5). 30 fps a
   job and pass it through `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DMYHOOK=..."`;
   remove it afterwards.
 - Fat-backend probe: `strings dldi.bin | grep probe` -> `probe ok`.
+- Collision test (DEBUG): `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DGTASADS_COLTEST"`
+  turns the skeleton + collision overlays on for all shots, then after the screenshot sequence
+  runs CJ north / west with a held d-pad (`input::debugHold`), drops him from 6 m and writes
+  `gtasads_coltest.txt` (pos, camera distance, near list per 20 frames) + shot6 / shot7.
+  Needs `timeout -s INT 140`. `tools/dsshot.py IN OUT --scale 3` zooms to check 1-px outlines.
+- What stopped CJ there? `python3 tools/colnear.py X Y Z [R]` lists the baked collision
+  (faces with world n.z, boxes) around a point.
 
 ## Asset pipeline commands
 ```
@@ -92,15 +101,16 @@ while tuning. Current total ~413 MB of the 448 MB budget.
 - Source basenames must be unique (objects are flattened into `build/`).
 
 ## Roadmap (suggested order)
-1. World data + streaming: done for a bounds box (see ARCHITECTURE 6b). Next: LODs (keep
+1. World data + streaming: done for a bounds box (see ARCHITECTURE 6b), collision too (6c). Next: LODs (keep
    `lods = true` instances with their HD link, draw the LOD past the HD draw distance / while the
    HD is not loaded: far field for a few tris), triangle strips in compile() (lists are GE/DMA
    bound, ~8 ms for ~70 models), then grow `bounds` to all of LS (model records are already read
    on demand; the TXD table is resident).
 2. Performance: the HUD costs ~8 ms/frame and the map draw ~8 ms -> 30 fps; strips + chaining
    the list DMAs from the DMA IRQ (CPU free while the GE works) would bring back 60.
-3. Collision + simple physics (ped vs world -> real ground z, collision lighting for `pedLight`,
-   rain splashes on real surfaces), then vehicles from handling.cfg.
+3. Physics: ped vs world collision, ground z and collision lighting for `pedLight` are done
+   (ARCHITECTURE 6c). Next: rain splashes on real surfaces, ledge climbing, then vehicles from
+   handling.cfg (reuse `col::castSegment` / the BVH for wheels, a box/sphere set per car).
 4. Audio: DSND via the ARM7 sound API, SFX banks (thunder for lightning), ambience streams.
 5. Scripts: SCM VM (`data/script/main.scm`), start with mission-less free roam.
 Profile constantly (PERF tab, hudok marker) and tune resources.toml to fit.

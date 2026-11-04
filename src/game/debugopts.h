@@ -6,7 +6,12 @@ namespace dbg {
 
 struct Options {
 	bool drawCj = true;      // CJ mesh (display lists)
-	bool skeleton = false;   // bone lines overlay
+	bool skeleton = false;   // bone lines overlay (on top, outlined)
+	bool collision = false;  // map collision wireframe overlay (on top, outlined)
+	bool colOutline = true;  // collision overlay outline (5x the polygons)
+	int colRange = 12;       // m around the player drawn by the collision overlay
+	int colPolys = 900;      // polygon budget of the collision overlay (incl. outline passes)
+	bool physics = true;     // collision response for CJ / camera (off = old flat z, no walls)
 	bool ground = false;     // placeholder ground grid + boxes (always on without world.dwld)
 	bool world = true;       // streamed map (game/world)
 	int worldPolys = 1800;   // stop drawing map objects past this hardware polygon count (2048 max)

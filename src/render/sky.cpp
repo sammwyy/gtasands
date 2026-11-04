@@ -494,7 +494,7 @@ static void precipitation(const View& v, const Precip& p, u32 dv) {
 	const s32 camX = (s32)(v.camX * M), camY = (s32)(v.camY * M), camZ = (s32)(v.camZ * M);
 	// box centre: a little ahead of the camera, where the player looks
 	const s32 bx = camX + (s32)(fwdX * (float)p.half * 0.6f), by = camY + (s32)(fwdY * (float)p.half * 0.6f);
-	const s32 gz = (s32)(player::groundZ() * M);
+	const s32 gz = (s32)(player::viewZ() * M);
 	const s32 H = p.half, W = 2 * p.half;
 	if (!s_dropsInit) {
 		for (Drop& d : s_drops) d = { bx - H + rndi(W), by - H + rndi(W), gz + rndi(p.height) };

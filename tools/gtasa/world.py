@@ -9,10 +9,12 @@ import math
 import struct
 from pathlib import Path
 
-from . import dff, img
+from . import col, dff, img
 from .dsfmt import fx, fx16, name as fname, pad4
 
-VERSION = 1
+VERSION = 4
+COL_UNIT = 128        # collision coordinates: s16 at 1/128 m (as COL2+ vertices)
+COL_LEAF = 6          # faces per BVH leaf
 NO_TIME = 24          # timeOn/timeOff for always-visible objects
 IDE_SECTIONS = {'objs', 'tobj', 'anim', 'txdp'}
 AREA_ANY = 13         # eAreaCodes::AREA_CODE_13: visible in every area
@@ -131,6 +133,106 @@ def _radius(imgp, off, size):
     return max(1, min(0xFFFF, math.ceil(r)))
 
 
+def _col_models(imgp, toc, wanted):
+    """CFileLoader::LoadCollisionFile over every .col archive in the img: model name -> ColModel
+    (first definition wins, like a model whose col is already set)."""
+    out, dups = {}, 0
+    for n, (o, s) in toc.items():
+        if not n.endswith('.col'):
+            continue
+        try:
+            models = col.parse(img.read_entry(imgp, o, s))
+        except Exception:  # noqa: BLE001 - a broken archive just loses its collision
+            continue
+        for c in models:
+            k = c.name.lower()
+            if k not in wanted:
+                continue
+            if k in out:
+                dups += 1
+                continue
+            out[k] = c
+    return out, dups
+
+
+def _q(v):
+    return max(-32768, min(32767, round(v * COL_UNIT)))
+
+
+def _col_record(c):
+    """ColModel -> WorldCol record (ds_formats.h). Faces are re-wound so that
+    n = (v1 - v0) x (v2 - v0) is the front normal (CColTrianglePlane uses
+    (c - a) x (b - a)), degenerate ones dropped, then put in a bbox tree (BVH).
+    Returns (bytes, radius in 1/16 m, faces)."""
+    verts = [tuple(_q(x) for x in v) for v in c.verts]
+    faces = []
+    for a, b, cc, mat, light in c.faces:
+        if max(a, b, cc) >= len(verts):
+            continue
+        v0, v1, v2 = verts[a], verts[cc], verts[b]
+        e1 = [v1[i] - v0[i] for i in range(3)]
+        e2 = [v2[i] - v0[i] for i in range(3)]
+        n = (e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0])
+        ln = math.sqrt(n[0] ** 2 + n[1] ** 2 + n[2] ** 2)
+        if ln < 1e-6:
+            continue
+        faces.append((a, cc, b, mat, light, tuple(max(-4096, min(4096, round(k / ln * 4096))) for k in n)))
+    spheres = [(tuple(_q(x) for x in ctr), max(1, min(0xFFFF, round(r * COL_UNIT))), surf) for ctr, r, surf in c.spheres]
+    boxes = [(tuple(_q(min(mn[i], mx[i])) for i in range(3)), tuple(_q(max(mn[i], mx[i])) for i in range(3)), surf)
+             for mn, mx, surf in c.boxes]
+
+    pts = [verts[i] for f in faces for i in f[:3]] + [b[0] for b in boxes] + [b[1] for b in boxes]
+    pts += [tuple(s[0][i] + d * s[1] for i in range(3)) for s in spheres for d in (-1, 1)]
+    if not pts:
+        return None, 0, 0
+    bmin = [min(p[i] for p in pts) for i in range(3)]
+    bmax = [max(p[i] for p in pts) for i in range(3)]
+    rad = max(math.sqrt(sum(max(abs(bmin[i]), abs(bmax[i])) ** 2 for i in range(3))) / COL_UNIT, 0.5)
+
+    # BVH over the faces (median split on the longest centroid axis, <= COL_LEAF
+    # faces per leaf), nodes in depth-first order: faces get reordered so every
+    # leaf is one contiguous range.
+    fbox = [([min(verts[f[k]][j] for k in range(3)) for j in range(3)],
+             [max(verts[f[k]][j] for k in range(3)) for j in range(3)]) for f in faces]
+    order, nodes = [], []
+
+    def build_node(ids):
+        mn = [min(fbox[i][0][j] for i in ids) for j in range(3)]
+        mx = [max(fbox[i][1][j] for i in ids) for j in range(3)]
+        me = len(nodes)
+        nodes.append(None)
+        if len(ids) <= COL_LEAF:
+            nodes[me] = (mn, mx, len(order), 0x8000 | len(ids))
+            order.extend(ids)
+            return me
+        cen = {i: [fbox[i][0][j] + fbox[i][1][j] for j in range(3)] for i in ids}
+        ext = [max(cen[i][j] for i in ids) - min(cen[i][j] for i in ids) for j in range(3)]
+        ax = ext.index(max(ext))
+        ids = sorted(ids, key=lambda i: cen[i][ax])
+        half = len(ids) // 2
+        left = build_node(ids[:half])
+        right = build_node(ids[half:])
+        nodes[me] = (mn, mx, left, right)
+        return me
+    if faces:
+        build_node(list(range(len(faces))))
+    faces = [faces[i] for i in order]
+    used = sorted({k for f in faces for k in f[:3]})
+    remap = {v: i for i, v in enumerate(used)}
+
+    out = bytearray(struct.pack('<6h6H', *bmin, *bmax, len(spheres), len(boxes), len(nodes), len(used), len(faces), 0))
+    for ctr, r, surf in spheres:
+        out += struct.pack('<3hH4B', *ctr, r, surf[0], surf[3], 0, 0)
+    for mn, mx, surf in boxes:
+        out += struct.pack('<6h4B', *mn, *mx, surf[0], surf[3], 0, 0)
+    for mn, mx, a, b in nodes:
+        out += struct.pack('<6hHH', *mn, *mx, a, b)
+    for a, b, cc, mat, light, n in faces:
+        out += struct.pack('<3H2B3hH', remap[a], remap[b], remap[cc], mat, light, *n, 0)
+    out += pad4(b''.join(struct.pack('<3h', *verts[i]) for i in used))
+    return bytes(out), min(0xFFFF, math.ceil(rad * 16)), len(faces)
+
+
 def build(game, sec):
     """Returns (blob, stats)."""
     game = Path(game)
@@ -220,13 +322,14 @@ def build(game, sec):
         cx, cy = int((t[1] - ox) // size), int((t[2] - oy) // size)
         cells[cy * gw + cx].append(t)
 
-    hdr = 36
+    hdr = 40
     models_off = hdr
     txds_off = models_off + 36 * len(models)
     sectors_off = txds_off + 28 * len(txds)
     inst_off = sectors_off + 8 * gw * gh
-    out = bytearray(struct.pack('<4sHHhhHHHHIIII', b'DWLD', VERSION, size, ox, oy, gw, gh, len(models), len(txds),
-                                len(insts), models_off, sectors_off, inst_off))
+    col_off = inst_off + 32 * len(insts)
+    out = bytearray(struct.pack('<4sHHhhHHHHIIIII', b'DWLD', VERSION, size, ox, oy, gw, gh, len(models), len(txds),
+                                len(insts), models_off, sectors_off, inst_off, col_off))
     assert len(out) == hdr
     for name, ti, dd, flags, on, off, rad in models:
         out += fname(name, 24) + struct.pack('<HHBBHI', ti, min(0xFFFF, int(dd)), on, off, rad, flags & 0xFFFFFFFF)
@@ -239,6 +342,25 @@ def build(game, sec):
     for c in cells:
         for mid, x, y, z, rot in c:
             out += struct.pack('<3i9hH', fx(x), fx(y), fx(z), *(fx16(r) for r in rot), midx[mid])
+    assert len(out) == col_off
+
+    # collision: WorldColIndex[numModels], then the records (model space)
+    cols, dups = _col_models(imgp, toc, {m[0] for m in models})
+    index, recs = bytearray(), bytearray()
+    rec_base = col_off + 12 * len(models)
+    nfaces = ncol = 0
+    for m in models:
+        c = cols.get(m[0])
+        rec, rad, nf = _col_record(c) if c else (None, 0, 0)
+        if rec is None:
+            index += struct.pack('<IIHH', 0, 0, 0, 0)
+            continue
+        index += struct.pack('<IIHH', rec_base + len(recs), len(rec), rad, 0)
+        recs += rec
+        nfaces += nf
+        ncol += 1
+    out += index + recs
     stats = {'instances': len(insts), 'models': len(models), 'txds': len(txds), 'sectors': gw * gh,
+             'col_models': ncol, 'col_faces': nfaces, 'col_kb': len(recs) >> 10, 'col_dups': dups,
              **{'skip_' + k: v for k, v in skipped.items() if v}}
     return pad4(bytes(out)), stats

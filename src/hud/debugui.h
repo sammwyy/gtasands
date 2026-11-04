@@ -10,7 +10,8 @@
 //   GAME  quick actions: wanted, health, armour, money, weapons, fat/muscle,
 //         sprint, clock, outfit, respawn
 //   REND  render/sim switches: CJ mesh, skeleton, ground, fixed step, sim
-//         speed/pause, camera distance, HUD repaint
+//         speed/pause, camera distance, HUD repaint, map + poly budget,
+//         collision overlay (outline, range, poly budget), physics on/off
 // Immediate-mode: pages are reprinted every frame on the text console and
 // buttons ([label]) react to a stylus tap on their characters.
 namespace dbgui {

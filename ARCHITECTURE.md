@@ -37,6 +37,7 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `render/sky.*` | sky polys, sun/moon/stars/clouds/rainbow/flares, fog setup, rain/sand streaks |
 | `render/gxlist.*` | packed GX display list builder + DMA `callList` |
 | `render/sprite2d.*` | 2D quads on the 3D engine (frontend, loading screen), virtual 640x480 |
+| `render/overlay.*` | debug geometry on top of everything with a 1-px dark outline (skeleton, collision), section 6c |
 | `game/player.*` | player state snapshot + CClock + controls glue, chase camera, weapons, jump/fight |
 | `game/pedmove.*` | locomotion (PlayerControlZelda, SetRealMoveAnim-style blends), reusable for AI |
 | `game/pad.*` | CPad-lite (PC keyboard mode mapping) |
@@ -46,6 +47,7 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `game/weather.*` | CWeather port |
 | `game/streaming.*` | open packs (`g_models` gta3, `g_player`, `g_anim`) |
 | `game/world.*` | streamed map: DWLD sector window, map model/texture streaming, GX list compile, culling + draw (section 6b) |
+| `game/collision.*` | map collision: per-model COL records streamed from world.dwld, near list, segment cast / ground probe / sphere push, debug overlay (section 6c) |
 | `game/loadscreen.*` | CLoadingScreen + resumable init jobs |
 | `game/zones.*` | info.zon -> zone GXT names |
 | `game/sfx.*`, `game/intro.*` | frontend SFX/loading tune; DVID movie player |
@@ -66,7 +68,7 @@ timing::frameStart; input::poll
 state transitions (title -> menu -> loading -> ingame), SELECT = toggle bottom screen, START = pause menu
 video::beginFrame()                 // resets render env: no fog, default clear, auto sort
   menu | loadscreen::draw | renderer::draw      -> SEC_3D
-INGAME && !menu: player::update; weather::update; timecycle::update; world::update -> SEC_SIM
+INGAME && !menu: col::update; player::update; weather::update; timecycle::update; world::update -> SEC_SIM
 hud::draw()  (CPU framebuffer in RAM / debug console)                  -> SEC_HUD
 timing::frameEnd
 video::endFrame()   // glFlush(manual sort?) ; swiWaitForVBlank ; apply fog/clear registers
@@ -84,7 +86,9 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
   everything is drawn in **player-local** space (origin = player x,y at ground z). Larger things
   use a scale matrix (ground cells: `glScalef(8)`, weather FX: `glScalef(4)`).
 - Chase camera (`renderer::draw`): yaw 0 looks north, eye south of CJ on a sphere of
-  `dbg::opts.camDist`; pitch > 0 looks down. View = `Rx(pitch) Ry(-yaw) T(-eye)`.
+  `player::camDist()` (= `dbg::opts.camDist` shortened by the camera collision) around
+  `viewZ() + CAM_LOOK_H`; pitch > 0 looks down. View = `Rx(pitch) Ry(-yaw) T(-eye)`.
+  The GL origin is (player x, y, `player::viewZ()`): CJ's feet z, smoothed.
   Camera basis in GL world space: right `(cos y,0,-sin y)`, up `(-sin p sin y, cos p, -sin p cos y)`,
   forward `(-cos p sin y, -sin p, -cos p cos y)` (see `sky::draw`).
 - Projection: `gluPerspective(60, 4:3, 0.1, 200)` (`video::` constants; `sprite2d::endFrame`
@@ -95,9 +99,10 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
    constant-depth projections (see 5.), restores the projection.
 2. world light (`timecycle::worldLight`, darkened by `WetRoads`) for map/placeholder geometry,
    ped light (`timecycle::pedLight`) -> `cj::setLight`.
-3. view matrix, `cj::draw` (first, so the polygon budget never drops CJ), light0 = world light,
-   `world::draw` (section 6b), placeholder ground grid + boxes only if there is no world, then
-   `sky::drawWeatherFx`.
+3. view matrix, `cj::draw` (first, so the polygon budget never drops CJ; skeleton overlay inside),
+   `col::drawDebug` (REND collision overlay, before the map so the map budget yields to it),
+   light0 = world light, `world::draw` (section 6b), placeholder ground grid + boxes only if there
+   is no world, then `sky::drawWeatherFx`.
 
 ### GX display lists (CJ)
 - Each CJ part is compiled once (`cj.cpp buildPart`) into a packed list: POLY_ATTR, COLOR,
@@ -111,7 +116,7 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
 - CJ (and the map) are CCW-front like RW (checked on the dffs): `POLY_CULL_BACK`, which halved CJ
   from ~1200 to ~450 drawn polys. Sky/sprites stay `CULL_NONE`.
 - Matrix slot 13 holds the view while the map draws (`MATRIX_RESTORE` + `MATRIX_MULT4x3` per
-  instance); CJ uses 14..30.
+  instance), slot 12 while the collision overlay draws; CJ uses 14..30.
 - Lists that write `TEXIMAGE_PARAM`/`PLTT_BASE` themselves (map) must leave both registers at 0 and
   call `glBindTexture(0, 0)` afterwards: libnds caches the bound texture and skips redundant binds.
 
@@ -128,7 +133,8 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
 - No additive blending on DS. PC additive sprites are converted by the pipeline
   (`texture.additive`: alpha = max(r,g,b), colour normalised) and drawn with polygon alpha =
   max channel and normalised vertex colour (`sky.cpp additive()`), ~ dst + c over dark skies.
-- A triangle with a repeated vertex renders as a 1-px line (skeleton overlay, rain, streaks).
+- A triangle with a repeated vertex renders as a 1-px line (skeleton overlay, rain, streaks);
+  polygon alpha 0 = wireframe (collision overlay: one polygon per outlined triangle/quad).
 - Budget: 2048 polys / 6144 verts per frame. Grove Street spawn: sky ~100 + CJ ~450, map up to
   `dbg::opts.worldPolys` (1800 total), weather FX after it.
 
@@ -179,7 +185,9 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
 
 - `player::update`: pad -> fixed 60 Hz steps of `updateMove` (aim, PlayerControlZelda via
   `pedmove::control`, sprint energy, weapons, `updateAction` for jump/punch/land state machine,
-  root motion from `cj::rootDelta` rotated by heading), clock tick, stats, zone lookup.
+  root motion from `cj::rootDelta` rotated by heading) + `collide()` (section 6c), then `viewZ`
+  smoothing and the camera collision, clock tick, stats, zone lookup. `g.z` = CJ's feet (the
+  ped origin of the original is 1 m higher: the old SPAWN_Z 13.5 is the feet at 12.35).
 - Camera (keyboard mode): touch drag orbits (yaw/pitch). `followCam` (beta speed spring) swings
   behind CJ while he moves, but only when `camFollows()`: with stick input, only if the stick has
   no backward component (walkUD >= 0); with no input, if |heading - camYaw| < 1.9 rad. Stick back
@@ -224,9 +232,43 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   `world::suspend()` drops all lists/textures when the pause menu opens (VRAM); they stream back.
 - **Preload** (loading job): sectors + every model in range around the player, no frustum, until
   idle or 10 s.
-- Stats: PERF tab rows 15-18, `world:` line in hudok, REND tab toggle + poly budget.
+- Stats: PERF tab rows 15-18 (collision 19-20), `world:` / `col:` lines in hudok, REND tab toggle + poly budget.
 - Grove Street numbers: ~110 models / 600 instances in the window, ~70 drawn, ~1600 polys,
   lists ~850 KB, map textures ~200 KB VRAM; draw ~8 ms (scan 1.2) -> 30 fps with the 8 ms HUD.
+
+## 6c. Collision (`game/collision.*`, `render/overlay.*`)
+
+CCollision / CColStore / CWorld::ProcessLineOfSight reduced to an on-foot player + camera.
+- **Data** (offline, `world.py`): the COL of every DWLD model (first definition in the gta3.img
+  `.col` archives), model space, 1/128 m s16 ("cu"). Faces re-wound to CCW-front
+  (`(c-a)x(b-a)` in COL), unit normal 4.12 per face, degenerate ones dropped, then a BVH (median
+  split, <= 6 faces per leaf, 16 B nodes); boxes + spheres kept as they are; per-model radius in
+  the index. Grove box: 269 models, 24.7k faces, ~690 KB. Layout `ds::WorldCol*` (DWLD v4).
+- **Runtime**: index resident (12 B/model). `col::update` (before `player::update`) rebuilds a
+  near list every 8 frames / 2 m moved / cache change: instances within `GATHER_M` 14 m, their
+  transform copied (sectors may be freed by world::update) + a world AABB of the record bbox.
+  Records within `STREAM_M` 48 m stream in nearest first (1.5 ms/frame, anything within 14 m
+  even past the budget), LRU over `COL_CACHE_BYTES` 192 KB. `pending()` = something near still
+  missing or the sector window still loading: the player must not start falling then.
+- **Queries** (integer, model space, entry AABB -> model bbox -> BVH -> face bbox): `castSegment`
+  (single sided: hits faces it crosses from the front, boxes by slabs, spheres in float),
+  `groundAt` (vertical cast), `pushSphere` (faces with |n.z| < 0.6 + boxes + spheres, closest
+  point, push out horizontally, Gauss-Seidel per contact). 64-bit divides go through the
+  hardware divider (`div64`, libgcc's takes ~1000 cycles). ~0.4 ms/frame for 2 sim steps.
+- **Player** (`player.cpp collide()` after every step): the three ms_colModelPed1 spheres
+  (0.35 m at feet + 0.8/1.2/1.6) push CJ out of walls; feet follow the highest floor from
+  `STEP_UP` 0.5 above down to `SNAP_DOWN` 0.4 below (steps up eased); deeper = fall
+  (ACT_GLIDE with FALL_fall, lands on the first floor crossed, FALL_collapse past 12 m/s); no
+  floor at all = probe from 60 m above (under the map after a teleport). The floor face's
+  tColLighting feeds `timecycle::setSurfaceLight` (pedLight contact brightness). Camera: cast
+  from CJ's head to the eye (+0.3 m margin), pulled in at once, eases out. REND `physics` off =
+  the old flat SPAWN_Z ground.
+- **Overlay** (`render/overlay`): the emitter runs 5x under projections with a constant near
+  depth (z row = -k * z_eye, the sky trick at the near end): 4 black passes shifted 1 px, then
+  the colour pass nearer still -> on top of the scene with a dark outline. Skeleton (CJ bones)
+  and `col::drawDebug` (wireframe faces: green floor / orange wall / magenta ceiling, cyan
+  boxes, blue spheres, purple ped spheres, white ground hit) use it; REND: colls, outline,
+  range, poly budget (`colPolys`, 5x per face with the outline).
 
 ## 7. Bottom screen
 
@@ -256,7 +298,7 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   free frontend, splash, loading tune, open gta3 + sparse TOC index, player/anim packs, ped anim
   block, CJ (part per slice), player init, weather init, timecyc (weather per slice), sky
   textures (+ first timecycle update), HUD init, zones, radar prefetch, world (open + preload),
-  mem report.
+  collision (index + records around CJ, then `player::placeOnGround`), mem report.
   **New heavy init work must be a job.**
 - Intro: DVID (pal8 256x256 @10 fps + PCM16) on a bitmap BG. SFX: `genrl.dsfx` banks 59/60
   (frontend), 82 (loading tunes), IMA-ADPCM decoded to PCM16.
@@ -266,14 +308,15 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
 - Regions carved once from the heap (`budget.h`): SYS (TLSF for libc malloc/new), SCRATCH (LIFO
   `mem::Scratch` RAII, spills to STREAM), PERM (bump, never freed), STREAM (TLSF, everything else).
 - Every allocation is tagged (`mem::alloc(n, TAG_x)`): sys text model tex anim audio radar hud
-  pack world temp. `mem::summary/stats/check`. `mem::Pool<T>` (CPool port) for fixed-count objects.
+  pack world col temp. `mem::summary/stats/check`. `mem::Pool<T>` (CPool port) for fixed-count objects.
 - Temp file reads go to scratch. Static BSS ~130 KB; STREAM ~2.9 MB. Typical in-game:
   STREAM ~600 KB used, PERM 231/320 KB.
 - PERM is never freed: allocate there only once per boot (guard with a pointer, e.g. timecycle).
 - libc `_malloc_r` & co are replaced in `mem.cpp` (newlib dlmalloc/sbrk are not linked).
   `tlsf.cpp` is portable and passed a 400k-op host stress test (git history); keep it portable.
 - Pool budgets for peds/vehicles/objects are already declared in `budget.h`, plus the world ones
-  (`WORLD_*`: 192 model slots, 900 KB lists, 320 texture entries, 300 KB map VRAM, 96 sectors).
+  (`WORLD_*`: 192 model slots, 900 KB lists, 320 texture entries, 300 KB map VRAM, 96 sectors),
+  collision `COL_CACHE_BYTES` 192 KB / `COL_NEAR_MAX` 48 (tag `col`).
 - `tex::` slots: 384 (PERM), most of them map textures.
 
 ## 10. Asset pipeline (`tools/`)
@@ -291,7 +334,7 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
 - Output formats (details in `ds_formats.h`): DSPK packs (`models/gta3.dspk`, `gta_int.dspk`,
   `player.dspk`, `anim/anim.dspk`) with original entry names; loose files keep lowercased paths;
   `data/**` and `text/*.gxt` verbatim (runtime must lowercase paths read from data files),
-  `data/world.dwld` (map placement, section 6b);
+  `data/world.dwld` (map placement + collision, sections 6b / 6c);
   `audio/sfx/*.dsfx` + `banks.dsbl`, `audio/streams/*.dsst` (DSND, IMA-ADPCM).
 - DSPK: entry names are the original ones (`infernus.dff`), payload in DS format (DMDL, DTXD,
   DCOL, DANM); `.ipl/.dat` inside IMGs copied raw. TOC sorted by FNV-1a(lowercase name),
@@ -300,7 +343,8 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
 - World (`kind = "world"`, `tools/gtasa/world.py`): gta.dat -> IDE objs/tobj/anim/txdp, IPL inst
   + binary `<ipl>_stream<N>.ipl` from gta3.img (lod indices point into the text IPL), area 0/13
   only, LODs dropped (`lods = false`), optional `bounds` box (Grove Street area for now), quaternion
-  negated + CMatrix::SetRotate like LoadObjectInstance; model radius from the dff spheres.
+  negated + CMatrix::SetRotate like LoadObjectInstance; model radius from the dff spheres; the
+  models' COL records (section 6c) appended after the instances.
   Not cached per entry (~1 s for the Grove box; a dff parse per referenced model).
 - Map models (rule `match_ide = "data/maps/**/*.ide"`): ratio 0.25 clustering with `min_area 0.85`
   (target grows until 85% of the surface survives), mostly-horizontal geometry (`is_flat`,
@@ -347,4 +391,5 @@ Hud.cpp, Radar.cpp, TimeCycle.cpp, Weather.cpp, Clouds.cpp, Coronas.cpp, Clock.c
 `app/app_light.cpp` (lighting setup), Scripts/ (SCM VM), Core/. Ported so far: Clock (in player),
 TimeCycle, Weather, Clouds (sky polys + Render), Coronas (sun only), Hud, Radar, MenuManager,
 LoadingScreen, Text/Font, ClothesBuilder (CJ), parts of Ped/PlayerPed control, FileLoader
-(LoadObjectTypes/LoadObjectInstance, offline in world.py), a CStreaming/CRenderer subset (world.cpp).
+(LoadObjectTypes/LoadObjectInstance/LoadCollisionFile, offline in world.py), a CStreaming/CRenderer
+subset (world.cpp), CCollision line/sphere tests + CTempColModels ped spheres (collision.cpp).

@@ -55,6 +55,9 @@ float dayNightBalance();
 // CPhysical::GetLightingFromCol), folded to one RGB multiplier 0..255 since
 // CJ has no normals on DS: fMult * (ambient_obj + illumination * k).
 void pedLight(u8& r, u8& g, u8& b);
+// tColLighting (day low nibble, night high nibble) of the floor under the
+// player (game/collision), for pedLight's contact surface brightness.
+void setSurfaceLight(u8 light);
 // Brightness for prelit world geometry (day/night prelit blend + ambient).
 void worldLight(u8& r, u8& g, u8& b);
 

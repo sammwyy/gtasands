@@ -6,9 +6,11 @@
 #include <string.h>
 
 #include "game/cj.h"
+#include "game/collision.h"
 #include "game/debugopts.h"
 #include "game/pad.h"
 #include "game/pedmove.h"
+#include "game/timecycle.h"
 #include "game/zones.h"
 #include "hud/hud.h"
 #include "platform/input.h"
@@ -177,8 +179,22 @@ static constexpr float JUMP_MIN_RISE_FWD = 0.05f * 50.0f;        // 2.5 u/s
 static constexpr float JUMP_AIR_DRAG = 0.99f;                    // per 60 Hz step
 static const char* s_launchClip = "JUMP_launch";
 static const char* s_landClip = "JUMP_land";
+static const char* s_glideClip = "JUMP_glide";   // FALL_fall when walking off a ledge
 static float s_jumpH;            // horizontal speed Launch() will apply
 static int s_landSpeed = 1;      // ticks per step for the land clip
+static float s_stepVX, s_stepVY; // last on-foot step velocity (u/s), carried into a fall
+
+// Collision (game/collision): CPed vs the map, reduced. The three ped spheres
+// push CJ out of walls every step; the feet follow the highest floor found
+// by a vertical probe from STEP_UP above them (curbs and stairs are walked
+// up), drops deeper than SNAP_DOWN start a fall (FALL_fall + glide physics).
+static constexpr float STEP_UP = 0.5f;
+static constexpr float SNAP_DOWN = 0.4f;
+static constexpr float FALL_PROBE = 80.0f;     // a floor this far below makes walking off a ledge a fall
+static constexpr float COLLAPSE_VZ = -12.0f;   // landing faster than this: FALL_collapse
+static constexpr float CAM_MARGIN = 0.3f;      // camera kept this far in front of a wall
+static float s_viewZ = SPAWN_Z;  // smoothed feet z: render / camera reference
+static float s_camDist = 3.6f;   // chase distance after the camera collision
 
 static float wrap(float a) {
 	while (a > 3.14159265f) a -= 6.2831853f;
@@ -188,7 +204,30 @@ static float wrap(float a) {
 
 float camYaw() { return s_camYaw; }
 float camPitch() { return s_camPitch; }
-float groundZ() { return SPAWN_Z; }
+float viewZ() { return s_viewZ; }
+float camDist() { return s_camDist; }
+
+static bool physics() { return dbg::opts.physics && col::available(); }
+
+// Highest floor between top and bottom under CJ (flat SPAWN_Z without
+// collision). Also feeds the ped light from the face's tColLighting.
+static bool floorAt(float top, float bottom, float& z) {
+	if (!physics()) {
+		z = SPAWN_Z;
+		return z <= top && z >= bottom;
+	}
+	col::Hit h;
+	if (!col::groundAt(g.x, g.y, top, bottom, h)) return false;
+	z = h.z;
+	timecycle::setSurfaceLight(h.light);
+	return true;
+}
+
+void placeOnGround() {
+	float z;
+	if (floorAt(g.z + 2.0f, g.z - 20.0f, z) || floorAt(g.z + 60.0f, g.z - 60.0f, z)) g.z = z;
+	s_viewZ = g.z;
+}
 #ifdef GTASADS_DEBUG
 void debugSetView(float yaw, float pitch) {
 	g.heading = s_camYaw = wrap(yaw);
@@ -283,6 +322,8 @@ void respawn() {
 	g.heading = 0.0f;
 	s_camYaw = 0.0f;
 	s_action = ACT_NONE;
+	s_jumpVX = s_jumpVY = s_jumpVZ = 0.0f;
+	placeOnGround();
 }
 
 void locoDebug(char* buf, int n) {
@@ -501,8 +542,8 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 		return;
 	}
 	if (s_action == ACT_LAUNCH) {
-		// on the ground: the launch clip's root motion is the take-off step
-		g.z = groundZ();
+		// on the ground (collide() keeps the feet on it): the launch clip's
+		// root motion is the take-off step
 		if (!cj::clipEnded(s_launchClip) && cj::clipPhase(s_launchClip) >= 0.0f) {
 			poseOne(s_launchClip, false, true, false);
 			return;
@@ -512,7 +553,8 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 		s_jumpVX = -sinf(g.heading) * s_jumpH;
 		s_jumpVY = cosf(g.heading) * s_jumpH;
 		s_action = ACT_GLIDE;
-		poseOne("JUMP_glide", true, false, true);
+		s_glideClip = "JUMP_glide";
+		poseOne(s_glideClip, true, false, true);
 		return;
 	}
 	if (s_action == ACT_GLIDE) {
@@ -525,28 +567,31 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 		}
 		g.x += s_jumpVX * DT;
 		g.y += s_jumpVY * DT;
+		const float zPrev = g.z;
 		g.z += s_jumpVZ * DT;
 		s_jumpVZ -= JUMP_GRAVITY * DT;
 		s_jumpVX *= JUMP_AIR_DRAG;
 		s_jumpVY *= JUMP_AIR_DRAG;
-		if (g.z <= groundZ() && s_jumpVZ < 0.0f) {
-			g.z = groundZ();
+		// the feet crossed a floor on the way down (probe from where they were)
+		float fz;
+		if (s_jumpVZ < 0.0f && floorAt(zPrev + 0.05f, g.z - 0.01f, fz)) {
+			g.z = fz;
+			const float vz = s_jumpVZ;
 			s_jumpVX = s_jumpVY = s_jumpVZ = 0.0f;
 			// CTaskComplexInAirAndLand: a running landing with the stick held
 			// rolls on with JUMP_land (its root motion is the follow-through);
-			// anything else plants with FALL_land
+			// anything else plants with FALL_land, a long fall collapses
 			const bool runLand = s_move.moveBlend > 1.5f && moveHeld;
-			s_landClip = runLand ? "JUMP_land" : "FALL_land";
-			s_landSpeed = runLand && sprintHeld ? 2 : 1;
+			s_landClip = vz < COLLAPSE_VZ ? "FALL_collapse" : runLand ? "JUMP_land" : "FALL_land";
+			s_landSpeed = runLand && sprintHeld && vz >= COLLAPSE_VZ ? 2 : 1;
 			s_action = ACT_LAND;
 			poseOne(s_landClip, false, true, true);
 		} else {
-			poseOne("JUMP_glide", true, false, false);
+			poseOne(s_glideClip, true, false, false);
 		}
 		return;
 	}
 	if (s_action == ACT_LAND) {
-		g.z = groundZ();
 		if (cj::clipEnded(s_landClip) || cj::clipPhase(s_landClip) < 0.0f) {
 			s_action = ACT_NONE;
 			s_landSpeed = 1;
@@ -656,6 +701,8 @@ static void updateMove() {
 		const float wy = mx * s + my * c;
 		g.x += wx;
 		g.y += wy;
+		s_stepVX = wx / DT;
+		s_stepVY = wy / DT;
 		// Jump displacement is physics-driven (not root motion), so retain it
 		// in the speed snapshot the radar uses while CJ is airborne. Only the
 		// glide still integrates s_jumpVX; the launch's carry is root motion.
@@ -710,12 +757,61 @@ static void updateMove() {
 	g.x += wx;
 	g.y += wy;
 	g.speed = sqrtf(wx * wx + wy * wy) / DT;
+	s_stepVX = wx / DT;
+	s_stepVY = wy / DT;
 
 	// keyboard-mode camera: swings back behind CJ while he moves (or is
 	// still finishing a start/stop) unless the player is looking around
 	if (!looking && !g.aiming && (moving || s_move.phase != 0) && camFollows(pd.walkUD, hasMoveInput))
 		followCam(g.heading);
 	else { s_betaSpeed = 0.0f; s_betaSign = 0; }
+}
+
+// CTaskComplexInAirAndLand from a walk off a ledge: the glide physics with
+// the step's velocity and FALL_fall.
+static void startFall() {
+	s_action = ACT_GLIDE;
+	s_jumpVX = s_stepVX;
+	s_jumpVY = s_stepVY;
+	s_jumpVZ = 0.0f;
+	s_glideClip = "FALL_fall";
+	poseOne(s_glideClip, true, false, true);
+}
+
+// After every step: walls, then the feet (the glide lands by itself).
+static void collide() {
+	if (physics())
+		for (const float hz : col::PED_SPHERE_Z) col::pushSphere(g.x, g.y, g.z + hz, col::PED_RADIUS);
+	if (s_action == ACT_GLIDE) return;
+	float z;
+	if (floorAt(g.z + STEP_UP, g.z - SNAP_DOWN, z)) {
+		// steps up ease in over a few frames, slopes and steps down snap
+		g.z = z > g.z + 0.02f ? g.z + (z - g.z) * 0.5f : z;
+		return;
+	}
+	if (physics() && col::pending()) return;   // the floor may still be streaming: hold
+	if (floorAt(g.z + STEP_UP, g.z - FALL_PROBE, z)) {
+		startFall();
+		return;
+	}
+	// nothing below at all: under the map (teleport, respawn): back on top
+	if (floorAt(g.z + 60.0f, g.z, z)) g.z = z;
+}
+
+// CCam::Process_FollowPed's line of sight: CJ's head -> the eye. A wall in
+// between pulls the camera in at once; it eases back out when clear.
+static void updateCamera() {
+	const float want = dbg::opts.camDist;
+	float d = want;
+	if (physics()) {
+		const float cp = cosf(s_camPitch), sp = sinf(s_camPitch), len = want + CAM_MARGIN;
+		const float a[3] = { g.x, g.y, s_viewZ + CAM_LOOK_H };
+		const float b[3] = { a[0] + sinf(s_camYaw) * cp * len, a[1] - cosf(s_camYaw) * cp * len, a[2] + sp * len };
+		col::Hit h;
+		if (col::castSegment(a, b, h)) d = h.t * len - CAM_MARGIN;
+		if (d < 0.5f) d = 0.5f;
+	}
+	s_camDist = d < s_camDist ? d : s_camDist + (d - s_camDist) * 0.08f;
 }
 
 void init() {
@@ -735,6 +831,9 @@ void init() {
 	g_weekday = 4;                       // CClock::CurrentDay
 	s_camYaw = 0;
 	s_camPitch = 0.42f;
+	s_viewZ = SPAWN_Z;
+	s_camDist = dbg::opts.camDist;
+	s_stepVX = s_stepVY = 0.0f;
 	s_betaSpeed = 0;
 	s_betaSign = 0;
 	s_zoneTimer = 0;
@@ -796,11 +895,15 @@ void update() {
 	if (steps > MAX_STEPS) steps = MAX_STEPS;
 	for (uint32_t i = 0; i < steps; i++) {
 		updateMove();
+		collide();
 		if (i == 0) {
 			input::consumeEdges();
 			pad::consumeEdges();
 		}
 	}
+	// render reference height: follows the feet, smoothed (stairs, jumps)
+	s_viewZ = fabsf(g.z - s_viewZ) > 4.0f ? g.z : s_viewZ + (g.z - s_viewZ) * 0.25f;
+	updateCamera();
 
 	const bool running = pedmove::isRunning(s_move) && !g.aiming;
 	const bool sprinting = pedmove::isSprinting(s_move);

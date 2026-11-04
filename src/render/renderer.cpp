@@ -4,6 +4,7 @@
 #include <math.h>
 
 #include "game/cj.h"
+#include "game/collision.h"
 #include "game/debugopts.h"
 #include "game/player.h"
 #include "game/timecycle.h"
@@ -73,14 +74,15 @@ void draw() {
 	// north, so the eye is south of him (behind a north-facing ped). pitch is
 	// radians above the horizon, positive looking down. Player-local space
 	// keeps the view matrix inside the s20.12 range.
-	const float dist = dbg::opts.camDist, lookH = 0.85f;
+	const float dist = player::camDist(), lookH = player::CAM_LOOK_H;
+	const float vz = player::viewZ();
 	const float horiz = cosf(pitch) * dist;
 	const float eyeH = lookH + sinf(pitch) * dist;
 	const float elx = sinf(yaw) * horiz;
 	const float ely = -cosf(yaw) * horiz;
 
 	// sky first (constant far depth), it also latches the frame's fog/clear
-	const sky::View view{ px + elx, py + ely, player::groundZ() + eyeH, yaw, pitch };
+	const sky::View view{ px + elx, py + ely, vz + eyeH, yaw, pitch };
 	sky::draw(view);
 	timecycle::worldLight(s_lr, s_lg, s_lb);
 	// wet ground reads darker (CWeather::WetRoads; road reflections not ported)
@@ -99,12 +101,14 @@ void draw() {
 	// emitted unit is one ground cell (8 SA units). Anchor delta stays small.
 	const int ax = (int)floorf(px * 0.125f), ay = (int)floorf(py * 0.125f);
 	const float adx = ax * 8.0f - px, adz = -(ay * 8.0f - py);
-	cj::draw(0.0f, 0.0f, player::g.z - player::groundZ(), player::g.heading);
+	cj::draw(0.0f, 0.0f, player::g.z - vz, player::g.heading);
+	// debug collision overlay before the map: the map's polygon budget yields to it
+	col::drawDebug(px, py, vz, px, py, player::g.z);
 
 	// map after CJ: the polygon budget drops far map objects, never CJ.
 	// light0 = world light (see world.cpp compile(): ambient * light colour)
 	glLight(0, RGB15(s_lr >> 3, s_lg >> 3, s_lb >> 3), 0, floattov10(-0.99f), 0);
-	world::draw({ px + elx, py + ely, player::groundZ() + eyeH, yaw, pitch, px, py, player::groundZ() });
+	world::draw({ px + elx, py + ely, vz + eyeH, yaw, pitch, px, py, vz });
 
 	if (dbg::opts.ground || !world::ready()) {
 		glPushMatrix();

@@ -170,20 +170,26 @@ float dayNightBalance() {
 	return 1.0f - (1260.0f - m) / 60.0f;
 }
 
-// Collision lighting under the player's feet is not available yet: a typical
-// outdoor street surface (tColLighting day 15 / night 5, scale 0.5).
-static constexpr float SURFACE_DAY = 15.0f * 0.5f / 15.0f;
-static constexpr float SURFACE_NIGHT = 5.0f * 0.5f / 15.0f;
+// Collision lighting under the player's feet (tColLighting of the floor face,
+// scale 0.5). Until a floor is found: a typical outdoor street, day 15 / night 5.
+static float s_surfDay = 15.0f, s_surfNight = 5.0f;
 // Average N.L of the (fixed) sun light over a ped seen from behind.
 static constexpr float DIRECTIONAL_SHARE = 0.75f;
+
+void setSurfaceLight(u8 light) {
+	// eased: walking over faces with different lighting must not flicker
+	s_surfDay += ((float)(light & 15) - s_surfDay) * 0.1f;
+	s_surfNight += ((float)(light >> 4) - s_surfNight) * 0.1f;
+}
 
 void pedLight(u8& r, u8& g, u8& b) {
 	if (weather::g.lightningFlash) { r = g = b = 255; return; }
 	const Colours& c = s_cur;
 	const float dn = dayNightBalance();
 	// CPhysical::GetLightingFromCol: average ambient + contact surface brightness
+	// (tColLighting::GetCurrentLighting(0.5))
 	const float mult = (c.ambR + c.ambG + c.ambB) * (1.0f / (3.0f * 255.0f)) +
-	                   SURFACE_DAY + (SURFACE_NIGHT - SURFACE_DAY) * dn;
+	                   (s_surfDay + (s_surfNight - s_surfDay) * dn) * (0.5f / 15.0f);
 	const float dir = c.illumination * (DIRECTIONAL_SHARE * 255.0f / 100.0f);
 	auto ch = [&](u8 amb) {
 		const float v = mult * (amb + dir);

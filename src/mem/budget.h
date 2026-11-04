@@ -30,6 +30,8 @@ constexpr size_t PERM_BYTES = 320 * 1024;
 constexpr size_t ANIM_CACHE_BYTES = 192 * 1024;   // streamed anim clips (LRU over refcount 0)
 constexpr size_t WORLD_LIST_BYTES = 900 * 1024;   // compiled map-object display lists (LRU)
 constexpr size_t WORLD_TEX_VRAM = 300 * 1024;     // map textures in VRAM (LRU over refcount 0); 384K total
+constexpr size_t COL_CACHE_BYTES = 192 * 1024;    // map collision records around the player (LRU)
+constexpr int COL_NEAR_MAX = 48;                  // collision instances queried by the player / camera
 
 // Streamed world (game/world.cpp)
 constexpr int WORLD_MODEL_SLOTS = 192;    // map models resident (display list + textures)

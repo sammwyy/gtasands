@@ -13,6 +13,7 @@
 #include "hud/hud.h"
 #include "mem/mem.h"
 #include "render/gxlist.h"
+#include "render/overlay.h"
 
 namespace cj {
 
@@ -737,6 +738,27 @@ Motion motion() {
 	return k_player;
 }
 
+// Bone overlay (render/overlay: on top of the mesh, outlined): one line per
+// parent->child (a triangle with two equal vertices is rasterized as a line
+// by the GE), in entity space.
+static void drawSkeleton(void* ctx) {
+	const mdl::Model* skel = (const mdl::Model*)ctx;
+	glRestoreMatrix(SLOT_BASE);
+	overlay::polyFmt(31);
+	glBegin(GL_TRIANGLES);
+	for (int b = 0; b < skel->numBones; b++) {
+		const int par = skel->nodes[b].parent;
+		if (par < 0) continue;
+		const s32* a = s_world + par * 12 + 9;
+		const s32* c = s_world + b * 12 + 9;
+		overlay::color(skel->nodes[b].boneId >= 300 ? RGB15(31, 8, 8) : RGB15(31, 31, 0));
+		glVertex3v16((v16)a[0], (v16)a[1], (v16)a[2]);
+		glVertex3v16((v16)c[0], (v16)c[1], (v16)c[2]);
+		glVertex3v16((v16)c[0], (v16)c[1], (v16)c[2]);
+	}
+	glEnd();
+}
+
 void draw(float x, float y, float z, float heading) {
 	const mdl::Model* skel = s_skel;
 	if (!skel) return;
@@ -782,26 +804,7 @@ void draw(float x, float y, float z, float heading) {
 		gx::callList(p.list);
 		s_vertCount += p.verts;
 	}
-	if (dbg::opts.skeleton) {
-		// bone overlay: one line per parent->child (a triangle with two equal
-		// vertices is rasterized as a line by the GE), in entity space
-		glRestoreMatrix(SLOT_BASE);
-		glBindTexture(GL_TEXTURE_2D, 0);
-		glPolyFmt(POLY_ALPHA(31) | POLY_CULL_NONE);
-		glBegin(GL_TRIANGLES);
-		for (int b = 0; b < skel->numBones; b++) {
-			const int par = skel->nodes[b].parent;
-			if (par < 0) continue;
-			const s32* a = s_world + par * 12 + 9;
-			const s32* c = s_world + b * 12 + 9;
-			glColor(skel->nodes[b].boneId >= 300 ? RGB15(31, 8, 8) : RGB15(31, 31, 0));
-			glVertex3v16((v16)a[0], (v16)a[1], (v16)a[2]);
-			glVertex3v16((v16)c[0], (v16)c[1], (v16)c[2]);
-			glVertex3v16((v16)c[0], (v16)c[1], (v16)c[2]);
-		}
-		glEnd();
-		glColor(RGB15(31, 31, 31));
-	}
+	if (dbg::opts.skeleton) overlay::draw(drawSkeleton, (void*)skel);
 	glPopMatrix(1);
 	glBindTexture(GL_TEXTURE_2D, 0);
 	glPolyFmt(POLY_ALPHA(31) | POLY_CULL_BACK);
