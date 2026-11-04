@@ -29,6 +29,8 @@ static const int k_wantedSteps[] = { 0, 1, 2, 3, 4, 5, 6, 3, 0 };
 static constexpr float SPAWN_X = 2495.0f, SPAWN_Y = -1664.0f, SPAWN_Z = 13.5f;
 
 static float s_camYaw;          // chase camera heading (SA convention)
+static float s_camPitch;        // radians above horizontal; + looks down
+static float s_betaSpeed;
 static int s_zoneTimer;
 
 // radians -> [-pi, pi]
@@ -39,6 +41,7 @@ static float wrap(float a) {
 }
 
 float camYaw() { return s_camYaw; }
+float camPitch() { return s_camPitch; }
 
 void init() {
 	g = {};
@@ -53,43 +56,79 @@ void init() {
 	g.weapon = k_weapons[0];
 	g_clockH = 12; g_clockM = 0;
 	s_camYaw = 0;
+	s_camPitch = 0.42f;     // a little above CJ, the default follow-ped framing
+	s_betaSpeed = 0;
 	s_zoneTimer = 0;
 	cj::init();
 }
 
-// D-pad moves camera-relative (up = away from camera) like the original.
-// B (bottom) = run, A (right) = sprint. L/R nudge the camera; it otherwise
-// settles behind the movement direction.
+// Follow-ped camera, the on-foot half of CCam::Process_FollowPed_SA.
+// Beta (yaw) is where the camera looks; the eye sits behind that heading.
+// L/R orbit beta and X/Y orbit alpha, like the right stick. While the stick
+// is neutral and CJ is moving, beta eases behind his heading (WellBufferMe:
+// speed approaches diff*topSpeed, accelerated by speedStep). It does not
+// chase the wish direction — that coupled with camera-relative movement and
+// made him spiral.
+// CTimer timestep is 1.0 at 30 fps. We step at 60, so 0.5.
+static constexpr float CAM_TIMESTEP = 0.5f;
+
+static void followCam(float targetYaw) {
+	const float diff = wrap(targetYaw - s_camYaw);
+	const float desired = diff * 0.10f;          // topSpeed
+	const float gap = desired - s_betaSpeed;
+	float step = fabsf(gap) * 0.020f * CAM_TIMESTEP; // speedStep
+	if (step > fabsf(gap)) step = fabsf(gap);
+	s_betaSpeed += gap > 0.0f ? step : -step;
+	s_camYaw = wrap(s_camYaw + fminf(CAM_TIMESTEP, 10.0f) * s_betaSpeed);
+}
+
+// D-pad moves camera-relative (up = away from camera), same as
+// CTaskSimplePlayerOnFoot::PlayerControlZelda. B = run, A = sprint.
+// The step itself comes from the anim's root bone, not a made-up speed,
+// so the feet stay on the ground they were authored for.
 static void updateMove() {
 	const input::State& in = input::get();
 	const float dt = 1.0f / 60.0f;
 	const float ix = (in.held & KEY_RIGHT ? 1.0f : 0.0f) - (in.held & KEY_LEFT ? 1.0f : 0.0f);
 	const float iy = (in.held & KEY_UP ? 1.0f : 0.0f) - (in.held & KEY_DOWN ? 1.0f : 0.0f);
+	const bool looking = in.held & (KEY_L | KEY_R);
 
-	if (in.held & KEY_L) s_camYaw -= 2.4f * dt;
-	if (in.held & KEY_R) s_camYaw += 2.4f * dt;
+	if (in.held & KEY_L) s_camYaw -= 2.0f * dt;
+	if (in.held & KEY_R) s_camYaw += 2.0f * dt;
+	if (in.held & KEY_X) s_camPitch -= 1.2f * dt;
+	if (in.held & KEY_Y) s_camPitch += 1.2f * dt;
+	if (s_camPitch < -0.45f) s_camPitch = -0.45f;   // ClipAlpha, looking up
+	if (s_camPitch > 1.05f) s_camPitch = 1.05f;     // looking down
+	s_camYaw = wrap(s_camYaw);
 
-	if (ix != 0.0f || iy != 0.0f) {
-		// camera-relative wish direction in SA xy
+	const bool moving = ix != 0.0f || iy != 0.0f;
+	const char* an = "IDLE_stance";
+	if (moving) {
+		// camera-relative wish direction in SA xy. Facing is (-sin h, cos h).
 		const float dx = -sinf(s_camYaw) * iy + cosf(s_camYaw) * ix;
 		const float dy =  cosf(s_camYaw) * iy + sinf(s_camYaw) * ix;
-		const float target = atan2f(-dx, dy); // facing = (-sin h, cos h)
-		g.heading += wrap(target - g.heading) * (1.0f - expf(-12.0f * dt));
-		const float vmax = in.held & KEY_A ? 10.0f : in.held & KEY_B ? 6.0f : 2.5f;
-		g.speed += (vmax - g.speed) * (1.0f - expf(-8.0f * dt));
-		g.x += -sinf(g.heading) * g.speed * dt;
-		g.y +=  cosf(g.heading) * g.speed * dt;
-		// camera settles behind the move direction (GTA-like chase follow)
-		s_camYaw += wrap(target - s_camYaw) * (1.0f - expf(-4.5f * dt));
-	} else {
-		g.speed += (0.0f - g.speed) * (1.0f - expf(-10.0f * dt));
+		const float target = atan2f(-dx, dy);
+		float turn = wrap(target - g.heading);
+		const float maxTurn = 6.0f * dt;
+		if (turn > maxTurn) turn = maxTurn;
+		if (turn < -maxTurn) turn = -maxTurn;
+		g.heading = wrap(g.heading + turn);
+		an = in.held & KEY_A ? "sprint_civi" : in.held & KEY_B ? "run_civi" : "WALK_player";
 	}
-
-	const char* an = g.speed > 7.0f ? "sprint_civi" :
-	                 g.speed > 3.5f ? "run_civi" :
-	                 g.speed > 0.4f ? "WALK_player" : "IDLE_stance";
 	cj::setAnim(an);
 	cj::advance(1);
+
+	float mx, my;
+	cj::rootDelta(mx, my);
+	const float c = cosf(g.heading), s = sinf(g.heading);
+	const float wx = mx * c - my * s;   // right*(cos,sin) + forward*(-sin,cos)
+	const float wy = mx * s + my * c;
+	g.x += wx;
+	g.y += wy;
+	g.speed = sqrtf(wx * wx + wy * wy) / dt;
+
+	if (moving && !looking) followCam(g.heading);
+	else s_betaSpeed = 0.0f;
 }
 
 // Leftovers from the demo driver: wanted steps, weapon cycling, health/armour

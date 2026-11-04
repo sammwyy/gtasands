@@ -14,7 +14,10 @@ void setAnim(const char* name);
 const char* animName();
 
 // Advances the play head by dt60 ticks (1/60 s). Call once per frame.
+// Locomotion anims (walk/run/sprint) deposit this frame's root motion here
+// and keep the mesh planted on the entity. Idle leaves it at zero.
 void advance(int dt60);
+void rootDelta(float& x, float& y); // model metres this frame: +x right, +y forward
 
 // Draws CJ at SA coords (x east, y north, z up) facing `heading` radians
 // (0 = north, clockwise). Assumes the view matrix is already set.

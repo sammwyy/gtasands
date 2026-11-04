@@ -44,6 +44,7 @@ static anim::Player s_anim;
 static char s_animName[24];
 static int s_vertCount;
 static float s_lift;        // +z entity offset so the feet rest at the origin
+static float s_rootX, s_rootY; // locomotion extracted this frame (model metres)
 
 static s32 s_world[anim::MAX_NODES * 12];
 static s32 s_skin[anim::MAX_NODES * 12];
@@ -80,7 +81,7 @@ bool init() {
 	if (!s_parts[0].m) return false;
 	// safe fallback pose (bind) if the anim below fails to load
 	s_anim.seqs = nullptr; s_anim.numSeqs = 0; s_anim.duration = 1;
-	s_anim.loop = 1; s_anim.time = 0;
+	s_anim.loop = 1; s_anim.extractRoot = 0; s_anim.time = 0; s_anim.rootNode = -1;
 	for (int i = 0; i < anim::MAX_NODES; i++) s_anim.seqOfNode[i] = -1;
 	setAnim("IDLE_stance");
 
@@ -104,18 +105,55 @@ bool init() {
 	return true;
 }
 
+// Walk/run/sprint carry ANIMATION_CAN_EXTRACT_VELOCITY in the original:
+// the root bone's travel is the ped's step, not a mesh offset.
+static bool isLocomotion(const char* name) {
+	char n[8];
+	int i = 0;
+	for (; i < 7 && name[i]; i++) {
+		const char c = name[i];
+		n[i] = c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
+	}
+	n[i] = 0;
+	return !strncmp(n, "walk", 4) || !strncmp(n, "run", 3) || !strncmp(n, "sprint", 6);
+}
+
 void setAnim(const char* name) {
 	if (!strncmp(name, s_animName, sizeof s_animName)) return;
 	if (!streaming::g_pedIfp) return;
-	if (anim::play(s_anim, s_parts[0].m, streaming::g_pedIfp, name))
+	if (anim::play(s_anim, s_parts[0].m, streaming::g_pedIfp, name)) {
 		strncpy(s_animName, name, sizeof s_animName - 1);
-	else
+		s_animName[sizeof s_animName - 1] = 0;
+		s_anim.extractRoot = isLocomotion(name) ? 1 : 0;
+	} else {
 		hud::log("\x1b[33manim '%s' not in ped.ifp\x1b[39m", name);
+	}
 }
 
 const char* animName() { return s_animName; }
 
-void advance(int dt60) { anim::advance(s_anim, dt60); }
+void rootDelta(float& x, float& y) { x = s_rootX; y = s_rootY; }
+
+void advance(int dt60) {
+	s_rootX = s_rootY = 0;
+	s32 before[3], after[3], end[3];
+	const int32_t t0 = s_anim.time;
+	const bool take = s_anim.extractRoot &&
+	                  anim::rootTranslation(s_anim, s_parts[0].m, t0, before);
+	const bool wrapped = anim::advance(s_anim, dt60);
+	if (!take || !anim::rootTranslation(s_anim, s_parts[0].m, s_anim.time, after)) return;
+	// Per-frame root delta. Across the loop the translation jumps from the
+	// end of the stride back to the start; add the end key so the step
+	// stays continuous (RpAnimBlend's loopedDelta).
+	s32 dx = after[0] - before[0];
+	s32 dy = after[1] - before[1];
+	if (wrapped && anim::rootEndTranslation(s_anim, s_parts[0].m, end)) {
+		dx += end[0];
+		dy += end[1];
+	}
+	s_rootX = (float)dx / 4096.0f;
+	s_rootY = (float)dy / 4096.0f;
+}
 
 static const s32 s_ident[12] = { 1 << 12, 0, 0, 0, 1 << 12, 0, 0, 0, 1 << 12, 0, 0, 0 };
 

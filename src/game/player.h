@@ -40,5 +40,6 @@ extern unsigned g_clockH, g_clockM;
 void init();
 void update();            // movement + anim + clock; call once per frame while INGAME
 float camYaw();           // chase camera heading, radians (0 = north, clockwise)
+float camPitch();         // radians above the horizon; positive looks down at CJ
 
 }

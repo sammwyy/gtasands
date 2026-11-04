@@ -57,18 +57,21 @@ void init() {
 
 void draw() {
 	const float px = player::g.x, py = player::g.y;
-	const float cy = player::camYaw();
+	const float yaw = player::camYaw();
+	const float pitch = player::camPitch();
 
-	// chase camera: eye sits `dist` behind the look direction at eyeH, tilted
-	// so the view axis hits the player's torso (lookH). In player-local space
-	// the eye offset is fixed and small: SA(elx, ely, eyeH) -> GL(elx, eyeH, -ely).
-	const float dist = 2.4f, eyeH = 1.6f, lookH = 0.9f;
-	const float tilt = atan2f(eyeH - lookH, dist) * 57.2958f;
-	const float elx = sinf(cy) * dist;
-	const float ely = -cosf(cy) * dist;
+	// Cam-on-a-string: the eye sits on a sphere around CJ's chest. yaw 0 looks
+	// north, so the eye is south of him (behind a north-facing ped). pitch is
+	// radians above the horizon, positive looking down. Player-local space
+	// keeps the view matrix inside the s20.12 range.
+	const float dist = 3.6f, lookH = 0.85f;
+	const float horiz = cosf(pitch) * dist;
+	const float eyeH = lookH + sinf(pitch) * dist;
+	const float elx = sinf(yaw) * horiz;
+	const float ely = -cosf(yaw) * horiz;
 	glLoadIdentity();
-	glRotatef(tilt, 1.0f, 0.0f, 0.0f);              // pitch down at the player
-	glRotatef(-cy * 57.2958f, 0.0f, 1.0f, 0.0f);    // camera yaw (0 = north)
+	glRotatef(pitch * 57.2958f, 1.0f, 0.0f, 0.0f);
+	glRotatef(-yaw * 57.2958f, 0.0f, 1.0f, 0.0f);
 	glTranslatef(-elx, -eyeH, ely);
 
 	// world patch: anchor on the cell grid nearest the player, scale 8 -> one

@@ -21,8 +21,9 @@ struct Player {
 	uint16_t numSeqs;
 	uint16_t duration;        // anim length in 1/60 s
 	uint8_t loop;
-	uint8_t pad;
+	uint8_t extractRoot;      // locomotion: root XY delta moves the ped, not the mesh
 	int32_t time;             // play head, 1/60 s (0..duration)
+	int16_t rootNode;         // hAnim node with boneId 0, -1 if none
 	uint8_t cursor[MAX_NODES];       // per-seq key cursor
 	int16_t seqOfNode[MAX_NODES];    // hAnim node -> seq index, -1 = bind pose
 };
@@ -32,7 +33,15 @@ struct Player {
 bool play(Player& p, const mdl::Model* m, const void* danm, const char* name);
 
 // Advances the play head by dt60 ticks (1/60 s units); wraps when looping.
-void advance(Player& p, int32_t dt60);
+// Returns true when the play head wrapped (or a non-looping anim clamped).
+bool advance(Player& p, int32_t dt60);
+
+// Root-bone translation (boneId 0) at an absolute time, in 20.12 model space
+// (x right, y forward, z up). False when that node has no translation keys.
+bool rootTranslation(const Player& p, const mdl::Model* m, int32_t time, s32 out[3]);
+
+// Translation of the root bone's last key (the pose the cycle leaves on).
+bool rootEndTranslation(const Player& p, const mdl::Model* m, s32 out[3]);
 
 // Evaluates the pose at the current time: world[node] gets each node's
 // model-space matrix (numBones entries of 12 fx32 each). Nodes with no
