@@ -1,6 +1,7 @@
 #include <nds.h>
-#include <string.h>
+#include <stdlib.h>
 
+#include "assets/pack.h"
 #include "hud/hud.h"
 #include "platform/fs.h"
 #include "platform/input.h"
@@ -20,11 +21,20 @@ static void probeGameData() {
 		return;
 	}
 	hud::log("gta.dat: %ld bytes read", n);
-	for (char* line = strtok(buf, "\r\n"); line; line = strtok(NULL, "\r\n"))
-		if (strncmp(line, "IDE", 3) == 0 || strncmp(line, "IPL", 3) == 0) {
-			hud::log(" %.31s", line);
-			break;
-		}
+
+	Pack gta3;
+	if (!gta3.open("nitro:/models/gta3.dspk")) {
+		hud::log("models/gta3.dspk missing");
+		return;
+	}
+	hud::log("gta3.dspk: %lu entries", gta3.count());
+	const ds::PackEntry* e = gta3.find("infernus.dff");
+	if (void* blob = gta3.load(e)) {
+		const ds::ModelHeader* m = (const ds::ModelHeader*)blob;
+		hud::log("infernus: %lu B, %u geoms %u frames", e->size, m->numGeometries, m->numFrames);
+		free(blob);
+	}
+	gta3.close();
 }
 
 int main() {

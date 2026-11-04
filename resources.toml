@@ -1,0 +1,200 @@
+# =============================================================================
+# GTA:SA -> NDS asset build configuration (tools/assets.py)
+#
+#   python3 tools/assets.py sync      # copy what's needed from the PC install to game/
+#   python3 tools/assets.py build     # game/ -> nitrofs/  (cached, only changed entries rebuild)
+#   python3 tools/assets.py report    # size per section vs budget
+#   make assets / make                # same, from the Makefile
+#
+# Params resolve as: [defaults.<handler>] -> [<section>.<handler>] -> matching
+# [[<section>.rule]] (in order) -> [global] multipliers.
+#
+# Handlers (by file extension): texture (.txd), model (.dff), collision (.col),
+# anim (.ifp), audio (sfx banks / streams). Anything else is copied verbatim.
+#
+# Rule keys:
+#   match       = glob(s) on the entry name (e.g. "infernus.dff", "radar*.txd")
+#   match_ide   = IDE file(s) under game/; matches the .dff/.txd names they declare
+#   match_texture = glob(s) on texture names inside matching TXDs (texture params only)
+#   remove      = true/false
+#   texture / model / collision / anim / audio = { param overrides }
+# Section keys: kind, enabled, src, out, remove = [globs], keep = [globs]
+# =============================================================================
+
+[global]
+source = "/mnt/c/Program Files (x86)/Steam/steamapps/common/Grand Theft Auto San Andreas"
+game_dir = "game"
+out_dir = "nitrofs"
+cache_dir = "build/assets_cache"
+jobs = 0                  # 0 = all cores
+budget_mb = 448           # DS cart max is 512MB; leave room for code + overlays
+# Global compression knobs, multiplied into every section. Quick way to try
+# "everything smaller/bigger" without touching the rest.
+texture_scale = 1.0       # * texture.scale
+model_ratio = 1.0         # * model.ratio and collision.face_ratio
+audio_rate_scale = 1.0    # * audio.sample_rate
+
+# -----------------------------------------------------------------------------
+# Defaults per handler
+# -----------------------------------------------------------------------------
+[defaults.texture]
+scale = 0.5               # resize factor (rounded down to power of two)
+max_size = 128            # clamp per side (DS: 8..1024, VRAM for textures is 256KB with A+B)
+min_size = 8
+format = "auto"           # auto | pal4 | pal16 | pal256 | a3i5 | a5i3 | direct
+auto_colors = 16          # palette used by "auto" for opaque/1-bit alpha textures: 16 or 256
+alpha_threshold = 24      # alpha <= t is transparent, >= 255-t opaque; in between = translucent (a3i5)
+opaque = false            # ignore alpha entirely
+
+[defaults.model]
+ratio = 0.5               # target triangle ratio after decimation (1.0 = untouched)
+min_tris = 64             # never decimate below this
+max_tris = 0              # hard cap per geometry (0 = none). DS limit: 2048 polys per FRAME
+uvs = true
+normals = false           # map geometry is prelit, normals only cost space
+vertex_colors = true      # prelit colors (RGB15)
+skin = true               # keep skin (dominant bone per vertex + inverse bind matrices)
+drop_damage = true        # drop *_dam frames (vehicle damage parts)
+drop_vlo = true           # drop *_vlo frames (vehicle low-LOD parts)
+drop_frames = []          # extra frame-name globs to drop
+
+[defaults.collision]
+mode = "full"             # full | simple (decimate faces) | bounds (spheres+boxes only)
+face_ratio = 0.5          # for mode = simple
+min_faces = 16
+
+[defaults.anim]
+keep_every = 2            # keep 1 of every N keyframes (first/last always kept)
+max_frames = 0            # cap keyframes per bone (0 = none)
+drop_translation = false  # drop translation on non-root bones
+remove = []               # anim-name globs to drop inside IFPs
+
+[defaults.audio]
+sample_rate = 11025       # target Hz (never upsamples)
+format = "adpcm"          # adpcm (4bit) | pcm8 | pcm16
+max_seconds = 0           # truncate each sound (0 = no limit)
+volume = 1.0
+
+# -----------------------------------------------------------------------------
+# Streamed world archive: map objects, vehicles, peds, weapons, radar, collision
+# -----------------------------------------------------------------------------
+[gta3_img]
+kind = "img"
+src = "models/gta3.img"
+out = "models/gta3.dspk"
+remove = []
+
+[[gta3_img.rule]]         # vehicles: low poly, small textures, lit (normals)
+match_ide = "data/vehicles.ide"
+model = { ratio = 0.35, max_tris = 500, normals = true }
+texture = { max_size = 64 }
+
+[[gta3_img.rule]]         # peds: skinned, lit
+match_ide = "data/peds.ide"
+model = { ratio = 0.5, max_tris = 600, normals = true }
+texture = { max_size = 64 }
+
+[[gta3_img.rule]]         # weapons / pickups
+match_ide = "data/default.ide"
+model = { ratio = 0.5, max_tris = 200, normals = true }
+texture = { max_size = 32 }
+
+[[gta3_img.rule]]         # radar tiles -> bottom screen HUD
+match = "radar*.txd"
+texture = { scale = 0.5, max_size = 64, auto_colors = 256 }
+
+[[gta3_img.rule]]         # LOD models are seen from far away only
+match = "lod*.dff"
+model = { ratio = 0.3 }
+texture = { max_size = 32 }
+
+[[gta3_img.rule]]
+match = "*.col"
+collision = { mode = "simple", face_ratio = 0.5 }
+
+[[gta3_img.rule]]         # shadows / light coronas inside any TXD
+match_texture = ["*shad*", "*corona*"]
+texture = { max_size = 32 }
+
+# -----------------------------------------------------------------------------
+[gta_int_img]             # interiors
+kind = "img"
+src = "models/gta_int.img"
+out = "models/gta_int.dspk"
+texture = { scale = 0.5, max_size = 64 }
+model = { ratio = 0.4 }
+
+[player_img]              # CJ clothes / body parts
+kind = "img"
+src = "models/player.img"
+out = "models/player.dspk"
+texture = { max_size = 64 }
+model = { ratio = 0.5, normals = true }
+
+[anim_img]                # streamed anim blocks
+kind = "img"
+src = "anim/anim.img"
+out = "anim/anim.dspk"
+
+[ped_ifp]                 # base ped animations (always resident)
+kind = "files"
+src = ["anim/ped.ifp"]
+out = ""
+
+[models_loose]            # HUD, fonts, frontend, particles, generic, grass, base collisions
+kind = "files"
+src = ["models/*.txd", "models/generic/*", "models/grass/*", "models/coll/*.col", "models/txd/*.txd", "models/effects.fxp"]
+out = ""
+remove = ["*btns.txd", "*sixaxis.txd", "models/fronten*.txd", "models/txd/intro*"]
+
+[[models_loose.rule]]     # HUD/fonts go to the 2D sub engine: keep them crisp
+match = ["models/hud.txd", "models/fonts.txd"]
+texture = { scale = 1.0, max_size = 256 }
+
+[[models_loose.rule]]
+match = "models/particle.txd"
+texture = { max_size = 32 }
+
+# -----------------------------------------------------------------------------
+[data]                    # IDE/IPL/DAT/handling/scm: copied verbatim
+kind = "copy"
+src = ["data/**/*"]
+out = ""
+remove = ["data/icons/*", "*.ico", "*.bmp", "audioevents.txt"]
+
+[text]
+kind = "copy"
+src = ["text/american.gxt"]
+out = ""
+
+# -----------------------------------------------------------------------------
+# Audio. SFX paks: FEET GENRL PAIN_A SCRIPT (mission dialogue) SPC_EA SPC_FA
+# SPC_GA SPC_NA (ped speech) SPC_PA (player speech).
+# -----------------------------------------------------------------------------
+[audio_sfx]
+kind = "sfx"
+src = "audio"
+out = "audio/sfx"
+remove = ["SPC_EA", "SPC_FA", "SPC_GA", "SPC_NA"]
+audio = { sample_rate = 11025, format = "adpcm" }
+
+[[audio_sfx.rule]]
+match = "SCRIPT"
+audio = { sample_rate = 8000 }
+
+# Streams: AA (misc), ADVERTS, AMBIENCE, BEATS (dance/lowrider minigames),
+# CUTSCENE, and radio stations: CH Playback FM, CO K-Rose, CR K-DST,
+# DS Bounce FM, HC SF-UR, MH Radio Los Santos, MR Radio X, NJ CSR 103.9,
+# RE K-Jah West, RG Master Sounds 98.3, TK WCTR.
+[audio_streams]
+kind = "streams"
+src = "audio"
+out = "audio/streams"
+remove = ["ADVERTS", "BEATS", "CUTSCENE", "CH", "CO", "CR", "DS", "HC", "MH", "MR", "NJ", "RE", "RG", "TK"]
+audio = { sample_rate = 16000, format = "adpcm" }
+
+# Example: enable one radio with a few tracks at lower quality
+# [[audio_streams.rule]]
+# match = "MH"
+# remove = false
+# audio = { sample_rate = 11025, max_tracks = 10 }

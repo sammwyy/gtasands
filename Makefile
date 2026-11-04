@@ -132,19 +132,30 @@ else
   endif
 endif
 
-.PHONY: $(BUILD) all clean run assets distclean compdb
+.PHONY: $(BUILD) all clean run assets sync distclean compdb
 
 all: $(BUILD)
+
+ASSET_DEPS := resources.toml $(wildcard tools/*.py tools/gtasa/*.py)
 
 $(BUILD): $(NITRO)/.stamp
 	@mkdir -p $@
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
-$(NITRO)/.stamp: tools/build_assets.sh
-	@tools/build_assets.sh game $(NITRO)
+# ASSETS=0 skips the asset pipeline (packs whatever is already in nitrofs/)
+ifeq ($(ASSETS),0)
+$(NITRO)/.stamp:
+	@mkdir -p $(NITRO) && touch $@
+else
+$(NITRO)/.stamp: $(ASSET_DEPS)
+	@python3 tools/assets.py build
+endif
 
 assets:
-	@tools/build_assets.sh game $(NITRO)
+	@python3 tools/assets.py build
+
+sync:
+	@python3 tools/assets.py sync
 
 run: $(BUILD)
 	$(EMU) $(OUTPUT).nds
