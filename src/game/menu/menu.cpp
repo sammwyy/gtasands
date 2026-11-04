@@ -27,6 +27,26 @@ static constexpr sprite::RGBA MENU_SHADOW{ 0, 0, 0, 255 };
 static constexpr sprite::RGBA TITLE_COLOR{ 172, 203, 241, 255 };
 static constexpr sprite::RGBA DISABLED{ 14, 30, 47, 255 };
 
+// action/screen sets used for frontend audio events (MenuManager_Input.cpp)
+static constexpr auto mainMenu = { SCREEN_MAIN_MENU, SCREEN_PAUSE_MENU, SCREEN_GAME_SAVE,
+	SCREEN_GAME_WARNING_DONT_SAVE, SCREEN_SAVE_DONE_1, SCREEN_DELETE_FINISHED, SCREEN_EMPTY };
+static constexpr auto sliderActions = { MENU_ACTION_BRIGHTNESS, MENU_ACTION_RADIO_VOL, MENU_ACTION_SFX_VOL,
+	MENU_ACTION_DRAW_DIST, MENU_ACTION_MOUSE_SENS };
+static constexpr auto sliderSelect = { MENU_ACTION_BRIGHTNESS, MENU_ACTION_RADIO_VOL,
+	MENU_ACTION_DRAW_DIST, MENU_ACTION_MOUSE_SENS };
+static constexpr auto specialScreens = { SCREEN_AUDIO_SETTINGS, SCREEN_USER_TRACKS_OPTIONS,
+	SCREEN_DISPLAY_SETTINGS, SCREEN_DISPLAY_ADVANCED, SCREEN_CONTROLLER_SETUP, SCREEN_MOUSE_SETTINGS };
+static constexpr auto specialMenuActions = { MENU_ACTION_BACK, MENU_ACTION_MENU, MENU_ACTION_CTRLS_JOYPAD,
+	MENU_ACTION_CTRLS_FOOT, MENU_ACTION_CTRLS_CAR, MENU_ACTION_BRIGHTNESS, MENU_ACTION_RADIO_VOL,
+	MENU_ACTION_SFX_VOL, MENU_ACTION_RADIO_STATION, MENU_ACTION_RESET_CFG, MENU_ACTION_DRAW_DIST,
+	MENU_ACTION_MOUSE_SENS };
+
+template<class C, class T>
+static bool contains(const C& v, const T& x) {
+	for (auto e : v) if (e == x) return true;
+	return false;
+}
+
 // Menu coords are virtual 640x480 (same numbers as the PC frontend); the ortho
 // projection in sprite::beginFrame compresses them to the 256x192 DS screen.
 static inline float StretchX(float x) { return x; }
@@ -76,6 +96,7 @@ void CMenuManager::initialise() {
 	loadAllTextures();
 	font::init();
 	font::attachFontTextures(s_font2, s_font1);
+	sfx::start(); // whoosh when the title menu comes up
 }
 
 void CMenuManager::loadAllTextures() {
@@ -96,6 +117,14 @@ void CMenuManager::loadAllTextures() {
 }
 
 void CMenuManager::unloadTextures() { tex::clear(); }
+
+// Frontend art is freed while in-game (VRAM budget); reload it lazily the
+// first time the pause menu is opened again.
+void CMenuManager::ensureTextures() {
+	if (m_bTexturesLoaded) return;
+	loadAllTextures();
+	font::attachFontTextures(s_font2, s_font1);
+}
 
 void CMenuManager::process() {
 	if (m_bMenuActive) userInput();
@@ -170,14 +199,6 @@ void CMenuManager::startNewGame() {
 }
 
 void CMenuManager::userInput() {
-	static constexpr auto mainMenu = { SCREEN_MAIN_MENU, SCREEN_PAUSE_MENU, SCREEN_GAME_SAVE,
-		SCREEN_GAME_WARNING_DONT_SAVE, SCREEN_SAVE_DONE_1, SCREEN_DELETE_FINISHED, SCREEN_EMPTY };
-	static constexpr auto sliderActions = { MENU_ACTION_BRIGHTNESS, MENU_ACTION_RADIO_VOL, MENU_ACTION_SFX_VOL,
-		MENU_ACTION_DRAW_DIST, MENU_ACTION_MOUSE_SENS };
-	auto contains = [](const auto& v, auto x) {
-		for (auto e : v) if (e == x) return true;
-		return false;
-	};
 	const input::State& in = input::get();
 	bool bEnter = false, bExit = false, bUp = false, bDown = false;
 	int8_t sliderMove = 0;
@@ -209,14 +230,14 @@ void CMenuManager::processUserInput(bool down, bool up, bool enter, bool back, i
 	auto& scr = aScreens[m_nCurrentScreen];
 
 	if (getNumberOfMenuOptions() > 1 && down) {
-		sfx::highlight();
+		if (m_nCurrentScreen != SCREEN_MAP) sfx::highlight();
 		m_nCurrentScreenItem++;
 		for (; scr.m_aItems[m_nCurrentScreenItem].m_nActionType == MENU_ACTION_SKIP; m_nCurrentScreenItem++);
 		if (m_nCurrentScreenItem >= TI_OPTION || !scr.m_aItems[m_nCurrentScreenItem].m_nActionType)
 			m_nCurrentScreenItem = scr.m_aItems[0].m_nActionType == MENU_ACTION_TEXT ? 1 : 0;
 	}
 	if (getNumberOfMenuOptions() > 1 && up) {
-		sfx::highlight();
+		if (m_nCurrentScreen != SCREEN_MAP) sfx::highlight();
 		auto firstSpecial = scr.m_aItems[0].m_nActionType == 1;
 		if (m_nCurrentScreenItem <= (firstSpecial ? 1 : 0)) {
 			for (; m_nCurrentScreenItem < TI_ENTER && scr.m_aItems[m_nCurrentScreenItem + 1].m_nActionType; m_nCurrentScreenItem++);
@@ -227,10 +248,22 @@ void CMenuManager::processUserInput(bool down, bool up, bool enter, bool back, i
 		}
 	}
 	if (enter) {
-		sfx::select_();
 		processMenuOptions(0, back, enter);
+		if (!back) {
+			auto type = aScreens[m_nCurrentScreen].m_aItems[m_nCurrentScreenItem].m_nType;
+			if (type >= FIRST_SAVE_SLOT && type <= MAX_SAVE_SLOT &&
+			    m_Slots[m_nCurrentScreenItem - 1] != eSlotState::SLOT_FILLED)
+				sfx::error();
+			else
+				sfx::select_();
+		}
 	}
 	if (lr && scr.m_aItems[m_nCurrentScreenItem].m_nType == TI_OPTION) {
+		auto act = scr.m_aItems[m_nCurrentScreenItem].m_nActionType;
+		if (act == MENU_ACTION_SFX_VOL) sfx::noiseTest();
+		else if (contains(sliderSelect, act) ||
+		         (contains(specialScreens, (eMenuScreen)m_nCurrentScreen) && !contains(specialMenuActions, act)))
+			sfx::select_();
 		processMenuOptions(lr, back, 0);
 		checkSliderMovement(lr);
 	}
@@ -272,7 +305,9 @@ void CMenuManager::processMenuOptions(int8_t lr, bool& cancel, bool accept) {
 	case MENU_ACTION_YES:
 	case MENU_ACTION_NO:
 	case MENU_ACTION_MENU: switchToNewScreen(item->m_nTargetMenu); return;
-	case MENU_ACTION_NEW_GAME: switchToNewScreen(SCREEN_SELECT_GAME); return;
+	// ProcessMissionPackNewGame: no mission packs on DS -> always the
+	// standard-game confirmation screen
+	case MENU_ACTION_NEW_GAME: switchToNewScreen(SCREEN_NEW_GAME_ASK); return;
 	case MENU_ACTION_STANDARD_GAME:
 		startNewGame();
 		return;

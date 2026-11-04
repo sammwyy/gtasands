@@ -175,7 +175,10 @@ distclean: clean
 else
 #---------------------------------------------------------------------------------
 
-$(OUTPUT).nds: $(OUTPUT).elf $(NITRO_FILES) $(GAME_ICON)
+# repack when any nitrofs file changes (dir mtime alone doesn't track contents);
+# NITRO_FILES is the abs path exported from the top half (cwd is build/ here)
+NITRO_DEPS := $(shell find $(NITRO_FILES) -type f 2>/dev/null)
+$(OUTPUT).nds: $(OUTPUT).elf $(NITRO_FILES) $(NITRO_DEPS) $(GAME_ICON)
 $(OUTPUT).elf: $(OFILES)
 
 $(OFILES_SOURCES) : $(HFILES)

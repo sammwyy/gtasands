@@ -147,14 +147,34 @@ The DS boots into a *port* of the PC frontend, not a recreation:
   (no logo sprites yet), Stats/Brief empty, no mouse, no settings persistence, controls-redefine
   screen stub, no radar map zooming, fonts are a3i5 256px (font text slightly less crisp).
 
+## Loading screen (CLoadingScreen port)
+- `src/game/loadscreen.{h,cpp}`: `beginTitle()` shows `title_pc_US` from
+  `models/txd/loadscs.txd` (the boot title, fade in/hold/fade out, skippable);
+  `begin()` shows random loadsc0..14 artwork (256x256 pal256 DTXD) +
+  DrawBarChart port (bottom-left, 180x10, light gray + black border), fade in/out,
+  progress = min(stepFraction, minTime/90vbl). Step list = real init work:
+  free frontend VRAM -> splash -> open streaming packs -> ped.ifp.
+- `src/game/streaming.{h,cpp}`: `Pack g_models/g_player/g_anim` (gta3/player/anim
+  DSPKs) opened at load, TOC resident for the future streaming milestone;
+  `g_pedIfp` = resident anim/ped.ifp blob.
+- Menu textures are freed on Start Game (VRAM) and lazily reloaded on pause-menu
+  open via `CMenuManager::ensureTextures` (sprite::alpha() added for fade quads).
+- `sprite::draw()` maps v=0 to the top texel row (upright); `drawUV()` is the raw
+  variant (font uses it with an inverted rect).
+
 ## Intro video + SFX (movies milestone)
-- `tools/gtasa/intro.py`: .mpg -> DVID (256x192 pal8 frames @10fps + PCM16 22050Hz audio
-  interleaved per-frame). Section `[movies]` in resources.toml (`fps`, `audio_rate` knobs).
+- `tools/gtasa/intro.py`: .mpg -> DVID (256x256 letterboxed pal8 frames @10fps + PCM16
+  22050Hz audio interleaved per-frame). Section `[movies]` in resources.toml. Note:
+  ffmpeg's rawvideo muxer appends a 1024B palette after every pal8 frame - the
+  converter detects the stride (W*H vs W*H+1024); slicing at W*H drifts +4 rows/frame.
 - `src/game/intro.cpp`: plays DVID on MODE_5_2D bitmap bg + PCM16 ring-buffer channel
   (raw SCHANNEL0 regs), skippable with any key after warmup, restores MODE_0_3D after.
-- `src/game/sfx.cpp`: reads bank 60 of `nitro:/audio/sfx/genrl.dsfx` (frontend menu SFX),
-  decodes DSND IMA-ADPCM -> PCM16, plays L/R pairs panned like the original.
-- Boot order: Logo.mpg -> GTAtitles.mpg -> main menu. Menu nav/enter/back play the
-  real frontend sounds (highlight 4/5, select 6/7, back 0/1).
+- `src/game/sfx.cpp`: reads banks 59+60 of `nitro:/audio/sfx/genrl.dsfx` (frontend
+  menu SFX + start whoosh), decodes DSND IMA-ADPCM -> PCM16, plays L/R pairs
+  panned like the original. Bank 82 (LOADING tunes): only offsets kept, one
+  random stereo pair decoded+looped during title/loading (`tuneStart/tuneStop`).
+- Boot order: Logo.mpg -> GTAtitles.mpg -> title screen (title_pc_US) -> main
+  menu. Menu nav/enter/back play the real frontend sounds (highlight 4/5,
+  select 6/7, back 0/1); New Game -> confirm screen -> loading -> ingame.
 - Caveat: video shows via bitmap BG, audio via PCM16 ring (not compressed ADPCM);
   if the intro runs too fast in melonDS, swiWaitForVBlank cadence may need rework.

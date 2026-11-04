@@ -49,6 +49,7 @@ public:
 	void initialise();
 	void loadAllTextures();
 	void unloadTextures();
+	void ensureTextures();
 	void process();
 	void drawFrontEnd();
 

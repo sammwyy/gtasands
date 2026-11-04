@@ -10,6 +10,10 @@ void init();              // load frontend banks (no-op if files missing)
 void highlight();         // navigate
 void select_();           // confirm
 void back();              // cancel
-void start();             // menu opened
+void error();             // invalid action (e.g. empty save slot)
+void noiseTest();         // sfx volume slider test tone
+void start();             // menu opened/closed whoosh
+void tuneStart();         // random loading tune, looped (bank 82)
+void tuneStop();
 
 }

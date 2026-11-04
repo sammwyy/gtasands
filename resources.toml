@@ -159,6 +159,10 @@ texture = { scale = 1.0, max_size = 256 }
 match = "models/fronten*.txd"
 texture = { scale = 0.5, max_size = 256, auto_colors = 256 }
 
+[[models_loose.rule]]     # loading screen artwork: drawn fullscreen
+match = "models/txd/loadsc*.txd"
+texture = { scale = 0.5, max_size = 256, auto_colors = 256 }
+
 [[models_loose.rule]]
 match = "models/particle.txd"
 texture = { max_size = 32 }

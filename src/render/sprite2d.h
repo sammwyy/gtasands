@@ -20,6 +20,8 @@ struct RGBA {
 void beginFrame();  // sets ortho 0..640 x 0..480
 void endFrame();
 
+void alpha(u8 a);   // per-quad translucency 0..31 (reset to 31 each beginFrame)
+
 void draw(const tex::Texture* t, const Rect& rt, RGBA color);
 void drawUV(const tex::Texture* t, const Rect& rt, float u1, float v1, float u2, float v2, RGBA color);
 void rect(const Rect& rt, RGBA color);

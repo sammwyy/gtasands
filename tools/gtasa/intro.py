@@ -25,7 +25,7 @@ def convert(src, dst, fps=10, rate=22050):
                     '-f', 'rawvideo', '-pix_fmt', 'rgb24', pal_raw], check=True)
     subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', src, '-i', pal_png,
                     '-lavfi', f'[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease,'
-                              f'pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black,vflip,fps={fps}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3',
+                              f'pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black,fps={fps}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3',
                     '-f', 'rawvideo', '-pix_fmt', 'pal8', frames], check=True)
     subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', src, '-vn', '-ac', '1',
                     '-ar', str(rate), '-f', 's16le', audio], check=True)
@@ -33,7 +33,11 @@ def convert(src, dst, fps=10, rate=22050):
     pr = open(pal_raw, 'rb').read()
     pal = [(pr[i] >> 3) | ((pr[i + 1] >> 3) << 5) | ((pr[i + 2] >> 3) << 10) for i in range(0, 768, 3)]
     fdata = open(frames, 'rb').read()
-    nframes = len(fdata) // (W * H)
+    # ffmpeg appends the 1024B palette (256xRGBA) after each pal8 frame: the
+    # stride is W*H+1024 there, not W*H - slicing at W*H would drift +4 rows
+    # every frame and the video scrolls down forever
+    stride = W * H + 1024 if len(fdata) % (W * H) and len(fdata) % (W * H + 1024) == 0 else W * H
+    nframes = len(fdata) // stride
     adata = open(audio, 'rb').read()
 
     per = rate * 2.0 / fps
@@ -49,7 +53,7 @@ def convert(src, dst, fps=10, rate=22050):
                 chunk += b'\0'
             out.write(struct.pack('<I', len(chunk)))
             out.write(chunk)
-            out.write(fdata[i * W * H:(i + 1) * W * H])
+            out.write(fdata[i * stride:i * stride + W * H])
         if ai < len(adata):
             out.write(struct.pack('<I', len(adata) - ai))
             out.write(adata[ai:])

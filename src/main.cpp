@@ -3,6 +3,8 @@
 
 #include "assets/pack.h"
 #include "game/intro.h"
+#include "game/loadscreen.h"
+#include "game/sfx.h"
 #include "game/menu/menu.h"
 #include "game/text/gxt.h"
 #include "hud/hud.h"
@@ -12,9 +14,9 @@
 #include "platform/video.h"
 #include "render/renderer.h"
 
-enum class AppState { MENU, INGAME };
+enum class AppState { TITLE, MENU, LOADING, INGAME };
 
-static AppState s_state = AppState::MENU;
+static AppState s_state = AppState::TITLE;
 static float yaw = 30, pitch = 25, dist = 22;
 
 static void boot() {
@@ -35,8 +37,8 @@ static void boot() {
 		return;
 	}
 	hud::log("gxt ok: %.12s", (const char*)TheText.get("FEP_STG"));
-	FrontEndMenuManager.initialise();
-	hud::log("frontend up: %u screens", (unsigned)SCREEN_COUNT);
+	sfx::init(); // before the title screen: it starts the loading tune
+	loadscreen::beginTitle();
 }
 
 int main() {
@@ -52,26 +54,45 @@ int main() {
 		}
 		if (FrontEndMenuManager.m_WantsStartGame) {
 			FrontEndMenuManager.m_WantsStartGame = false;
+			loadscreen::begin();
+			s_state = AppState::LOADING;
+		}
+		// boot title -> frontend -> loading -> ingame transitions
+		if (s_state == AppState::TITLE && loadscreen::update()) {
+			loadscreen::end();
+			FrontEndMenuManager.initialise(); // menu art loads once the title frees VRAM
+			hud::log("frontend up: %u screens", (unsigned)SCREEN_COUNT);
+			s_state = AppState::MENU;
+		}
+		if (s_state == AppState::LOADING && loadscreen::update()) {
+			loadscreen::end();
 			s_state = AppState::INGAME;
 		}
 		if (s_state == AppState::INGAME) {
 			if (in.down & KEY_START) {
+				sfx::start(); // AE_FRONTEND_START: whoosh on menu open/close
 				FrontEndMenuManager.m_bMenuActive = !FrontEndMenuManager.m_bMenuActive;
 				if (FrontEndMenuManager.m_bMenuActive) {
+					FrontEndMenuManager.ensureTextures();
+					FrontEndMenuManager.m_bDontDrawFrontEnd = false;
 					FrontEndMenuManager.m_bMainMenuSwitch = false;
 					FrontEndMenuManager.m_nCurrentScreen = SCREEN_INITIAL;
 					FrontEndMenuManager.m_nCurrentScreenItem = 0;
 				}
 			}
 			if (in.down & KEY_B && FrontEndMenuManager.m_bMenuActive &&
-			    FrontEndMenuManager.m_nCurrentScreen == SCREEN_PAUSE_MENU)
+			    FrontEndMenuManager.m_nCurrentScreen == SCREEN_PAUSE_MENU) {
+				FrontEndMenuManager.m_bDontDrawFrontEnd = false;
 				FrontEndMenuManager.m_bMenuActive = false;
+			}
 		}
 		if (FrontEndMenuManager.m_bMenuActive) FrontEndMenuManager.process();
 
 		video::beginFrame();
 		if (FrontEndMenuManager.m_bMenuActive) {
 			FrontEndMenuManager.drawFrontEnd();
+		} else if (s_state == AppState::TITLE || s_state == AppState::LOADING) {
+			loadscreen::draw();
 		} else {
 			if (in.held & KEY_LEFT) yaw -= 2;
 			if (in.held & KEY_RIGHT) yaw += 2;
