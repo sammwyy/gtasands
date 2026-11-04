@@ -35,7 +35,8 @@ static int s_zoneTimer;
 
 // On-foot anim flow, the part of CPlayerPed::SetRealMoveAnim this port uses.
 // Weights ease at the original blend delta (8/s, ~0.125 s). The stick release
-// itself is instant — the soft stop is run_stop / run_stopR, not a ratio ramp.
+// itself is instant. run_stop / run_stopR only plant a run or a sprint
+// (blend ratio > 1). A walk fades back to idle.
 enum Phase { PH_IDLE, PH_START, PH_MOVE, PH_STOP };
 static Phase s_phase;
 static float s_ratio;           // 0 idle .. 1 walk .. 2 run
@@ -127,7 +128,8 @@ static float clipOr(const char* name, float fallback) {
 // Flow (SetRealMoveAnim, on foot, unarmed):
 //   idle -> walk_start (once) -> walk, blended into run by the move ratio
 //   A -> sprint, until the bar empties (then run, and idle_tired once stopped)
-//   release -> run_stop or run_stopR from the foot phase, then idle
+//   release from a run/sprint -> run_stop or run_stopR, then idle
+//   release from a walk or walk_start -> idle (no walk_stop in the group)
 static void updateMove() {
 	const input::State& in = input::get();
 	const float dt = 1.0f / 60.0f;
@@ -175,6 +177,8 @@ static void updateMove() {
 	// Bar empty while A is still held: drop to run, not back to a walk.
 	const bool forcedRun = wantSprint && !sprinting;
 
+	// Captured before a release zeroes it: this is the gait we're leaving.
+	const float gait = s_ratio;
 	if (sprinting) s_ratio = 2.0f;
 	else if (moving) {
 		// PlayerControlZelda: fMaximumMoveBlendRatio steps at ~0.07 * timestep.
@@ -197,14 +201,18 @@ static void updateMove() {
 			s_phase = PH_MOVE;
 		}
 	} else if (s_phase == PH_MOVE || s_phase == PH_START) {
-		// Foot phase of whichever locomotion clip is carrying the stride.
-		float ph = clipOr(mo.run, -1.0f);
-		if (s_wSprint >= s_wRun && s_wSprint >= s_wWalk) ph = clipOr(mo.sprint, ph);
-		else if (s_wWalk >= s_wRun) ph = clipOr(mo.walk, ph);
-		if (ph < 0.0f) ph = clipOr(mo.start, 0.0f);
-		s_stopR = ph >= 0.5f;
-		s_phase = PH_STOP;
-		s_restartStop = true;
+		// SetRealMoveAnim plays run_stop only above a walk (move blend > 1).
+		if (s_phase == PH_MOVE && gait > 1.0f) {
+			float ph = clipOr(mo.run, -1.0f);
+			if (s_wSprint >= s_wRun && s_wSprint >= s_wWalk) ph = clipOr(mo.sprint, ph);
+			else if (s_wWalk >= s_wRun) ph = clipOr(mo.walk, ph);
+			if (ph < 0.0f) ph = clipOr(mo.start, 0.0f);
+			s_stopR = ph >= 0.5f;
+			s_phase = PH_STOP;
+			s_restartStop = true;
+		} else {
+			s_phase = PH_IDLE;
+		}
 	} else if (s_phase == PH_STOP) {
 		const char* sn = s_stopR ? mo.stopR : mo.stop;
 		if (cj::clipEnded(sn) || cj::clipPhase(sn) < 0.0f) s_phase = PH_IDLE;

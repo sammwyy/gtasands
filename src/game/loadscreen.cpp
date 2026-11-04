@@ -3,6 +3,7 @@
 #include <nds.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <algorithm>
 
 #include "assets/texture.h"
@@ -71,8 +72,87 @@ static void stepModels() {
 }
 static void stepPlayer() { streaming::g_player.open("nitro:/models/player.dspk"); }
 static void stepAnim() { streaming::g_anim.open("nitro:/anim/anim.dspk"); }
-static void stepPedIfp() {  // base ped animations, meant to stay resident
-	streaming::g_pedIfp = readFile("nitro:/anim/ped.ifp");
+// ped.ifp is 294 clips / ~870KB. Holding the whole block crowds out the HUD
+// fonts and the pause-menu texture staging. CJ's on-foot set is eight clips
+// (~34KB). They are copied out; the rest of the file is never resident.
+static bool keepClip(const char* raw) {
+	static const char* k[] = {
+		"idle_stance", "walk_player", "run_player", "sprint_civi",
+		"walk_start", "idle_tired", "run_stop", "run_stopr"
+	};
+	char name[25];
+	int n = 0;
+	for (; n < 24 && raw[n]; n++) {
+		unsigned char c = (unsigned char)raw[n];
+		if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + 32);
+		name[n] = (char)c;
+	}
+	name[n] = 0;
+	for (const char* s : k)
+		if (!strcmp(name, s)) return true;
+	return false;
+}
+
+static bool skipSeq(FILE* f) {
+	uint8_t hdr[32];
+	if (fread(hdr, 1, 32, f) != 32) return false;
+	const uint16_t numFrames = (uint16_t)(hdr[28] | (hdr[29] << 8));
+	const uint32_t keyBytes = ((uint32_t)numFrames * (hdr[26] ? 16u : 10u) + 3u) & ~3u;
+	return fseek(f, (long)keyBytes, SEEK_CUR) == 0;
+}
+
+static void* loadPedClips(const char* path) {
+	FILE* f = fopen(path, "rb");
+	if (!f) return nullptr;
+	uint8_t fileHdr[32];
+	if (fread(fileHdr, 1, 32, f) != 32 || memcmp(fileHdr, "DANM", 4)) {
+		fclose(f);
+		return nullptr;
+	}
+	const int numAnims = fileHdr[6] | (fileHdr[7] << 8);
+	struct Span { long off; long size; };
+	Span spans[8];
+	int kept = 0;
+	long bytes = 32;
+	for (int i = 0; i < numAnims; i++) {
+		const long start = ftell(f);
+		uint8_t ent[28];
+		if (fread(ent, 1, 28, f) != 28) { fclose(f); return nullptr; }
+		const int numSeqs = ent[24] | (ent[25] << 8);
+		bool ok = true;
+		for (int s = 0; s < numSeqs && ok; s++) ok = skipSeq(f);
+		if (!ok) { fclose(f); return nullptr; }
+		if (kept < 8 && keepClip((const char*)ent)) {
+			spans[kept].off = start;
+			spans[kept].size = ftell(f) - start;
+			bytes += spans[kept].size;
+			kept++;
+		}
+	}
+	uint8_t* blob = (uint8_t*)malloc((size_t)bytes);
+	if (!blob) { fclose(f); return nullptr; }
+	memcpy(blob, fileHdr, 32);
+	blob[6] = (uint8_t)kept;
+	blob[7] = (uint8_t)(kept >> 8);
+	uint8_t* w = blob + 32;
+	for (int i = 0; i < kept; i++) {
+		if (fseek(f, spans[i].off, SEEK_SET) != 0 ||
+		    fread(w, 1, (size_t)spans[i].size, f) != (size_t)spans[i].size) {
+			free(blob);
+			fclose(f);
+			return nullptr;
+		}
+		w += spans[i].size;
+	}
+	fclose(f);
+	hud::log("ped.ifp %d clips %ld", kept, bytes);
+	return blob;
+}
+
+static void stepPedIfp() {
+	if (streaming::g_pedIfp) return;
+	streaming::g_pedIfp = loadPedClips("nitro:/anim/ped.ifp");
+	if (!streaming::g_pedIfp) hud::log("\x1b[31mped.ifp MISSING\x1b[39m");
 }
 static void stepTune() {    // ~200ms decode: runs under the bar, not on New Game press
 	sfx::tuneStart();
