@@ -20,14 +20,7 @@ struct DvidHeader {
 	u16 palette[256];
 };
 
-// channel 0 raw regs: used for the streamed PCM16 track
-#define SND0          0x04000400
-#define CNT_L         (*(vu16*)(SND0 + 0))
-#define CNT_H         (*(vu16*)(SND0 + 2))
-#define SAD           (*(vu32*)(SND0 + 4))
-#define TMR           (*(vu16*)(SND0 + 8))
-#define PNT           (*(vu16*)(SND0 + 10))
-#define LEN           (*(vu16*)(SND0 + 12))
+
 
 // DTEX scratch: 16B header + 64KB pixels + 512B palette
 static u8 s_dtex[16 + 65536 + 512];
@@ -47,12 +40,9 @@ static bool playDvid(const char* path) {
 
 	soundEnable();
 	u8* wr = ring;
-	SAD = (u32)ring;
-	TMR = (u16)-(int)(16777216 / dh.audioRate);
-	PNT = 0;
-	LEN = (u16)(65536 / 4);
-	CNT_H = 64; // pan center (bits 16-22 of SCHANNEL_CNT)
-	CNT_L = 127 | (1u << 10) | (1u << 12) | (1u << 15); // vol,loop,pcm16,enable
+	// looped PCM16 ring on a libnds-managed channel; we refill behind the playhead
+	int achan = soundPlaySample(ring, SoundFormat_16Bit, 65536, (u16)dh.audioRate,
+	                            127, 64, true, 0);
 
 	// frames are already 256x256 letterboxed -> texture is the frame verbatim
 	ds::TexHeader* th = (ds::TexHeader*)s_dtex;
@@ -102,7 +92,7 @@ static bool playDvid(const char* path) {
 		for (int v = 0; v < framesPerVblank; v++) swiWaitForVBlank();
 	}
 
-	CNT_L = 0;
+	soundKill(achan);
 	tex::unload(t[0]);
 	tex::unload(t[1]);
 	tex::unload(t[2]);
