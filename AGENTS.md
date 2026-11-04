@@ -145,7 +145,51 @@ in hot paths, replace RW with our formats/renderer, keep memory pools small and 
 8. Scripts: SCM VM (`data/script/main.scm`) - large; start with a minimal mission-less free roam.
 Profile constantly with the HUD stats (CPU us/frame, polys/verts) and tune resources.toml to fit.
 
-## Frontend port (current milestone)
+## Bottom-screen game HUD (current milestone)
+`SELECT` toggles the bottom screen between the debug console and a real
+software-rendered GTA HUD (`hud::Screen::DEBUG/GAME`, `hud::toggleScreen()`).
+- `src/game/hud/subfb.*`: CPU renderer into a 96KB RAM backbuffer that is
+  DMA'd to the sub engine's B16 bitmap BG3 (VRAM C, MODE_5_2D) inside vblank
+  (`subfb::present` — DC_FlushRange + dmaCopy). CPU never touches VRAM, so
+  the bottom screen cannot tear. `consoleInit` is re-run when switching back
+  to DEBUG, so `hud::log` also keeps a 14-line ring buffer that is replayed.
+- Timing: `hud::draw()` renders to RAM mid-frame, `hud::present()` runs
+  AFTER `video::endFrame()` (inside vblank). Never write VRAM C outside
+  blanking; debug-console printf is the only exception (tiny tile writes).
+- `src/game/hud/hudtex.*`: DTEX decode to RAM (sprites u16+alpha planes,
+  font coverage u8 maps, flat rgb15 tiles).
+- `src/game/hud/hudfont.*`: CFont for the fb — same glyph math as
+  `game/text/font.cpp` (16-col grid, fonts.dat prop widths, ~color~ codes,
+  pricedown/subfont remaps, edge drop shadow) rasterizing coverage maps.
+- `src/game/hud/radar.*`: CRadar port — rotating map (world->radar by
+  heading). ALL 144 radarNN.txd tiles are decoded+box-filtered at init
+  into a 1.15MB static arena — zero runtime file I/O/decoding (a tile
+  miss on FAT costs ms and tanks fps). Incremental world-coord marching
+  (no per-pixel divides), dynamic range 180-350, north marker, blips
+  (`radar::setBlip`), `radar_centre` player arrow.
+- `src/game/hud/chud.*`: CHud port — clock, money, wanted stars (font2 `]`
+  glyph + flash), weapon icon (`*icon` tex from weapon dspk txds, fist
+  otherwise), ammo `reserve-clip`, health/armor/breath bars (DrawBarChart
+  port), zone+vehicle names with the original NAME_* fade state machine.
+  Layout: top-left weapon icon + ammo, bottom-left radar, top-right stats
+  (clock, money, bars, wanted stars), bottom-right zone/vehicle names.
+  NOTE: glyph quads are 32*sw px wide but advance is prop*sw — right-edge
+  anchoring must account for the overhang (see hudfont::print RIGHT).
+- `tools/hosthud/`: host harness — compiles the same hud/player/zones
+  sources with an nds.h stub and dumps the framebuffer to PPM
+  (`./hosthud [frame] [out.ppm]`), for visual iteration without hardware.
+- `src/game/player.*`: the player/game-state snapshot the HUD reads
+  (pos/heading/speed/health/armour/breath/money/wanted/weapon/zone/vehicle +
+  game clock). Currently a demo driver (circular path around LS, cycling
+  wanted level and weapons) until real gameplay lands.
+- `src/game/zones.*`: info.zon parser; smallest containing box -> GXT name.
+- `GTASADS_QUICKTEST` define: skips intro movies, auto-starts the game and
+  forces the GAME screen — headless smoke path. In DEBUG builds the HUD
+  writes `fat:/gtasads_hudok.txt` after ~2s (verify with
+  `strings dldi.bin | grep hudok`); expect
+  `hudok range=... tiles=N fist=1 weap=... wanted=N zone=...`.
+
+## Frontend port
 The DS boots into a *port* of the PC frontend, not a recreation:
 - `src/game/menu/screens.{h,cpp}`: `aScreens` table, enums and sprite names ported verbatim
   from `Frontend/MenuManager_Internal.h` + `FrontendScreensPC.h` (PC build, USE_EU_STUFF off -> EN/ES).

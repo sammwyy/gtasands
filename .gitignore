@@ -15,3 +15,12 @@
 /sdcard/
 /dldi.bin
 /dldi.bin.idx
+
+# host HUD harness artifacts (binary, framebuffer dumps, nitro:/ path shim)
+/tools/hosthud/hosthud
+/tools/hosthud/shots/
+/nitro:
+
+# python bytecode
+__pycache__/
+*.pyc

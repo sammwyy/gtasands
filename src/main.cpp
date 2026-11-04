@@ -4,6 +4,7 @@
 #include "assets/pack.h"
 #include "game/intro.h"
 #include "game/loadscreen.h"
+#include "game/player.h"
 #include "game/sfx.h"
 #include "game/menu/menu.h"
 #include "game/text/gxt.h"
@@ -30,9 +31,11 @@ static void boot() {
 		return;
 	}
 	hud::log("fs: %s", fs::backend());
+#ifndef GTASADS_QUICKTEST
 	// boot sequence: rockstar logo + SA intro cinematic (skippable)
 	intro::play("nitro:/movies/logo.dvid");
 	intro::play("nitro:/movies/gtatitles.dvid");
+#endif
 	if (!TheText.load("nitro:/text/american.gxt")) {
 		hud::log("\x1b[31mamerican.gxt missing (make assets)\x1b[39m");
 		return;
@@ -44,6 +47,10 @@ static void boot() {
 
 int main() {
 	boot();
+#ifdef GTASADS_QUICKTEST
+	FrontEndMenuManager.m_WantsStartGame = true;
+	hud::setScreen(hud::Screen::GAME);
+#endif
 
 	while (pmMainLoop()) {
 		timing::frameStart();
@@ -67,9 +74,12 @@ int main() {
 		}
 		if (s_state == AppState::LOADING && loadscreen::update()) {
 			loadscreen::end();
+			player::init();
 			s_state = AppState::INGAME;
 		}
 		if (s_state == AppState::INGAME) {
+			// SELECT toggles bottom screen: debug console <-> real game HUD
+			if (in.down & KEY_SELECT) hud::toggleScreen();
 			if (in.down & KEY_START) {
 				sfx::start(); // AE_FRONTEND_START: whoosh on menu open/close
 				FrontEndMenuManager.m_bMenuActive = !FrontEndMenuManager.m_bMenuActive;
@@ -103,9 +113,13 @@ int main() {
 			if (in.held & KEY_R && dist < 60) dist += 0.5f;
 			renderer::draw(yaw, pitch, dist);
 		}
+		if (s_state == AppState::INGAME) player::update();
 		timing::frameEnd();
-		hud::drawStats();
+		// bottom screen renders into a RAM backbuffer (safe mid-frame), then
+		// a ~0.6ms DMA pushes it to VRAM C inside vblank -> no tearing
+		hud::draw();
 		video::endFrame();
+		hud::present();
 	}
 	return 0;
 }
