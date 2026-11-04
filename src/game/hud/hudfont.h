@@ -13,7 +13,8 @@ namespace hudfont {
 enum Style : u8 { STYLE_GOTHIC = 0, STYLE_PRICEDOWN = 1, STYLE_MENU = 2 };
 enum Align : u8 { LEFT = 0, CENTER = 1, RIGHT = 2 };
 
-bool init();   // loads fonts.txd coverage + fonts.dat; returns success
+bool init();      // loads fonts.txd coverage + fonts.dat; returns success
+bool initStep();  // same, one font atlas per call; true when ready
 
 // x,y are fb pixels; sw,sh are virtual-640 scales like the original
 // (glyph quad = 32*sw x 20*sh px on screen). alpha multiplies coverage.

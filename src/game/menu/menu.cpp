@@ -6,8 +6,8 @@
 #include <string.h>
 #include <algorithm>
 
-#include "assets/pack.h"
 #include "assets/texture.h"
+#include "assets/txdfile.h"
 #include "game/text/font.h"
 #include "game/text/gxt.h"
 #include "platform/fs.h"
@@ -53,62 +53,38 @@ static inline float StretchX(float x) { return x; }
 static inline float StretchY(float y) { return y; }
 static inline float ScreenR(float x) { return 640.0f - x; }
 
-static Pack s_fe1, s_fe2, s_fe3, s_fepc;
 static const tex::Texture* s_sprites[FRONTEND_SPRITE_COUNT];
 static const tex::Texture* s_font2 = nullptr;
 static const tex::Texture* s_font1 = nullptr;
 
-// Streams a single DTEX entry out of a loose TXD. The whole file is never
-// held in RAM: fronten2.txd is ~484KB and the 4MB heap (streaming TOCs +
-// decoded SFX + HUD arena) cannot spare that anymore - one entry is <=66KB.
-static FILE* openTxd(const char* name, ds::TxdEntry** entriesOut, int* countOut) {
+static bool openTxd(TxdFile& txd, const char* name) {
 	char path[96];
 	snprintf(path, sizeof path, "nitro:/models/%s.txd", name);
-	FILE* f = fopen(path, "rb");
-	if (!f) { hud::log("fe: %s.txd missing", name); return nullptr; }
-	ds::TxdHeader th;
-	ds::TxdEntry* e = nullptr;
-	if (fread(&th, 1, sizeof th, f) == sizeof th && th.magic == DS_FOURCC('D', 'T', 'X', 'D'))
-		e = (ds::TxdEntry*)malloc(th.count * sizeof(ds::TxdEntry));
-	if (!e || fread(e, sizeof(ds::TxdEntry), th.count, f) != (size_t)th.count) {
-		free(e);
-		fclose(f);
-		return nullptr;
-	}
-	*entriesOut = e;
-	*countOut = th.count;
-	return f;
+	if (txd.open(path)) return true;
+	hud::log("fe: %s.txd missing", name);
+	return false;
 }
 
-static const tex::Texture* loadTxdEntry(FILE* f, const ds::TxdEntry* e, int count, const char* name) {
-	for (int i = 0; i < count; i++) {
-		if (strcmp(e[i].name, name)) continue;
-		void* buf = malloc(e[i].size);
-		if (!buf) { hud::log("fe: oom %s (%lu)", name, (unsigned long)e[i].size); return nullptr; }
-		fseek(f, e[i].offset, SEEK_SET);
-		const tex::Texture* t =
-			fread(buf, 1, e[i].size, f) == e[i].size ? tex::load(buf) : nullptr;
-		free(buf);
-		return t;
-	}
-	hud::log("fe: %s not in txd", name);
-	return nullptr;
+// Streams a single DTEX entry out of a loose TXD into scratch, uploads it and
+// drops the staging copy. The whole file is never held in RAM: fronten2.txd
+// is ~490KB, one entry is <=66KB.
+static const tex::Texture* loadTxdEntry(const TxdFile& txd, const char* name) {
+	mem::Scratch scratch;
+	const ds::TexHeader* h = txd.load(name, scratch);
+	if (!h) hud::log("fe: %s not in txd", name);
+	return h ? tex::load(h, tex::GROUP_FRONTEND) : nullptr;
 }
 
 static const tex::Texture* spriteTex(eFrontend id) { return s_sprites[(int)id]; }
 
 static const tex::Texture* loadSpriteFile(const char* file, int first, int last) {
-	ds::TxdEntry* entries;
-	int count;
-	FILE* f = openTxd(file, &entries, &count);
-	if (!f) return nullptr;
+	TxdFile txd;
+	if (!openTxd(txd, file)) return nullptr;
 	const tex::Texture* firstTex = nullptr;
 	for (int i = first; i < last; i++) {
-		s_sprites[i] = loadTxdEntry(f, entries, count, FrontEndFilenames[i].name);
+		s_sprites[i] = loadTxdEntry(txd, FrontEndFilenames[i].name);
 		if (!firstTex) firstTex = s_sprites[i];
 	}
-	free(entries);
-	fclose(f);
 	return firstTex;
 }
 
@@ -132,14 +108,10 @@ void CMenuManager::loadAllTextures() {
 	loadSpriteFile("fronten2", FRONTEND_SPRITE_BACK8, FRONTEND_SPRITE_MAP + 1);
 	loadSpriteFile("fronten3", FRONTEND3_START, FRONTEND4_START);
 	loadSpriteFile("fronten_pc", FRONTEND4_START, FRONTEND_SPRITE_COUNT);
-	ds::TxdEntry* fentries;
-	int fcount;
-	FILE* ff = openTxd("fonts", &fentries, &fcount);
-	if (ff) {
-		s_font2 = loadTxdEntry(ff, fentries, fcount, "font2");
-		s_font1 = loadTxdEntry(ff, fentries, fcount, "font1");
-		free(fentries);
-		fclose(ff);
+	TxdFile fonts;
+	if (openTxd(fonts, "fonts")) {
+		s_font2 = loadTxdEntry(fonts, "font2");
+		s_font1 = loadTxdEntry(fonts, "font1");
 	}
 	m_bTexturesLoaded = s_font1 && s_font2;
 	int f1 = s_font1 ? s_font1->id : 0, f2 = s_font2 ? s_font2->id : 0;
@@ -148,7 +120,7 @@ void CMenuManager::loadAllTextures() {
 	         s_sprites[FRONTEND_SPRITE_BACK8] ? (int)s_sprites[FRONTEND_SPRITE_BACK8]->id : -1);
 }
 
-void CMenuManager::unloadTextures() { tex::clear(); }
+void CMenuManager::unloadTextures() { tex::clear(tex::GROUP_FRONTEND); }
 
 // Frontend art is freed while in-game (VRAM budget); reload it lazily the
 // first time the pause menu is opened again.

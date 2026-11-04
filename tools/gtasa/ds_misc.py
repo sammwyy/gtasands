@@ -44,12 +44,17 @@ def convert_col(data, p):
 
 
 def convert_ifp(data, p):
+    """DANM v2: header, directory (name, offset, size per anim), then the anim
+    records. The directory lets the runtime stream single clips on demand
+    instead of scanning (or holding) the whole block."""
     block, anims = ifp.parse(data)
     anims = [a for a in anims if not any(fnmatchcase(a.name.lower(), r.lower()) for r in p['remove'])]
-    out = bytearray(struct.pack('<4sHH', b'DANM', 1, len(anims)) + name(block, 24))
     kin = kout = 0
     step = max(1, int(p['keep_every']))
+    recs = []
     for a in anims:
+        out = bytearray()
+        recs.append(out)
         out += name(a.name, 24) + struct.pack('<HH', len(a.seqs), 0)
         for si, s in enumerate(a.seqs):
             fr = s.frames
@@ -64,4 +69,10 @@ def convert_ifp(data, p):
             out += name(s.name, 24) + struct.pack('<hBBHH', s.bone, int(trans), 0, len(fr), 0)
             body = b''.join(struct.pack('<5h', *f[:5]) + (struct.pack('<3h', *f[5:8]) if trans else b'') for f in fr)
             out += pad4(body)
-    return bytes(out), {'keys_in': kin, 'keys_out': kout}
+    hdr = struct.pack('<4sHH', b'DANM', 2, len(anims)) + name(block, 24)
+    off = len(hdr) + 32 * len(anims)
+    directory = bytearray()
+    for a, rec in zip(anims, recs):
+        directory += name(a.name, 24) + struct.pack('<II', off, len(rec))
+        off += len(rec)
+    return hdr + bytes(directory) + b''.join(recs), {'keys_in': kin, 'keys_out': kout}

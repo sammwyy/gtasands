@@ -2,8 +2,8 @@
 
 #include <stdint.h>
 
-// Frontend SFX from the real GENRL pak (banks 59/60), IMA-ADPCM decoded to
-// PCM16 once at init and played via libnds channels.
+// Frontend SFX from the real GENRL pak (banks 59/60), kept as IMA-ADPCM and
+// played natively by the DS mixer (no PCM decode).
 namespace sfx {
 
 void init();              // load frontend banks (no-op if files missing)
@@ -13,7 +13,8 @@ void back();              // cancel
 void error();             // invalid action (e.g. empty save slot)
 void noiseTest();         // sfx volume slider test tone
 void start();             // menu opened/closed whoosh
-void tuneStart();         // random loading tune, looped (bank 82)
+bool tuneStep();          // random loading tune (bank 82): one channel read per call, true once playing
+void tuneStart();         // same, all at once
 void tuneStop();
 
 }

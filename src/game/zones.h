@@ -7,5 +7,6 @@
 namespace zones {
 
 const GxtChar* nameAt(float x, float y); // GXT string or nullptr
+void preload();                          // parse info.zon now (loading screen)
 
 }

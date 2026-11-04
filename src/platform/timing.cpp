@@ -30,5 +30,11 @@ void frameEnd() {
 u32 frameUs() { return s_frameUs; }
 u32 fps() { return s_fps; }
 u32 vblanks() { return s_vblanks; }
+static u32 s_section[SEC_COUNT];
+void setSection(Section s, u32 us) { s_section[s] = us; }
+u32 sectionUs(Section s) { return s_section[s]; }
+
+u32 ticks() { return cpuGetTiming(); }
+u32 usSince(u32 startTicks) { return timerTicks2usec(cpuGetTiming() - startTicks); }
 
 }

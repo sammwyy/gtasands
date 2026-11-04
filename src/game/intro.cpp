@@ -8,6 +8,7 @@
 #include "assets/ds_formats.h"
 #include "assets/texture.h"
 #include "hud/hud.h"
+#include "mem/mem.h"
 #include "platform/input.h"
 #include "render/sprite2d.h"
 
@@ -22,9 +23,6 @@ struct DvidHeader {
 
 
 
-// DTEX scratch: 16B header + 64KB pixels + 512B palette
-static u8 s_dtex[16 + 65536 + 512];
-
 static bool playDvid(const char* path) {
 	FILE* f = fopen(path, "rb");
 	if (!f) return false;
@@ -35,8 +33,16 @@ static bool playDvid(const char* path) {
 	}
 	hud::log("intro %s: %uf %ufps %uHz", path, (unsigned)dh.numFrames, (unsigned)dh.fps, (unsigned)dh.audioRate);
 	const u32 frameBytes = (u32)dh.w * dh.h;
-	u8* frame = (u8*)malloc(frameBytes);
-	u8* ring = (u8*)calloc(1, 65536); // ~1.5s @ 22050Hz
+	// both buffers only live while the movie plays: scratch, released on return.
+	// Frames are read straight into the DTEX blob (header + pixels + palette).
+	mem::Scratch scratch;
+	u8* dtex = (u8*)scratch.alloc(16 + frameBytes + 512);
+	u8* ring = (u8*)scratch.alloc(65536); // ~1.5s @ 22050Hz
+	if (!dtex || !ring) {
+		fclose(f);
+		return false;
+	}
+	memset(ring, 0, 65536);
 
 	soundEnable();
 	u8* wr = ring;
@@ -45,7 +51,7 @@ static bool playDvid(const char* path) {
 	                            127, 64, true, 0);
 
 	// frames are already 256x256 letterboxed -> texture is the frame verbatim
-	ds::TexHeader* th = (ds::TexHeader*)s_dtex;
+	ds::TexHeader* th = (ds::TexHeader*)dtex;
 	th->magic = DS_FOURCC('D', 'T', 'E', 'X');
 	th->width = dh.w;
 	th->height = dh.h;
@@ -53,7 +59,7 @@ static bool playDvid(const char* path) {
 	th->flags = 0;
 	th->numColors = 256;
 	th->texelBytes = frameBytes;
-	memcpy(s_dtex + 16 + frameBytes, dh.palette, 512);
+	memcpy(dtex + 16 + frameBytes, dh.palette, 512);
 
 	const int framesPerVblank = 60 / (dh.fps ? dh.fps : 10);
 	bool done = false;
@@ -69,15 +75,15 @@ static bool playDvid(const char* path) {
 			u32 space = ring + 65536 - wr;
 			u32 n = left < space ? left : space;
 			if (fread(wr, 1, n, f) != n) memset(wr, 0, n);
+			DC_FlushRange(wr, n);   // the sound DMA reads RAM, not the D-cache
 			wr += n;
 			if (wr >= ring + 65536) wr = ring;
 			left -= n;
 		}
-		if (fread(frame, 1, frameBytes, f) != frameBytes) break;
-		memcpy(s_dtex + 16, frame, frameBytes);
+		if (fread(dtex + 16, 1, frameBytes, f) != frameBytes) break;
 		int cur = i % 3;
 		tex::unload(t[(cur + 2) % 3]); // free the slot drawn 2 frames ago
-		t[cur] = tex::load(s_dtex);
+		t[cur] = tex::load(dtex);
 
 		sprite::beginFrame();
 		sprite::rect({ 0, 0, 640, 480 }, { 0, 0, 0, 255 });
@@ -97,8 +103,6 @@ static bool playDvid(const char* path) {
 	tex::unload(t[1]);
 	tex::unload(t[2]);
 	fclose(f);
-	free(frame);
-	free(ring);
 	return true;
 }
 

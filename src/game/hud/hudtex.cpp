@@ -1,22 +1,10 @@
 #include "game/hud/hudtex.h"
 
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
-namespace hudtex {
+#include "mem/mem.h"
 
-void* readFile(const char* path) {
-	FILE* f = fopen(path, "rb");
-	if (!f) return nullptr;
-	fseek(f, 0, SEEK_END);
-	long n = ftell(f);
-	fseek(f, 0, SEEK_SET);
-	void* b = malloc(n);
-	if (b && fread(b, 1, n, f) != (size_t)n) { free(b); b = nullptr; }
-	fclose(f);
-	return b;
-}
+namespace hudtex {
 
 const ds::TexHeader* find(const void* dtxd, const char* name) {
 	const ds::TxdHeader* th = (const ds::TxdHeader*)dtxd;
@@ -65,61 +53,49 @@ static inline Pix px(const ds::TexHeader* h, const u8* tex, const u16* pal, int 
 	return { 0, 0 };
 }
 
+bool decodeInto(const ds::TexHeader* h, u16* col, u8* alpha) {
+	if (!h || h->magic != DS_FOURCC('D', 'T', 'E', 'X') || !col) return false;
+	const int n = h->width * h->height;
+	const u8* tex = (const u8*)h + sizeof(ds::TexHeader);
+	const u16* pal = (const u16*)(tex + ((h->texelBytes + 3) & ~3));
+	for (int i = 0; i < n; i++) {
+		const Pix p = px(h, tex, pal, i);
+		col[i] = p.c;
+		if (alpha) alpha[i] = p.a;
+	}
+	return true;
+}
+
 bool decodeSprite(const ds::TexHeader* h, subfb::Sprite& out) {
 	if (!h || h->magic != DS_FOURCC('D', 'T', 'E', 'X')) return false;
 	const int n = h->width * h->height;
-	u16* col = (u16*)malloc(n * 2);
-	u8* alp = (u8*)malloc(n);
-	if (!col || !alp) { free(col); free(alp); return false; }
-	const u8* tex = (const u8*)h + sizeof(ds::TexHeader);
-	const u8* pal = tex + ((h->texelBytes + 3) & ~3);
-	for (int i = 0; i < n; i++) {
-		Pix p = px(h, tex, (const u16*)pal, i);
-		col[i] = p.c;
-		alp[i] = p.a;
-	}
+	u16* col = (u16*)mem::alloc(n * 3, mem::TAG_HUD);
+	if (!col) return false;
+	u8* alp = (u8*)(col + n);
+	decodeInto(h, col, alp);
 	out = { (u8)h->width, (u8)h->height, col, alp };
 	return true;
 }
 
 void freeSprite(subfb::Sprite& s) {
-	free((void*)s.col);
-	free((void*)s.alpha);
+	mem::free((void*)s.col);   // alpha plane shares the block
 	s = { 0, 0, nullptr, nullptr };
 }
 
 u8* decodeCoverage(const ds::TexHeader* h) {
 	if (!h || h->magic != DS_FOURCC('D', 'T', 'E', 'X')) return nullptr;
 	const int n = h->width * h->height;
-	u8* out = (u8*)malloc(n);
+	u8* out = (u8*)mem::perm(n, mem::TAG_HUD);
 	if (!out) return nullptr;
 	const u8* tex = (const u8*)h + sizeof(ds::TexHeader);
-	const u8* pal = tex + ((h->texelBytes + 3) & ~3);
+	const u16* pal = (const u16*)(tex + ((h->texelBytes + 3) & ~3));
 	for (int i = 0; i < n; i++) {
-		Pix p = px(h, tex, (const u16*)pal, i);
+		const Pix p = px(h, tex, pal, i);
 		// coverage = alpha * color luminance (font palettes are greyscale)
 		const int lum = ((p.c & 31) + ((p.c >> 5) & 31) + ((p.c >> 10) & 31)) / 3;
 		out[i] = (u8)(p.a * lum / 31);
 	}
 	return out;
-}
-
-u16* decodeRgb(const ds::TexHeader* h) {
-	if (!h || h->magic != DS_FOURCC('D', 'T', 'E', 'X')) return nullptr;
-	u16* out = (u16*)malloc(h->width * h->height * 2);
-	if (!out) return nullptr;
-	if (!decodeRgbInto(h, out)) { free(out); return nullptr; }
-	return out;
-}
-
-bool decodeRgbInto(const ds::TexHeader* h, u16* out) {
-	if (!h || h->magic != DS_FOURCC('D', 'T', 'E', 'X') || !out) return false;
-	const int n = h->width * h->height;
-	const u8* tex = (const u8*)h + sizeof(ds::TexHeader);
-	const u8* pal = tex + ((h->texelBytes + 3) & ~3);
-	for (int i = 0; i < n; i++)
-		out[i] = px(h, tex, (const u16*)pal, i).c | BIT(15);
-	return true;
 }
 
 }

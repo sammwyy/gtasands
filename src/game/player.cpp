@@ -155,6 +155,7 @@ static const char* k_punch[] = { "FightA_1", "FightA_2", "FightA_3" };
 
 static constexpr float CAM_TIMESTEP = 0.5f; // CTimer is 1 at 30 fps; we step at 60
 static constexpr float DT = 1.0f / 60.0f;
+static constexpr uint32_t MAX_STEPS = 4;    // simulation catch-up cap per frame
 // GTA's on-foot jump is driven by ped physics, not just root motion in the
 // animation. Keep a modest horizontal carry so a running D-pad jump clears
 // ground rather than becoming a vertical hop. Units are SA world units/sec.
@@ -755,8 +756,7 @@ void init() {
 	g.aiming = false;
 	g.inVehicle = false;
 	g.vehicleRequest = false;
-	cj::init();
-	cj::setStats(0.0f, 0.0f);
+	cj::setStats(0.0f, 0.0f);   // the model itself is loaded by the loading screen (cj::initStep)
 	hud::log("new game $%d fists wanted %d", g.money, g.wantedLevel);
 }
 
@@ -772,7 +772,17 @@ void update() {
 	if (dv > 6) dv = 6; // a stall shouldn't skip the clock or the exercise timers
 	tickClock(dv);
 
-	updateMove();
+	// Fixed 60 Hz simulation: one step per elapsed vblank, so a 30 fps frame
+	// runs two. Every constant below (CAM_TIMESTEP, DT, sprint rates, clip
+	// advance(1)) is per 1/60 s — stepping once per *frame* played animations
+	// and movement in slow motion whenever the frame rate dropped. Button
+	// edges belong to the first step only. Capped so a long stall can't
+	// spiral into more work.
+	const uint32_t steps = dv < 1 ? 1 : dv > MAX_STEPS ? MAX_STEPS : dv;
+	for (uint32_t i = 0; i < steps; i++) {
+		updateMove();
+		if (i == 0) input::consumeEdges();
+	}
 
 	const bool running = s_phase == PH_MOVE && s_wRun > s_wSprint && s_wRun > 0.4f && !g.aiming;
 	const bool sprinting = s_wSprint > 0.5f;

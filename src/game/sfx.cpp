@@ -7,109 +7,60 @@
 
 #include "assets/ds_formats.h"
 #include "hud/hud.h"
+#include "mem/mem.h"
 
 namespace sfx {
 
-static const int16_t STEP[89] = {
-	7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66,
-	73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449,
-	494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272,
-	2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493,
-	10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767 };
-static const int8_t IDX[8] = { -1, -1, -1, -1, 2, 4, 6, 8 };
+// DSND samples are played exactly as stored: the pipeline's IMA-ADPCM is the
+// DS hardware format (4-byte header with the initial sample + step index,
+// then nibbles low-first, same step table and clamping), so the mixer decodes
+// it for free. No PCM16 expansion: a quarter of the RAM and no decode time.
+struct Snd { const u8* data = nullptr; u32 bytes = 0; u16 rate = 0; u8 fmt = 0; };
 
-// decode our DSND IMA-ADPCM (4-byte header + nibbles, low first) -> pcm16
-static int16_t* ima_decode(const u8* data, u32 bytes, u32* outSamples) {
-	int pred = (int16_t)(data[0] | (data[1] << 8));
-	int idx = data[2];
-	u32 n = (bytes - 4) * 2;
-	int16_t* out = (int16_t*)malloc((n + 2) * 2);
-	if (!out) { *outSamples = 0; return nullptr; }
-	u32 w = 0;
-	out[w++] = pred;
-	for (u32 i = 4; i < bytes; i++) {
-		for (int nib = 0; nib < 2; nib++) {
-			int code = nib ? (data[i] >> 4) : (data[i] & 15);
-			int step = STEP[idx];
-			int vp = step >> 3;
-			if (code & 4) vp += step;
-			if (code & 2) vp += step >> 1;
-			if (code & 1) vp += step >> 2;
-			pred = (code & 8) ? pred - vp : pred + vp;
-			if (pred > 32767) pred = 32767;
-			if (pred < -32767) pred = -32767;
-			idx += IDX[code & 7];
-			if (idx < 0) idx = 0;
-			if (idx > 88) idx = 88;
-			out[w++] = (int16_t)pred;
-		}
-	}
-	*outSamples = w;
-	return out;
-}
-
-struct Snd { int16_t* pcm = nullptr; u32 samples = 0; u16 rate = 0; };
-// SND_BANK_GENRL_FRONTEND_MENU (60) -> menu beeps, SND_BANK_GENRL_FRONTEND_GAME
-// (59) -> the start "whoosh" + pickup/info sounds.
-static Snd s_menu[16], s_game[40];
+// SND_BANK_GENRL_FRONTEND_MENU (60) -> menu beeps (PERM, loaded once).
+static Snd s_menu[16];
+// SND_BANK_GENRL_FRONTEND_GAME (59): only the start "whoosh" pair (25/26) is
+// used; the other 38 sounds are not loaded until something plays them.
+static Snd s_whoosh[2];
 // SND_BANK_GENRL_LOADING (82): 4 stereo tune pairs, only the offset table is
-// kept - the chosen pair is decoded when a tune actually starts (~250KB PCM).
+// kept - the chosen pair is read (STREAM) when a tune starts.
 static u32 s_tuneBankOff, s_tuneOffs[8];
 static Snd s_tune[2];
 static int s_tuneChan[2] = { -1, -1 };
+static int s_tunePair = -1, s_tuneLoaded;
 static bool s_ok, s_done;
 
-static bool loadSnd(FILE* f, long pos, Snd& out) {
-	fseek(f, pos, SEEK_SET);
-	u8 hdr[24];
-	if (fread(hdr, 24, 1, f) != 1 || memcmp(hdr, "DSND", 4)) return false;
-	u8 fmt = hdr[4];
-	u16 rate = hdr[6] | (hdr[7] << 8);
-	u32 want = hdr[8] | (hdr[9] << 8) | (hdr[10] << 16) | (hdr[11] << 24); // numSamples
-	u32 dataBytes = hdr[20] | (hdr[21] << 8) | (hdr[22] << 16) | (hdr[23] << 24);
-	u8* raw = (u8*)malloc(dataBytes);
-	if (!raw) { hud::log("\x1b[31msfx: oom raw=%u\x1b[39m", (unsigned)dataBytes); return false; }
-	if (fread(raw, 1, dataBytes, f) != dataBytes) { free(raw); return false; }
-	int16_t* pcm = nullptr;
-	u32 ns = 0;
-	if (fmt == 2) {
-		pcm = ima_decode(raw, dataBytes, &ns);
-		if (!pcm) { free(raw); hud::log("\x1b[31msfx: oom pcm %u\x1b[39m", (unsigned)(dataBytes * 4)); return false; }
-	} else if (fmt == 1) {
-		pcm = (int16_t*)raw;
-		ns = dataBytes / 2;
-		raw = nullptr;
-	} else {
-		pcm = (int16_t*)malloc(dataBytes * 2);
-		if (!pcm) { free(raw); hud::log("\x1b[31msfx: oom pcm8 %u\x1b[39m", (unsigned)dataBytes); return false; }
-		for (u32 j = 0; j < dataBytes; j++) pcm[j] = (int16_t)((raw[j] ^ 0x80) << 8);
-		ns = dataBytes;
+static SoundFormat hwFormat(u8 fmt) {
+	return fmt == ds::SND_ADPCM ? SoundFormat_ADPCM : fmt == ds::SND_PCM16 ? SoundFormat_16Bit : SoundFormat_8Bit;
+}
+
+static bool loadSnd(FILE* f, long pos, Snd& out, bool permanent) {
+	ds::SoundHeader h;
+	if (fseek(f, pos, SEEK_SET) != 0 || fread(&h, sizeof h, 1, f) != 1 || h.magic != DS_FOURCC('D', 'S', 'N', 'D'))
+		return false;
+	const u32 bytes = (h.dataBytes + 3) & ~3u;   // the blob is padded to a word
+	u8* data = (u8*)(permanent ? mem::perm(bytes, mem::TAG_AUDIO) : mem::alloc(bytes, mem::TAG_AUDIO));
+	if (!data) { hud::log("\x1b[31msfx: oom %u\x1b[39m", (unsigned)bytes); return false; }
+	if (fread(data, 1, bytes, f) != bytes) {
+		if (!permanent) mem::free(data);
+		return false;
 	}
-	free(raw);
-	if (ns > want) ns = want; // adpcm nibbles may pad the last sample
-	// the sound DMA reads main RAM: push decoded pcm out of the D-cache
-	DC_FlushRange(pcm, ns * 2);
-	out.pcm = pcm;
-	out.samples = ns;
-	out.rate = rate;
+	// the sound DMA reads main RAM: push the samples out of the D-cache
+	DC_FlushRange(data, bytes);
+	out.data = data;
+	out.bytes = bytes;
+	out.rate = h.sampleRate;
+	out.fmt = h.format;
 	return true;
 }
 
-static int loadBank(FILE* f, u32 offset, Snd* out, u16 cap) {
-	fseek(f, offset, SEEK_SET);
-	u32 magic;
-	u16 ver, num;
-	if (fread(&magic, 4, 1, f) != 1 || magic != DS_FOURCC('D', 'S', 'B', 'K')) return 0;
-	fread(&ver, 2, 1, f);
-	fread(&num, 2, 1, f);
-	u32* offs = (u32*)malloc(num * 4);
-	fread(offs, 4, num, f);
-	if (num > cap) num = cap;
-	u16 n = 0;
-	for (u16 i = 0; i < num; i++)
-		if (loadSnd(f, offset + offs[i], out[i])) n = i + 1;
-	free(offs);
-	return n;
+// Reads a DSBK bank's offset table; returns its sound count (<= cap).
+static int bankOffsets(FILE* f, u32 offset, u32* offs, int cap) {
+	ds::BankHeader b;
+	if (fseek(f, offset, SEEK_SET) != 0 || fread(&b, sizeof b, 1, f) != 1 || b.magic != DS_FOURCC('D', 'S', 'B', 'K'))
+		return 0;
+	const int n = b.numSounds < cap ? b.numSounds : cap;
+	return (int)fread(offs, 4, n, f);
 }
 
 void init() {
@@ -117,92 +68,87 @@ void init() {
 	s_done = true;
 	FILE* f = fopen("nitro:/audio/sfx/genrl.dsfx", "rb");
 	if (!f) { hud::log("\x1b[33mgenrl.dsfx missing\x1b[39m"); return; }
-	u32 magic;
-	u16 ver, nbanks;
-	if (fread(&magic, 4, 1, f) != 1 || magic != DS_FOURCC('D', 'S', 'F', 'X')) { fclose(f); return; }
-	fread(&ver, 2, 1, f);
-	fread(&nbanks, 2, 1, f);
-	// read the whole bank table first: loadBank fseeks around the file and
-	// would corrupt the sequential fread position
+	ds::SfxPakHeader ph;
+	if (fread(&ph, sizeof ph, 1, f) != 1 || ph.magic != DS_FOURCC('D', 'S', 'F', 'X')) { fclose(f); return; }
 	u32 offMenu = 0, offGame = 0;
-	for (u16 b = 0; b < nbanks; b++) {
-		u32 off, size;
-		u16 bankId, pad;
-		fread(&off, 4, 1, f);
-		fread(&size, 4, 1, f);
-		fread(&bankId, 2, 1, f);
-		fread(&pad, 2, 1, f);
-		if (bankId == 60) offMenu = off;
-		else if (bankId == 59) offGame = off;
-		else if (bankId == 82) s_tuneBankOff = off;
+	for (u16 b = 0; b < ph.numBanks; b++) {
+		ds::SfxPakBank e;
+		if (fread(&e, sizeof e, 1, f) != 1) break;
+		if (e.bankId == 60) offMenu = e.offset;
+		else if (e.bankId == 59) offGame = e.offset;
+		else if (e.bankId == 82) s_tuneBankOff = e.offset;
 	}
-	int nGame = offGame ? loadBank(f, offGame, s_game, 40) : 0;
-	int nMenu = offMenu ? loadBank(f, offMenu, s_menu, 16) : 0;
-	if (s_tuneBankOff) {
-		fseek(f, s_tuneBankOff, SEEK_SET);
-		u32 m2;
-		u16 v2, n2;
-		if (fread(&m2, 4, 1, f) == 1 && m2 == DS_FOURCC('D', 'S', 'B', 'K')) {
-			fread(&v2, 2, 1, f);
-			fread(&n2, 2, 1, f);
-			fread(s_tuneOffs, 4, n2 < 8 ? n2 : 8, f);
-		} else {
-			s_tuneBankOff = 0;
-		}
+	u32 offs[40];
+	int nMenu = 0;
+	const int menuCount = offMenu ? bankOffsets(f, offMenu, offs, 16) : 0;
+	for (int i = 0; i < menuCount; i++)
+		if (loadSnd(f, offMenu + offs[i], s_menu[i], true)) nMenu = i + 1;
+	if (offGame && bankOffsets(f, offGame, offs, 40) > 26) {
+		loadSnd(f, offGame + offs[25], s_whoosh[0], true);
+		loadSnd(f, offGame + offs[26], s_whoosh[1], true);
 	}
+	if (s_tuneBankOff && bankOffsets(f, s_tuneBankOff, s_tuneOffs, 8) < 8) s_tuneBankOff = 0;
 	fclose(f);
 	s_ok = nMenu > 0;
 	if (!s_ok) { hud::log("\x1b[33msfx: frontend bank missing\x1b[39m"); return; }
 	soundEnable();
-	hud::log("sfx: %d menu + %d game sounds", nMenu, nGame);
+	hud::log("sfx: %d menu sounds (adpcm)", nMenu);
 }
 
-static void play(const Snd& s, u8 vol, u8 pan) {
-	if (s.pcm)
-		soundPlaySample(s.pcm, SoundFormat_16Bit, s.samples * 2, s.rate, vol, pan, false, 0);
+static int play(const Snd& s, u8 vol, u8 pan, bool loop = false) {
+	if (!s.data) return -1;
+	// looping ADPCM restarts after the header word: the hardware saves the
+	// decoder state there on the first pass and restores it on every loop
+	const bool adpcm = s.fmt == ds::SND_ADPCM;
+	const u16 loopPt = loop && adpcm ? 1 : 0;
+	return soundPlaySample(s.data, hwFormat(s.fmt), s.bytes - loopPt * 4, s.rate, vol, pan, loop, loopPt);
 }
 
-static void playPair(const Snd* bank, u8 l, u8 r, u8 vol) {
+static void playPair(const Snd& l, const Snd& r, u8 vol) {
 	if (!s_ok) return;
-	play(bank[l], vol, 40);
-	play(bank[r], vol, 88);
+	play(l, vol, 40);
+	play(r, vol, 88);
 }
 
-void highlight() { playPair(s_menu, 4, 5, 96); }
-void select_() { playPair(s_menu, 6, 7, 96); }
-void back() { playPair(s_menu, 0, 1, 96); }
-void error() { playPair(s_menu, 2, 3, 96); }
+void highlight() { playPair(s_menu[4], s_menu[5], 96); }
+void select_() { playPair(s_menu[6], s_menu[7], 96); }
+void back() { playPair(s_menu[0], s_menu[1], 96); }
+void error() { playPair(s_menu[2], s_menu[3], 96); }
 void noiseTest() { if (s_ok) play(s_menu[8], 96, 64); }
-void start() { playPair(s_game, 25, 26, 96); }
+void start() { playPair(s_whoosh[0], s_whoosh[1], 96); }
 
 // AEFrontendAudioEntity::ServiceLoadingTune: one random stereo pair from the
-// LOADING bank, looped. Decoded on demand (bank 82 is ~430KB ADPCM).
-void tuneStart() {
-	if (!s_ok || !s_tuneBankOff || s_tuneChan[0] >= 0) return;
-	FILE* f = fopen("nitro:/audio/sfx/genrl.dsfx", "rb");
-	if (!f) return;
-	const int pair = (rand() % 4) * 2;
-	for (int ch = 0; ch < 2; ch++)
-		loadSnd(f, s_tuneBankOff + s_tuneOffs[pair + ch], s_tune[ch]);
-	fclose(f);
-	// decode both sides first, then start them back-to-back: decoding L then R
-	// inline took ~100ms and the stereo pair started out of sync
-	static const u8 pans[2] = { 40, 88 };
-	for (int ch = 0; ch < 2; ch++) {
-		if (!s_tune[ch].pcm) continue;
-		s_tuneChan[ch] = soundPlaySample(s_tune[ch].pcm, SoundFormat_16Bit,
-		                                s_tune[ch].samples * 2, s_tune[ch].rate, 100, pans[ch], true, 0);
+// LOADING bank, looped. Read one channel per call so the loading screen can
+// spread the ~100 KB over two frames; both sides start together.
+bool tuneStep() {
+	if (!s_ok || !s_tuneBankOff || s_tuneChan[0] >= 0) return true;
+	if (s_tunePair < 0) {
+		s_tunePair = (rand() % 4) * 2;
+		s_tuneLoaded = 0;
 	}
-	hud::log("sfx: loading tune %d", pair / 2);
+	if (s_tuneLoaded < 2) {
+		FILE* f = fopen("nitro:/audio/sfx/genrl.dsfx", "rb");
+		if (!f) return true;
+		loadSnd(f, s_tuneBankOff + s_tuneOffs[s_tunePair + s_tuneLoaded], s_tune[s_tuneLoaded], false);
+		fclose(f);
+		if (++s_tuneLoaded < 2) return false;
+	}
+	static const u8 pans[2] = { 40, 88 };
+	for (int ch = 0; ch < 2; ch++) s_tuneChan[ch] = play(s_tune[ch], 100, pans[ch], true);
+	hud::log("sfx: loading tune %d", s_tunePair / 2);
+	return true;
 }
+
+void tuneStart() { while (!tuneStep()) {} }
 
 void tuneStop() {
 	for (int ch = 0; ch < 2; ch++) {
 		if (s_tuneChan[ch] >= 0) soundKill(s_tuneChan[ch]);
 		s_tuneChan[ch] = -1;
-		free(s_tune[ch].pcm);
-		s_tune[ch].pcm = nullptr;
+		mem::free((void*)s_tune[ch].data);
+		s_tune[ch] = {};
 	}
+	s_tunePair = -1;
 }
 
 }

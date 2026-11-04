@@ -12,5 +12,7 @@ struct State {
 
 void poll();
 const State& get();
+// Clears this frame's down/up edges (fixed-step loops: edges fire once).
+void consumeEdges();
 
 }

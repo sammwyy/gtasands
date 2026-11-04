@@ -2,14 +2,16 @@
 
 #include <math.h>
 #include <nds.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "assets/texture.h"
 #include "game/anim.h"
+#include "game/animstore.h"
 #include "game/hud/hudtex.h"
 #include "game/streaming.h"
 #include "hud/hud.h"
+#include "mem/mem.h"
+#include "render/gxlist.h"
 
 namespace cj {
 
@@ -35,14 +37,33 @@ static constexpr const char* TORSO_TOP_TXD = "vest.txd";
 static constexpr const char* TORSO_TOP_TEX = "vest";
 static constexpr int NUM_PARTS = sizeof(k_parts) / sizeof(k_parts[0]);
 
+// GX skinning: every part is compiled once into a display list in which each
+// vertex is preceded (when its bone changes) by MTX_RESTORE of that bone's
+// matrix-stack slot. Per frame the CPU only evaluates the skeleton and stores
+// one matrix per used bone (entity * world * invBone, multiplied by the GX
+// itself); the list is DMA'd to the FIFO as-is. glPushMatrix uses the bottom
+// of the 31-entry stack, so bones take the top slots down from SLOT_TOP and
+// the entity matrix sits just below them.
+static constexpr int MAX_PART_BONES = 16;
+static constexpr int SLOT_TOP = 30;
+static constexpr int SLOT_BASE = SLOT_TOP - MAX_PART_BONES;
+
 struct Part {
 	const PartDef* def;
-	mdl::Model* m;
-	void* blob;          // DMDL blob (owned)
-	tex::Texture* tex;   // VRAM texture for all its materials
+	tex::Texture* tex;
+	u32* list;                    // GX display list (STREAM, TAG_MODEL)
+	s32 (*invBone)[12];           // per used bone, copied from the part's DMDL
+	uint8_t node[MAX_PART_BONES]; // hAnim node per used bone (slot SLOT_TOP - k)
+	uint8_t numBones;
+	uint16_t verts;
 };
 
 static Part s_parts[NUM_PARTS];
+static mdl::Model* s_skel;        // vest.dff parsed view: the shared skeleton
+static void* s_skelBlob;
+static tex::Texture* s_torsoTex;
+static int s_loadStep;
+
 static constexpr int SLOTS = 4;
 // AnimBlendAssociation uses a short blend-out rather than deleting the old
 // association when a new one is started. Locomotion already supplies its own
@@ -51,6 +72,7 @@ static constexpr int SLOTS = 4;
 static constexpr float BLEND_OUT_PER_TICK = 8.0f / 60.0f;
 struct Slot {
 	anim::Player anim;
+	animstore::Clip* clip;
 	char name[24];
 	float weight;
 	uint8_t alive;
@@ -61,122 +83,247 @@ static int s_vertCount;
 static float s_lift;        // +z entity offset so the feet rest at the origin
 static float s_rootX, s_rootY; // locomotion extracted this frame (model metres)
 static float s_fat, s_muscle;
-static const void* s_fatIfp;
-static const void* s_musIfp;
-static uint8_t s_triedFat, s_triedMus;
+static int s_pedBlock = animstore::NO_BLOCK;
+static int s_extraBlock[3] = { animstore::NO_BLOCK, animstore::NO_BLOCK, animstore::NO_BLOCK };
+static uint8_t s_triedExtra[3];
 static s32 s_scale[anim::MAX_NODES]; // 4.12 girth per bone, 4096 = unchanged
 
 static s32 s_world[anim::MAX_NODES * 12];
-static s32 s_skin[anim::MAX_NODES * 12];
 static anim::Local s_locals[SLOTS][anim::MAX_NODES];
 
-// scratch buffers for one part's transformed verts
-static constexpr int MAX_VERTS = 1024;
-static v16 s_xyz[MAX_VERTS][3];
-static t16 s_uv[MAX_VERTS][2];
-
-static void* loadEntry(Pack& pack, const char* name) {
-	return pack.load(pack.find(name));
-}
-
-static int skinVerts(const Part& p, const mdl::Geometry& g);
 static void findShoulderBones(const mdl::Model* m);
 
-static void decodeFrom(const char* txdName, const char* texName, subfb::Sprite& out, int& w, int& h) {
-	out = { 0, 0, nullptr, nullptr };
-	w = h = 0;
-	void* txd = loadEntry(streaming::g_player, txdName);
-	const ds::TexHeader* t = hudtex::find(txd, texName);
-	if (t && hudtex::decodeSprite(t, out)) {
-		w = t->width;
-		h = t->height;
-	}
-	::free(txd);
+// Reads a player.dspk entry into scratch (released with the caller's scope).
+static void* loadTemp(mem::Scratch& scratch, const char* name) {
+	ds::PackEntry e;
+	if (!streaming::g_player.find(name, e)) return nullptr;
+	void* buf = scratch.alloc(e.size);
+	return buf && streaming::g_player.read(e.offset, buf, e.size) ? buf : nullptr;
 }
 
 // CClothesBuilder::ConstructTextures for the torso slot: copy the body skin,
 // then PlaceTextureOnTopOfTexture the clothing (alpha != 0 wins). Uploaded as
-// one direct-color texture shared by the torso and hands parts.
+// one direct-color texture shared by the torso and hands parts. Everything
+// but the VRAM upload lives in scratch.
 static tex::Texture* buildTorsoTexture() {
-	subfb::Sprite base, top;
-	int bw, bh, tw, th;
-	decodeFrom(TORSO_BASE_TXD, TORSO_BASE_TEX, base, bw, bh);
-	decodeFrom(TORSO_TOP_TXD, TORSO_TOP_TEX, top, tw, th);
-	tex::Texture* res = nullptr;
-	if (bw || tw) {
-		const int w = bw ? bw : tw, h = bw ? bh : th;
-		const size_t texels = (size_t)w * h * 2;
-		u8* blob = (u8*)malloc(sizeof(ds::TexHeader) + texels);
-		if (blob) {
-			ds::TexHeader* hd = (ds::TexHeader*)blob;
-			*hd = { DS_FOURCC('D', 'T', 'E', 'X'), (uint16_t)w, (uint16_t)h, GL_RGBA, 0, 0, (uint32_t)texels };
-			u16* px = (u16*)(hd + 1);
-			for (int y = 0; y < h; y++) {
-				for (int x = 0; x < w; x++) {
-					u16 c = bw ? base.col[y * bw + x] : 0;
-					if (tw) {
-						const int i = (y * th / h) * tw + x * tw / w;
-						if (top.alpha[i]) c = top.col[i];
-					}
-					px[y * w + x] = c | BIT(15);
-				}
+	mem::Scratch scratch;
+	const ds::TexHeader* base = hudtex::find(loadTemp(scratch, TORSO_BASE_TXD), TORSO_BASE_TEX);
+	const ds::TexHeader* top = hudtex::find(loadTemp(scratch, TORSO_TOP_TXD), TORSO_TOP_TEX);
+	if (!base && !top) return nullptr;
+	const int w = base ? base->width : top->width, h = base ? base->height : top->height;
+	const int tw = top ? top->width : 0, th = top ? top->height : 0;
+	u16* topCol = top ? (u16*)scratch.alloc(tw * th * 2) : nullptr;
+	u8* topA = top ? (u8*)scratch.alloc(tw * th) : nullptr;
+	u8* blob = (u8*)scratch.alloc(sizeof(ds::TexHeader) + w * h * 2);
+	if (!blob || (top && (!topCol || !topA))) return nullptr;
+	if (top) hudtex::decodeInto(top, topCol, topA);
+	ds::TexHeader* hd = (ds::TexHeader*)blob;
+	*hd = { DS_FOURCC('D', 'T', 'E', 'X'), (uint16_t)w, (uint16_t)h, GL_RGBA, 0, 0, (uint32_t)(w * h * 2) };
+	u16* px = (u16*)(hd + 1);
+	if (base) hudtex::decodeInto(base, px, nullptr);
+	else memset(px, 0, w * h * 2);
+	for (int y = 0; y < h; y++)
+		for (int x = 0; x < w; x++) {
+			u16& c = px[y * w + x];
+			if (top) {
+				const int i = (y * th / h) * tw + x * tw / w;
+				if (topA[i]) c = topCol[i];
 			}
-			res = tex::load(blob);
-			::free(blob);
+			c |= BIT(15);
+		}
+	return tex::load(blob, tex::GROUP_GAME);
+}
+
+static int findSlotForNode(Part& p, int node) {
+	for (int k = 0; k < p.numBones; k++)
+		if (p.node[k] == node) return k;
+	if (p.numBones >= MAX_PART_BONES) return -1;
+	p.node[p.numBones] = (uint8_t)node;
+	return p.numBones++;
+}
+
+static inline u32 vtxXY(s32 x, s32 y) { return (u32)(u16)(s16)x | ((u32)(u16)(s16)y << 16); }
+
+// Compiles one part: used-bone table, inverse binds, and the display list.
+// Returns the lowest bind-pose z (for the feet lift) through minZ.
+static bool buildPart(Part& p, const mdl::Model* m, s32& minZ) {
+	p.numBones = 0;
+	p.verts = 0;
+	size_t words = 16;
+	for (int g = 0; g < m->numGeoms; g++) {
+		const mdl::Geometry& geo = m->geoms[g];
+		words += geo.h->numMaterials * 8 + geo.h->numIndices * 6;
+		p.verts += geo.h->numVerts;
+		if (geo.bone)
+			for (int v = 0; v < geo.h->numVerts; v++)
+				if (findSlotForNode(p, geo.bone[v]) < 0) {
+					hud::log("\x1b[31mcj %s: >%d bones\x1b[39m", p.def->dff, MAX_PART_BONES);
+					return false;
+				}
+	}
+	p.invBone = (s32(*)[12])mem::alloc(sizeof(s32) * 12 * (p.numBones ? p.numBones : 1), mem::TAG_MODEL);
+	if (!p.invBone) return false;
+	for (int k = 0; k < p.numBones; k++) memcpy(p.invBone[k], m->invBone + p.node[k] * 12, 48);
+
+	mem::Scratch scratch;
+	u32* buf = (u32*)scratch.alloc(words * 4);
+	if (!buf) return false;
+	gx::ListBuilder dl(buf, (u32)words);
+	const int tw = p.tex ? p.tex->w : 64, th = p.tex ? p.tex->h : 64;
+	int lastSlot = -1;
+	for (int g = 0; g < m->numGeoms; g++) {
+		const mdl::Geometry& geo = m->geoms[g];
+		const int pe = geo.h->posExp, ue = geo.h->uvExp;
+		const int nv = geo.h->numVerts;
+		for (int v = 0; v < nv; v++) {
+			const s32 z = geo.h->offset[2] + (pe >= 0 ? (s32)geo.pos[v][2] << pe : (s32)geo.pos[v][2] >> -pe);
+			if (z < minZ) minZ = z;
+		}
+		for (int mi = 0; mi < geo.h->numMaterials; mi++) {
+			const ds::GeometryMaterial& mat = geo.mats[mi];
+			dl.cmd(gx::CMD_POLYGON_ATTR, POLY_ALPHA(mat.alpha >= 248 ? 31 : (mat.alpha >> 3) | 1) | POLY_CULL_NONE);
+			dl.cmd(gx::CMD_COLOR, mat.color);
+			dl.cmd(gx::CMD_BEGIN_VTXS, GL_TRIANGLES);
+			for (uint32_t i = mat.firstIndex; i < mat.firstIndex + mat.numIndices; i++) {
+				const int v = geo.idx[i] < nv ? geo.idx[i] : 0;
+				int slot = SLOT_BASE;
+				if (geo.bone) {
+					for (int k = 0; k < p.numBones; k++)
+						if (p.node[k] == geo.bone[v]) { slot = SLOT_TOP - k; break; }
+				}
+				if (slot != lastSlot) {
+					dl.cmd(gx::CMD_MTX_RESTORE, (u32)slot);
+					lastSlot = slot;
+				}
+				if (geo.uv) {
+					// t16 (12.4 texels) = uv * size * 16 = raw * size << ue >> 8
+					const s32 u = ((s32)geo.uv[v][0] * (tw << ue)) >> 8;
+					const s32 t = ((s32)geo.uv[v][1] * (th << ue)) >> 8;
+					dl.cmd(gx::CMD_TEXCOORD, (u32)(u16)(s16)u | ((u32)(u16)(s16)t << 16));
+				}
+				const s32 x = geo.h->offset[0] + (pe >= 0 ? (s32)geo.pos[v][0] << pe : (s32)geo.pos[v][0] >> -pe);
+				const s32 y = geo.h->offset[1] + (pe >= 0 ? (s32)geo.pos[v][1] << pe : (s32)geo.pos[v][1] >> -pe);
+				const s32 z = geo.h->offset[2] + (pe >= 0 ? (s32)geo.pos[v][2] << pe : (s32)geo.pos[v][2] >> -pe);
+				// f32 and v16 share the 12-bit fraction; CJ fits in +-8 units
+				dl.cmd(gx::CMD_VTX_16, vtxXY(x, y), (u32)(u16)(s16)z);
+			}
 		}
 	}
-	if (bw) hudtex::freeSprite(base);
-	if (tw) hudtex::freeSprite(top);
-	return res;
+	const u32 n = dl.finish();
+	if (!n) return false;
+	p.list = (u32*)mem::alloc(n * 4, mem::TAG_MODEL);
+	if (!p.list) return false;
+	memcpy(p.list, buf, n * 4);
+	gx::flushList(p.list);
+	return true;
+}
+
+void shutdown() {
+	for (Slot& s : s_slots) {
+		animstore::release(s.clip);
+		s = {};
+	}
+	for (Part& p : s_parts) {
+		mem::free(p.list);
+		mem::free(p.invBone);
+		if (p.tex && p.tex != s_torsoTex) tex::unload(p.tex);
+		p = {};
+	}
+	if (s_torsoTex) tex::unload(s_torsoTex);
+	s_torsoTex = nullptr;
+	mdl::free(s_skel);
+	mem::free(s_skelBlob);
+	s_skel = nullptr;
+	s_skelBlob = nullptr;
+	s_loadStep = 0;
+}
+
+static s32 s_minZ;
+
+static bool loadPart(int i) {
+	Part& p = s_parts[i];
+	p.def = &k_parts[i];
+	p.tex = p.def->txd ? nullptr : s_torsoTex;
+	if (p.def->txd) {
+		mem::Scratch scratch;
+		void* txd = loadTemp(scratch, p.def->txd);
+		if (txd) {
+			p.tex = tex::loadFromTxd(txd, p.def->tex, tex::GROUP_GAME);
+			if (!p.tex) p.tex = tex::loadFirst(txd, tex::GROUP_GAME);
+		}
+	}
+	// the first part (vest) stays resident: its node table is the skeleton
+	void* blob = streaming::g_player.load(p.def->dff, mem::TAG_MODEL);
+	mdl::Model* m = mdl::load(blob);
+	const bool ok = m && m->nodes && buildPart(p, m, s_minZ);
+	hud::log("cj %s: %s %u verts %d bones tex %s", p.def->dff, ok ? "ok" : "FAILED",
+	         (unsigned)p.verts, p.numBones, p.tex ? "ok" : "none");
+	if (i == 0 && ok) {
+		s_skel = m;
+		s_skelBlob = blob;
+		anim::prepare(s_skel);
+	} else {
+		mdl::free(m);
+		mem::free(blob);
+	}
+	return ok;
+}
+
+// The on-foot control set, pinned in RAM at load: locomotion, jump, unarmed
+// aim/fight and the armed aim shuffle (~105 KB of ped.ifp's ~900 KB). Every
+// other clip streams from the cart the first time it plays. Do not trim
+// JUMP_* or FIGHTIDLE: player.cpp switches to those immediately, and a miss
+// there froze CJ in the locomotion pose while jumping or aiming.
+static const char* const k_resident[] = {
+	"idle_stance", "walk_player", "run_player", "sprint_civi",
+	"walk_start", "idle_tired", "run_stop", "run_stopr",
+	"jump_launch", "jump_glide", "jump_land",
+	"fightidle", "fighta_1", "fighta_2", "fighta_3",
+	"fightsh_fwd", "fightsh_bwd", "fightsh_left", "fightsh_right",
+	"idle_armed", "gun_stand",
+	"gunmove_fwd", "gunmove_bwd", "gunmove_l", "gunmove_r",
+};
+static constexpr int NUM_RESIDENT = sizeof(k_resident) / sizeof(k_resident[0]);
+static constexpr int STEP_PIN = NUM_PARTS + 1;
+static constexpr int STEP_FINAL = STEP_PIN + NUM_RESIDENT;
+
+bool initStep() {
+	if (s_loadStep == 0) {
+		shutdown();
+		s_minZ = 0;
+		s_torsoTex = buildTorsoTexture();
+		hud::log("cj torso tex: %s", s_torsoTex ? "ok" : "FAILED");
+	} else if (s_loadStep <= NUM_PARTS) {
+		if (!loadPart(s_loadStep - 1) && s_loadStep == 1) {
+			s_loadStep = STEP_FINAL + 1;   // no skeleton: give up, draw nothing
+			return true;
+		}
+	} else if (s_loadStep < STEP_FINAL) {
+		s_pedBlock = animstore::findBlock("ped");
+		const char* name = k_resident[s_loadStep - STEP_PIN];
+		if (!animstore::pin(s_pedBlock, name)) hud::log("\x1b[33mped clip %s missing\x1b[39m", name);
+	} else if (s_loadStep == STEP_FINAL) {
+		findShoulderBones(s_skel);
+		s_pedBlock = animstore::findBlock("ped");
+		hud::log("cj anims: %d clips %u KB resident", animstore::residentClips(),
+		         (unsigned)(animstore::residentBytes() >> 10));
+		s_miss[0] = 0;
+		s_fat = s_muscle = 0;
+		for (int i = 0; i < anim::MAX_NODES; i++) s_scale[i] = 1 << 12;
+		const Clip idle = { "IDLE_stance", 1.0f, true, false, false, false, 0.0f };
+		pose(&idle, 1);
+		// SA ped models are authored pelvis-at-origin: the feet hang ~1 unit
+		// below. Lift the entity matrix by the bind pose's lowest vertex so
+		// the feet rest exactly on the draw position (bind skin = identity).
+		s_lift = -(float)s_minZ / 4096.0f;
+	}
+	return ++s_loadStep > STEP_FINAL;
 }
 
 bool init() {
-	tex::Texture* torsoTex = buildTorsoTexture();
-	hud::log("cj torso tex: %s", torsoTex ? "ok" : "FAILED");
-	for (int i = 0; i < NUM_PARTS; i++) {
-		Part& p = s_parts[i];
-		p.def = &k_parts[i];
-		p.blob = loadEntry(streaming::g_player, p.def->dff);
-		p.m = mdl::load(p.blob);
-		p.tex = p.def->txd ? nullptr : torsoTex;
-		void* txd = p.def->txd ? loadEntry(streaming::g_player, p.def->txd) : nullptr;
-		if (txd) {
-			p.tex = tex::loadFromTxd(txd, p.def->tex);
-			if (!p.tex) p.tex = tex::loadFirst(txd);
-			::free(txd);
-		}
-		hud::log("cj %s: %s, %u verts, tex %s", p.def->dff,
-		         p.m ? "ok" : "FAILED",
-		         p.m ? (unsigned)p.m->geoms[0].h->numVerts : 0u,
-		         p.tex ? "ok" : "none");
-	}
-	if (!s_parts[0].m) return false;
-	findShoulderBones(s_parts[0].m);
-	for (int i = 0; i < SLOTS; i++) s_slots[i].alive = 0;
-	s_miss[0] = 0;
-	s_fat = s_muscle = 0;
-	for (int i = 0; i < anim::MAX_NODES; i++) s_scale[i] = 1 << 12;
-	const Clip idle = { "IDLE_stance", 1.0f, true, false, false, false, 0.0f };
-	pose(&idle, 1);
-
-	// SA ped models are authored pelvis-at-origin: the feet hang ~1 unit
-	// below. Measure the bind pose's lowest vert once and lift the entity
-	// matrix by it so the feet rest exactly on the draw position.
-	s32 bindW[anim::MAX_NODES * 12];
-	anim::evalBind(s_parts[0].m, bindW);
-	s32 minz = 0;
-	for (int i = 0; i < NUM_PARTS; i++) {
-		Part& p = s_parts[i];
-		if (!p.m) continue;
-		anim::skinForPart(p.m, bindW, s_skin);
-		for (int g = 0; g < p.m->numGeoms; g++) {
-			const int nv = skinVerts(p, p.m->geoms[g]);
-			for (int v = 0; v < nv; v++)
-				if (s_xyz[v][2] < minz) minz = s_xyz[v][2];
-		}
-	}
-	s_lift = -(float)minz / 4096.0f;
-	return true;
+	s_loadStep = 0;
+	while (!initStep()) {}
+	return s_skel != nullptr;
 }
 
 static bool nameEq(const char* a, const char* b) {
@@ -204,27 +351,30 @@ static int groupId() {
 	return 2;
 }
 
-static const void* extraIfp(int which) {
-	const void*& slot = which == 1 ? s_fatIfp : s_musIfp;
-	uint8_t& tried = which == 1 ? s_triedFat : s_triedMus;
-	if (slot || tried || !streaming::g_anim.isOpen()) return slot;
-	tried = 1;
+// fat.ifp / muscular.ifp: only the directory is opened; clips stream on use.
+static int extraBlock(int which) {
+	if (s_extraBlock[which] != animstore::NO_BLOCK || s_triedExtra[which] || !streaming::g_anim.isOpen())
+		return s_extraBlock[which];
+	s_triedExtra[which] = 1;
 	const char* file = which == 1 ? "fat.ifp" : "muscular.ifp";
-	slot = streaming::g_anim.load(streaming::g_anim.find(file));
-	hud::log("cj %s %s", file, slot ? "ok" : "MISSING");
-	return slot;
+	s_extraBlock[which] = animstore::openInPack(streaming::g_anim, file);
+	hud::log("cj %s %s", file, s_extraBlock[which] != animstore::NO_BLOCK ? "ok" : "MISSING");
+	return s_extraBlock[which];
 }
 
-static bool playName(anim::Player& p, const char* name) {
-	const mdl::Model* m = s_parts[0].m;
-	if (!m || !name) return false;
+static bool playName(Slot& sl, const char* name) {
+	if (!s_skel || !name) return false;
 	const int g = groupId();
-	const void* blobs[2];
-	int n = 0;
-	if (g != 0) blobs[n++] = extraIfp(g);
-	blobs[n++] = streaming::g_pedIfp;
-	for (int i = 0; i < n; i++) {
-		if (blobs[i] && anim::play(p, m, blobs[i], name)) return true;
+	const int blocks[2] = { g != 0 ? extraBlock(g) : animstore::NO_BLOCK, s_pedBlock };
+	for (int b : blocks) {
+		if (!animstore::hasClip(b, name)) continue;
+		animstore::Clip* c = animstore::acquire(b, name);
+		if (c && anim::play(sl.anim, s_skel, animstore::entry(c))) {
+			animstore::release(sl.clip);
+			sl.clip = c;
+			return true;
+		}
+		animstore::release(c);
 	}
 	if (!nameEq(s_miss, name)) {
 		copyName(s_miss, name);
@@ -237,6 +387,13 @@ static int findSlot(const char* name) {
 	for (int i = 0; i < SLOTS; i++)
 		if (s_slots[i].alive && nameEq(s_slots[i].name, name)) return i;
 	return -1;
+}
+
+static void killSlot(Slot& sl) {
+	sl.weight = 0.0f;
+	sl.alive = 0;
+	animstore::release(sl.clip);
+	sl.clip = nullptr;
 }
 
 void pose(const Clip* clips, int n) {
@@ -253,7 +410,7 @@ void pose(const Clip* clips, int n) {
 				for (int k = 1; k < SLOTS; k++)
 					if (s_slots[k].weight < s_slots[s].weight) s = k;
 			}
-			if (!playName(s_slots[s].anim, c.name)) continue;
+			if (!playName(s_slots[s], c.name)) continue;
 			copyName(s_slots[s].name, c.name);
 			s_slots[s].alive = 1;
 		}
@@ -281,10 +438,7 @@ void pose(const Clip* clips, int n) {
 		// most at launch -> glide -> land and at the fight/aim shuffles, which
 		// do not have the locomotion state's explicit chained weights.
 		sl.weight -= BLEND_OUT_PER_TICK;
-		if (sl.weight <= 0.0f) {
-			sl.weight = 0.0f;
-			sl.alive = 0;
-		}
+		if (sl.weight <= 0.0f) killSlot(sl);
 	}
 }
 
@@ -312,7 +466,7 @@ void rootDelta(float& x, float& y) { x = s_rootX; y = s_rootY; }
 
 void advance(int dt60) {
 	s_rootX = s_rootY = 0;
-	const mdl::Model* m = s_parts[0].m;
+	const mdl::Model* m = s_skel;
 	if (!m) return;
 	float dx = 0, dy = 0, wsum = 0;
 	for (int i = 0; i < SLOTS; i++) {
@@ -460,7 +614,7 @@ static void shoulderBoneRotation(s32* world) {
 
 static void rebuildScales() {
 	for (int i = 0; i < anim::MAX_NODES; i++) s_scale[i] = 1 << 12;
-	const mdl::Model* m = s_parts[0].m;
+	const mdl::Model* m = s_skel;
 	if (!m || !m->nodes) return;
 	float rM = clamp01(s_muscle / 1000.0f);
 	float rF = clamp01((s_fat - 200.0f) / 800.0f);
@@ -509,72 +663,14 @@ Motion motion() {
 		"MuscleWalkstart", "idle_tired", "run_stop", "run_stopR"
 	};
 	const int g = groupId();
-	if (g != 0 && !extraIfp(g)) return k_player;
+	if (g != 0 && extraBlock(g) == animstore::NO_BLOCK) return k_player;
 	if (g == 1) return k_fat;
 	if (g == 2) return k_muscle;
 	return k_player;
 }
 
-static const s32 s_ident[12] = { 1 << 12, 0, 0, 0, 1 << 12, 0, 0, 0, 1 << 12, 0, 0, 0 };
-
-// Skins a geometry's verts into s_xyz (model space, SA axes) and converts the
-// uvs to t16 for the part's texture size. Returns vertex count.
-static int skinVerts(const Part& p, const mdl::Geometry& g) {
-	const int nv = g.h->numVerts > MAX_VERTS ? MAX_VERTS : g.h->numVerts;
-	const int pe = g.h->posExp;
-	const int ue = g.h->uvExp;
-	const int umul = (p.tex ? p.tex->w : 64) << ue;   // t16 = raw * umul >> 8
-	for (int i = 0; i < nv; i++) {
-		s32 x = g.h->offset[0] + (pe >= 0 ? (s32)g.pos[i][0] << pe : (s32)g.pos[i][0] >> -pe);
-		s32 y = g.h->offset[1] + (pe >= 0 ? (s32)g.pos[i][1] << pe : (s32)g.pos[i][1] >> -pe);
-		s32 z = g.h->offset[2] + (pe >= 0 ? (s32)g.pos[i][2] << pe : (s32)g.pos[i][2] >> -pe);
-		const s32* s = g.bone ? s_skin + g.bone[i] * 12 : s_ident;
-		// row-vector apply: v' = v * M (column c picks m[c][r])
-		const s32 sx = mulf32(x, s[0]) + mulf32(y, s[3]) + mulf32(z, s[6]) + s[9];
-		const s32 sy = mulf32(x, s[1]) + mulf32(y, s[4]) + mulf32(z, s[7]) + s[10];
-		const s32 sz = mulf32(x, s[2]) + mulf32(y, s[5]) + mulf32(z, s[8]) + s[11];
-		// f32 and v16 share the same 12-bit fraction; cast directly
-		s_xyz[i][0] = (v16)sx;
-		s_xyz[i][1] = (v16)sy;
-		s_xyz[i][2] = (v16)sz;
-		if (g.uv) {
-			s_uv[i][0] = (t16)(((s32)g.uv[i][0] * umul) >> 8);
-			s_uv[i][1] = (t16)(((s32)g.uv[i][1] * umul) >> 8);
-		} else {
-			s_uv[i][0] = s_uv[i][1] = 0;
-		}
-	}
-	return nv;
-}
-
-static void drawPart(const Part& p) {
-	for (int g = 0; g < p.m->numGeoms; g++) {
-		const mdl::Geometry& geo = p.m->geoms[g];
-		const int nv = skinVerts(p, geo);
-		if (p.tex) glBindTexture(GL_TEXTURE_2D, p.tex->id);
-		for (int mi = 0; mi < geo.h->numMaterials; mi++) {
-			const ds::GeometryMaterial& mat = geo.mats[mi];
-			glPolyFmt(POLY_ALPHA(mat.alpha >= 248 ? 31 : (mat.alpha >> 3) | 1) | POLY_CULL_NONE);
-			glColor(mat.color);
-			glBegin(GL_TRIANGLES);
-			for (uint32_t i = mat.firstIndex; i < mat.firstIndex + mat.numIndices; i += 3) {
-				const uint16_t a = geo.idx[i] < nv ? geo.idx[i] : 0;
-				const uint16_t b = geo.idx[i + 1] < nv ? geo.idx[i + 1] : 0;
-				const uint16_t c = geo.idx[i + 2] < nv ? geo.idx[i + 2] : 0;
-				glTexCoord2t16(s_uv[a][0], s_uv[a][1]);
-				glVertex3v16(s_xyz[a][0], s_xyz[a][1], s_xyz[a][2]);
-				glTexCoord2t16(s_uv[b][0], s_uv[b][1]);
-				glVertex3v16(s_xyz[b][0], s_xyz[b][1], s_xyz[b][2]);
-				glTexCoord2t16(s_uv[c][0], s_uv[c][1]);
-				glVertex3v16(s_xyz[c][0], s_xyz[c][1], s_xyz[c][2]);
-			}
-			glEnd();
-		}
-	}
-}
-
 void draw(float x, float y, float z, float heading) {
-	const mdl::Model* skel = s_parts[0].m;
+	const mdl::Model* skel = s_skel;
 	if (!skel) return;
 	const anim::Local* ptrs[SLOTS];
 	s32 w[SLOTS];
@@ -588,13 +684,11 @@ void draw(float x, float y, float z, float heading) {
 	}
 	anim::blendWorld(skel, ptrs, w, n, s_world);
 	shoulderBoneRotation(s_world);
-	if (skel && skel->nodes) {
-		for (int b = 0; b < skel->numBones && b < anim::MAX_NODES; b++) {
-			const s32 s = s_scale[b];
-			if (s == (1 << 12)) continue;
-			s32* m = s_world + b * 12;
-			for (int k = 0; k < 9; k++) m[k] = mulf32(m[k], s);
-		}
+	for (int b = 0; b < skel->numBones && b < anim::MAX_NODES; b++) {
+		const s32 s = s_scale[b];
+		if (s == (1 << 12)) continue;
+		s32* m = s_world + b * 12;
+		for (int k = 0; k < 9; k++) m[k] = mulf32(m[k], s);
 	}
 
 	// entity matrix: SA model space -> GL via rotX(-90), heading on the up
@@ -604,13 +698,21 @@ void draw(float x, float y, float z, float heading) {
 	glTranslatef(x, z + s_lift, -y);
 	glRotatef(heading * 57.2958f, 0.0f, 1.0f, 0.0f);
 	glRotatef(-90.0f, 1.0f, 0.0f, 0.0f);
+	glStoreMatrix(SLOT_BASE);
 	s_vertCount = 0;
 	for (int i = 0; i < NUM_PARTS; i++) {
-		Part& p = s_parts[i];
-		if (!p.m) continue;
-		anim::skinForPart(p.m, s_world, s_skin);
-		for (int g = 0; g < p.m->numGeoms; g++) s_vertCount += p.m->geoms[g].h->numVerts;
-		drawPart(p);
+		const Part& p = s_parts[i];
+		if (!p.list) continue;
+		// slot = entity * world[node] * invBone (GX: current = M * current)
+		for (int k = 0; k < p.numBones; k++) {
+			glRestoreMatrix(SLOT_BASE);
+			glMultMatrix4x3((const m4x3*)(s_world + p.node[k] * 12));
+			glMultMatrix4x3((const m4x3*)p.invBone[k]);
+			glStoreMatrix(SLOT_TOP - k);
+		}
+		glBindTexture(GL_TEXTURE_2D, p.tex ? p.tex->id : 0);
+		gx::callList(p.list);
+		s_vertCount += p.verts;
 	}
 	glPopMatrix(1);
 	glBindTexture(GL_TEXTURE_2D, 0);

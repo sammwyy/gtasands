@@ -3,12 +3,14 @@
 #include <nds.h>
 
 // CRadar port: rotating minimap rendered by the CPU into the bottom-screen
-// framebuffer. Map tiles come from gta3.dspk (radarNN.txd, 12x12 grid of
-// 500x500 world units), sprites from models/hud.txd.
+// framebuffer. Map tiles (12x12 grid of 500x500 world units) are streamed
+// from models/radar.dsrt into small pools around the player; sprites come
+// from models/hud.txd.
 namespace radar {
 
-void init();
-void draw();          // reads player::g each frame
+bool init();
+void prefetch();      // load every tile around the player now (loading screen)
+void draw();          // reads player::g each frame, streams tiles within a byte budget
 
 // Blips (CRadar::SetCoordBlip-lite). sprite = texture name in hud.txd
 // ("" = plain colored square). id 0..15.

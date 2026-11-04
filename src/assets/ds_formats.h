@@ -141,9 +141,14 @@ struct ColFace { uint16_t a, b, c; uint8_t material, light; };
 // ---------------------------------------------------------------- DANM (animations, from .ifp ANP3)
 struct AnimHeader {
 	uint32_t magic;          // 'DANM'
-	uint16_t version, numAnims;
+	uint16_t version, numAnims;  // version 2
 	char block[24];
-	// per anim: AnimEntry, then per sequence: AnimSeq + frames (padded to 4)
+	// AnimDirEntry dir[numAnims]
+	// per anim (at dir[i].offset): AnimEntry, then per sequence: AnimSeq + frames (padded to 4)
+};
+struct AnimDirEntry {
+	char name[24];
+	uint32_t offset, size;   // relative to the DANM start; one self-contained clip record
 };
 struct AnimEntry {
 	char name[24];
@@ -156,6 +161,19 @@ struct AnimSeq {
 	uint16_t numFrames, pad2;
 	// frames: int16 q[4] (x,y,z,w * 4096), int16 time (absolute, 1/60 s)
 	//         [+ int16 t[3] (* 1024) if hasTrans]
+};
+
+// ---------------------------------------------------------------- DSRT (radar tiles, models/radar.dsrt)
+// grid*grid tiles (index = row-major from the NW corner, as radarNN.txd),
+// pre-baked RGB15|0x8000: fixed-stride records, no TOC, no decoding.
+struct RadarHeader {
+	uint32_t magic;          // 'DSRT'
+	uint16_t version, numTiles;
+	uint16_t grid, tileSize; // 12, 64
+	uint16_t mipSize, pad;   // 32
+	uint32_t fullOffset;     // tile k at fullOffset + k * tileSize^2 * 2
+	uint32_t mipOffset;      // mip k at mipOffset + k * mipSize^2 * 2
+	// uint8_t present[numTiles] (padded to 4)
 };
 
 // ---------------------------------------------------------------- audio
@@ -214,7 +232,9 @@ static_assert(sizeof(TxdEntry) == 40 && sizeof(TexHeader) == 16);
 static_assert(sizeof(ModelHeader) == 32 && sizeof(ModelFrame) == 60 && sizeof(ModelNode) == 4 &&
               sizeof(GeometryHeader) == 24 && sizeof(GeometryMaterial) == 44);
 static_assert(sizeof(ColModel) == 76 && sizeof(ColSphere) == 20 && sizeof(ColBox) == 28 && sizeof(ColFace) == 8);
-static_assert(sizeof(AnimHeader) == 32 && sizeof(AnimEntry) == 28 && sizeof(AnimSeq) == 32);
+static_assert(sizeof(AnimHeader) == 32 && sizeof(AnimEntry) == 28 && sizeof(AnimSeq) == 32 &&
+              sizeof(AnimDirEntry) == 32);
+static_assert(sizeof(RadarHeader) == 24);
 static_assert(sizeof(SoundHeader) == 24 && sizeof(SfxPakBank) == 12 && sizeof(BankLookupHeader) == 12 && sizeof(StreamTrack) == 12);
 
 }

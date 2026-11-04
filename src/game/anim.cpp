@@ -3,8 +3,10 @@
 #include <nds.h>
 #include <string.h>
 
+#include "mem/mem.h"
+
 // All pose math is s32 (20.12) fixed point: the ARM9 has no FPU and this runs
-// per skinned vertex. Quaternion keys come in as s16 4.12, widened to s32.
+// per bone per clip every frame. Quaternion keys come in as s16 4.12.
 // Row-vector convention everywhere: p' = p * M, M = M_a * M_b means "a then b".
 namespace anim {
 
@@ -22,45 +24,15 @@ static const ds::AnimSeq* nextSeq(const ds::AnimSeq* s) {
 	return (const ds::AnimSeq*)(seqKeys(s) + keyBytes);
 }
 
-static const ds::AnimSeq* seqAt(const Player& p, int i) {
-	const ds::AnimSeq* s = (const ds::AnimSeq*)p.seqs;
-	while (i-- > 0) s = nextSeq(s);
-	return s;
-}
-
-// IFP names are mixed case (FatWalk, WALK_player, IDLE_stance). The motion
-// group tables in the original are lowercase, so matching is folded.
-static bool nameEq(const char* a, const char* b) {
-	for (int i = 0; i < 24; i++) {
-		unsigned char ca = (unsigned char)a[i], cb = (unsigned char)b[i];
-		if (ca >= 'A' && ca <= 'Z') ca += 32;
-		if (cb >= 'A' && cb <= 'Z') cb += 32;
-		if (ca != cb) return false;
-		if (!ca) return true;
-	}
-	return true;
-}
-
-static const uint8_t* findEntry(const void* danm, const char* name) {
-	const ds::AnimHeader* h = (const ds::AnimHeader*)danm;
-	if (!danm || h->magic != DS_FOURCC('D', 'A', 'N', 'M')) return nullptr;
-	const uint8_t* p = (const uint8_t*)(h + 1);
-	for (int i = 0; i < h->numAnims; i++) {
-		const ds::AnimEntry* e = (const ds::AnimEntry*)p;
-		p += sizeof(ds::AnimEntry);
-		const ds::AnimSeq* s = (const ds::AnimSeq*)p;
-		if (nameEq(e->name, name)) return (const uint8_t*)e;
-		for (int j = 0; j < e->numSeqs; j++) s = nextSeq(s);
-		p = (const uint8_t*)s;
-	}
-	return nullptr;
+static inline int16_t keyTime(const uint8_t* k, int i, int stride) {
+	return *(const int16_t*)(k + i * stride + 8);
 }
 
 // --- fixed-point pose math --------------------------------------------------
 
 static inline s32 qmul(s32 a, s32 b) { return mulf32(a, b); }
 
-// q (s32, |q|~1) -> RW rotation matrix: rows right/up/at, row-vector use
+// q (s32 unit, 4.12) -> RW rotation matrix: rows right/up/at, row-vector use
 // (the transpose of the usual column-vector quat-to-matrix).
 static void quatToMat(const s32* q, s32* m) {
 	const s32 x2 = q[0] << 1, y2 = q[1] << 1, z2 = q[2] << 1;
@@ -82,137 +54,6 @@ static void matMul(const s32* a, const s32* b, s32* m) {
 	for (int r = 0; r < 3; r++)
 		m[9 + r] = qmul(a[9], b[r]) + qmul(a[10], b[3 + r]) +
 		           qmul(a[11], b[6 + r]) + b[9 + r];
-}
-
-// key[i] = q[4] (s16 4.12), time (s16, 1/60 s), [t[3] (s16, 1/1024 u)]
-static void seqRot(const ds::AnimSeq* s, int keyStride, uint8_t& cursor, int32_t t, s32* q) {
-	const uint8_t* k = seqKeys(s);
-	int i = cursor < s->numFrames ? cursor : 0;
-	// keys are sorted by time; walk the cursor forward while we're past the next key
-	while (i + 1 < s->numFrames && (int32_t)(int16_t)(*(const int16_t*)(k + (i + 1) * keyStride + 8)) <= t) i++;
-	cursor = (uint8_t)i;
-	const int16_t* ka = (const int16_t*)(k + i * keyStride);
-	const int16_t* kb = (const int16_t*)(k + (i + 1 < s->numFrames ? i + 1 : i) * keyStride);
-	const int32_t t0 = ka[4], t1 = kb[4];
-	s32 f = t1 > t0 ? (s32)(((t - t0) << 12) / (t1 - t0)) : 0;
-	if (f < 0) f = 0;
-	if (f > 1 << 12) f = 1 << 12;
-	// nlerp with shortest-path sign fix; keys are already 4.12 -> widen, no shift
-	s32 dot = 0;
-	for (int c = 0; c < 4; c++) dot += (int32_t)ka[c] * kb[c];
-	const int32_t sgn = dot < 0 ? -1 : 1;
-	s32 l[4], d2 = 0;
-	for (int c = 0; c < 4; c++) {
-		l[c] = ka[c] + ((s32)(kb[c] * sgn - ka[c]) * f >> 12);
-		d2 += qmul(l[c], l[c]);
-	}
-	const s32 inv = divf32(1 << 12, sqrtf32(d2 ? d2 : 1 << 12));
-	for (int c = 0; c < 4; c++) q[c] = qmul(l[c], inv);
-}
-
-// trans keys are s16 units of 1/1024 -> s32 20.12 is *4
-static void lerpTrans(const int16_t* ka, const int16_t* kb, int32_t t, s32* out) {
-	const int32_t t0 = ka[4], t1 = kb[4];
-	s32 f = t1 > t0 ? (s32)(((t - t0) << 12) / (t1 - t0)) : 0;
-	if (f < 0) f = 0;
-	if (f > 1 << 12) f = 1 << 12;
-	for (int c = 0; c < 3; c++)
-		out[c] = ((s32)ka[5 + c] << 2) + ((((s32)(kb[5 + c] - ka[5 + c]) << 2) * f) >> 12);
-}
-
-static void seqTrans(const ds::AnimSeq* s, int keyStride, uint8_t cursor, int32_t t, s32* out) {
-	const uint8_t* k = seqKeys(s);
-	int i = cursor;
-	const int16_t* ka = (const int16_t*)(k + i * keyStride);
-	const int16_t* kb = (const int16_t*)(k + (i + 1 < s->numFrames ? i + 1 : i) * keyStride);
-	lerpTrans(ka, kb, t, out);
-}
-
-// Same interpolation as seqTrans, scanning keys itself (does not touch cursors).
-static bool sampleTrans(const ds::AnimSeq* s, int32_t t, s32* out) {
-	if (!s->hasTrans || s->numFrames < 1) return false;
-	const int stride = seqKeyStride(s);
-	const uint8_t* k = seqKeys(s);
-	int i = 0;
-	while (i + 1 < s->numFrames && (int32_t)(int16_t)(*(const int16_t*)(k + (i + 1) * stride + 8)) <= t) i++;
-	const int16_t* ka = (const int16_t*)(k + i * stride);
-	const int16_t* kb = (const int16_t*)(k + (i + 1 < s->numFrames ? i + 1 : i) * stride);
-	lerpTrans(ka, kb, t, out);
-	return true;
-}
-
-static const ds::AnimSeq* rootSeq(const Player& p, const mdl::Model* m) {
-	if (!m || p.rootNode < 0 || p.rootNode >= m->numBones) return nullptr;
-	const int16_t si = p.seqOfNode[p.rootNode];
-	if (si < 0) return nullptr;
-	return seqAt(p, si);
-}
-
-// --- public -----------------------------------------------------------------
-
-bool play(Player& p, const mdl::Model* m, const void* danm, const char* name) {
-	const uint8_t* e = findEntry(danm, name);
-	if (!e || !m->nodes || m->numBones > MAX_NODES) return false;
-	const ds::AnimEntry* ae = (const ds::AnimEntry*)e;
-	p.seqs = e + sizeof(ds::AnimEntry);
-	p.numSeqs = ae->numSeqs;
-	p.time = 0;
-	p.loop = 1;
-	p.extractRoot = 0;
-	p.rootNode = -1;
-	memset(p.cursor, 0, sizeof p.cursor);
-	for (int i = 0; i < MAX_NODES; i++) p.seqOfNode[i] = -1;
-	for (int n = 0; n < m->numBones; n++)
-		if (m->nodes[n].boneId == 0) p.rootNode = (int16_t)n;
-
-	// seq boneTag <-> hAnim node id; also collects the anim duration (last key)
-	p.duration = 0;
-	const ds::AnimSeq* s = (const ds::AnimSeq*)p.seqs;
-	for (int i = 0; i < p.numSeqs; i++) {
-		const int16_t* last = (const int16_t*)(seqKeys(s) + (s->numFrames - 1) * seqKeyStride(s));
-		if (last[4] > p.duration) p.duration = (uint16_t)last[4];
-		if (s->boneTag >= 0)
-			for (int n = 0; n < m->numBones; n++)
-				if (m->nodes[n].boneId == s->boneTag) p.seqOfNode[n] = (int16_t)i;
-		s = nextSeq(s);
-	}
-	if (!p.duration) p.duration = 1;
-	return true;
-}
-
-bool advance(Player& p, int32_t dt60) {
-	if (p.duration < 1) p.duration = 1;
-	const int32_t t0 = p.time;
-	p.time += dt60;
-	if (p.time < p.duration) return false;
-	if (p.loop) {
-		p.time %= p.duration;
-		memset(p.cursor, 0, p.numSeqs < MAX_NODES ? p.numSeqs : MAX_NODES);
-		return true;
-	}
-	p.time = p.duration;
-	return t0 < p.duration;
-}
-
-bool rootTranslation(const Player& p, const mdl::Model* m, int32_t time, s32 out[3]) {
-	const ds::AnimSeq* s = rootSeq(p, m);
-	if (!s) return false;
-	return sampleTrans(s, time, out);
-}
-
-void setTime(Player& p, int32_t t60) {
-	if (p.duration < 1) p.duration = 1;
-	if (t60 < 0) t60 = 0;
-	if (t60 > p.duration) t60 = p.duration;
-	// A seek backwards (loop wrap, or a stop/start clip restarted) invalidates
-	// the forward-only key cursors.
-	if (t60 < p.time) memset(p.cursor, 0, p.numSeqs < MAX_NODES ? p.numSeqs : MAX_NODES);
-	p.time = t60;
-}
-
-float phase(const Player& p) {
-	if (p.duration < 1) return 0.0f;
-	return (float)p.time / (float)p.duration;
 }
 
 // Inverse of quatToMat. The stored matrix is the transpose of the usual
@@ -255,51 +96,187 @@ static void matToQuat(const s32* m, s32* q) {
 	q[3] = qmul(w, inv);
 }
 
-static void nlerp(const s32* a, const s32* b, s32 f, s32* o) {
-	s32 dot = 0;
-	for (int c = 0; c < 4; c++) dot += a[c] * b[c];
-	const int32_t sgn = dot < 0 ? -1 : 1;
-	s32 d2 = 0;
-	for (int c = 0; c < 4; c++) {
-		o[c] = a[c] + (((b[c] * sgn - a[c]) * f) >> 12);
-		d2 += qmul(o[c], o[c]);
-	}
-	const s32 inv = divf32(1 << 12, sqrtf32(d2 ? d2 : 1 << 12));
-	for (int c = 0; c < 4; c++) o[c] = qmul(o[c], inv);
+static void normalize(s32* q) {
+	const s32 d2 = qmul(q[0], q[0]) + qmul(q[1], q[1]) + qmul(q[2], q[2]) + qmul(q[3], q[3]);
+	const s32 inv = divf32(1 << 12, sqrtf32(d2 > 0 ? d2 : 1 << 12));
+	for (int c = 0; c < 4; c++) q[c] = qmul(q[c], inv);
 }
 
-static void compose(const mdl::Model* m, const s32* local, s32* world) {
-	for (int n = 0; n < m->numBones; n++) {
-		s32* wm = world + n * 12;
-		const int16_t par = m->nodes[n].parent;
-		if (par >= 0) matMul(local + n * 12, world + par * 12, wm);
-		else memcpy(wm, local + n * 12, 48);
+static inline s32 keyFrac(int32_t t, int32_t t0, int32_t t1) {
+	if (t1 <= t0) return 0;
+	s32 f = (s32)(((t - t0) << 12) / (t1 - t0));
+	return f < 0 ? 0 : f > (1 << 12) ? (1 << 12) : f;
+}
+
+// Advances the node's cursor to the key at/before t, then lerps the rotation
+// (shortest path). Left un-normalized: blendWorld normalizes once per bone.
+static void seqRot(const ds::AnimSeq* s, uint8_t& cursor, int32_t t, s32* q) {
+	const int stride = seqKeyStride(s);
+	const uint8_t* k = seqKeys(s);
+	int i = cursor < s->numFrames ? cursor : 0;
+	while (i + 1 < s->numFrames && keyTime(k, i + 1, stride) <= t) i++;
+	cursor = (uint8_t)i;
+	const int16_t* ka = (const int16_t*)(k + i * stride);
+	const int16_t* kb = (const int16_t*)(k + (i + 1 < s->numFrames ? i + 1 : i) * stride);
+	const s32 f = keyFrac(t, ka[4], kb[4]);
+	s32 dot = 0;
+	for (int c = 0; c < 4; c++) dot += (int32_t)ka[c] * kb[c];
+	const int32_t sgn = dot < 0 ? -1 : 1;
+	for (int c = 0; c < 4; c++) q[c] = ka[c] + (((s32)(kb[c] * sgn - ka[c]) * f) >> 12);
+}
+
+// trans keys are s16 units of 1/1024 -> s32 20.12 is *4
+static void lerpTrans(const int16_t* ka, const int16_t* kb, int32_t t, s32* out) {
+	const s32 f = keyFrac(t, ka[4], kb[4]);
+	for (int c = 0; c < 3; c++)
+		out[c] = ((s32)ka[5 + c] << 2) + ((((s32)(kb[5 + c] - ka[5 + c]) << 2) * f) >> 12);
+}
+
+static void seqTrans(const ds::AnimSeq* s, uint8_t cursor, int32_t t, s32* out) {
+	const int stride = seqKeyStride(s);
+	const uint8_t* k = seqKeys(s);
+	const int16_t* ka = (const int16_t*)(k + cursor * stride);
+	const int16_t* kb = (const int16_t*)(k + (cursor + 1 < s->numFrames ? cursor + 1 : cursor) * stride);
+	lerpTrans(ka, kb, t, out);
+}
+
+// Same interpolation as seqTrans, scanning keys itself (does not touch cursors).
+static bool sampleTrans(const ds::AnimSeq* s, int32_t t, s32* out) {
+	if (!s->hasTrans || s->numFrames < 1) return false;
+	const int stride = seqKeyStride(s);
+	const uint8_t* k = seqKeys(s);
+	int i = 0;
+	while (i + 1 < s->numFrames && keyTime(k, i + 1, stride) <= t) i++;
+	const int16_t* ka = (const int16_t*)(k + i * stride);
+	const int16_t* kb = (const int16_t*)(k + (i + 1 < s->numFrames ? i + 1 : i) * stride);
+	lerpTrans(ka, kb, t, out);
+	return true;
+}
+
+static const ds::AnimSeq* rootSeq(const Player& p, const mdl::Model* m) {
+	if (!m || p.rootNode < 0 || p.rootNode >= m->numBones) return nullptr;
+	return p.nodeSeq[p.rootNode];
+}
+
+// --- public -----------------------------------------------------------------
+
+bool prepare(mdl::Model* m) {
+	if (!m || !m->nodes || m->bindQ) return m && m->bindQ;
+	m->bindQ = (s32*)mem::alloc((size_t)m->numBones * 4 * sizeof(s32), mem::TAG_MODEL);
+	if (!m->bindQ) return false;
+	for (int n = 0; n < m->numBones; n++) matToQuat(m->bindLocal + n * 12, m->bindQ + n * 4);
+	return true;
+}
+
+bool play(Player& p, const mdl::Model* m, const ds::AnimEntry* clip) {
+	if (!clip || !m || !m->nodes || m->numBones > MAX_NODES) return false;
+	p.clip = clip;
+	p.time = 0;
+	p.loop = 1;
+	p.extractRoot = 0;
+	p.rootNode = -1;
+	memset(p.cursor, 0, sizeof p.cursor);
+	memset(p.nodeSeq, 0, sizeof p.nodeSeq);
+	for (int n = 0; n < m->numBones; n++)
+		if (m->nodes[n].boneId == 0) p.rootNode = (int16_t)n;
+
+	// seq boneTag <-> hAnim node id; also collects the anim duration (last key)
+	p.duration = 0;
+	const ds::AnimSeq* s = (const ds::AnimSeq*)(clip + 1);
+	for (int i = 0; i < clip->numSeqs; i++) {
+		if (s->numFrames) {
+			const int16_t last = keyTime(seqKeys(s), s->numFrames - 1, seqKeyStride(s));
+			if (last > p.duration) p.duration = (uint16_t)last;
+			if (s->boneTag >= 0)
+				for (int n = 0; n < m->numBones; n++)
+					if (m->nodes[n].boneId == s->boneTag) p.nodeSeq[n] = s;
+		}
+		s = nextSeq(s);
 	}
+	if (!p.duration) p.duration = 1;
+	return true;
+}
+
+bool advance(Player& p, int32_t dt60) {
+	if (p.duration < 1) p.duration = 1;
+	const int32_t t0 = p.time;
+	p.time += dt60;
+	if (p.time < p.duration) return false;
+	if (p.loop) {
+		p.time %= p.duration;
+		memset(p.cursor, 0, sizeof p.cursor);
+		return true;
+	}
+	p.time = p.duration;
+	return t0 < p.duration;
+}
+
+bool rootTranslation(const Player& p, const mdl::Model* m, int32_t time, s32 out[3]) {
+	const ds::AnimSeq* s = rootSeq(p, m);
+	return s && sampleTrans(s, time, out);
+}
+
+bool rootEndTranslation(const Player& p, const mdl::Model* m, s32 out[3]) {
+	const ds::AnimSeq* s = rootSeq(p, m);
+	if (!s || !s->hasTrans || s->numFrames < 1) return false;
+	const int16_t* k = (const int16_t*)(seqKeys(s) + (s->numFrames - 1) * seqKeyStride(s));
+	for (int c = 0; c < 3; c++) out[c] = (s32)k[5 + c] << 2;
+	return true;
+}
+
+void setTime(Player& p, int32_t t60) {
+	if (p.duration < 1) p.duration = 1;
+	if (t60 < 0) t60 = 0;
+	if (t60 > p.duration) t60 = p.duration;
+	// A seek backwards (loop wrap, or a stop/start clip restarted) invalidates
+	// the forward-only key cursors.
+	if (t60 < p.time) memset(p.cursor, 0, sizeof p.cursor);
+	p.time = t60;
+}
+
+float phase(const Player& p) {
+	if (p.duration < 1) return 0.0f;
+	return (float)p.time / (float)p.duration;
 }
 
 void sampleLocal(const mdl::Model* m, Player& p, Local* out) {
 	for (int n = 0; n < m->numBones; n++) {
 		Local& L = out[n];
-		const int16_t si = p.seqs ? p.seqOfNode[n] : -1;
-		if (si >= 0) {
-			const ds::AnimSeq* sq = seqAt(p, si);
-			seqRot(sq, seqKeyStride(sq), p.cursor[si], p.time, L.q);
-			if (sq->hasTrans) seqTrans(sq, seqKeyStride(sq), p.cursor[si], p.time, L.t);
-			else {
+		const ds::AnimSeq* sq = p.nodeSeq[n];
+		if (sq) {
+			seqRot(sq, p.cursor[n], p.time, L.q);
+			if (sq->hasTrans) {
+				seqTrans(sq, p.cursor[n], p.time, L.t);
+				// Locomotion lives on the root bone (boneId 0): walk/run/sprint
+				// translate it by the whole stride. Same rule as
+				// FrameUpdateCallBackSkinnedWithVelocityExtraction: the XY
+				// delta moves the ped, the bone keeps only its vertical bob.
+				if (p.extractRoot && n == p.rootNode) {
+					L.t[0] = m->bonePos[n * 3];
+					L.t[1] = m->bonePos[n * 3 + 1];
+				}
+			} else {
+				// bone-local rest position (same rule as RpSkin's update cb)
 				L.t[0] = m->bonePos[n * 3];
 				L.t[1] = m->bonePos[n * 3 + 1];
 				L.t[2] = m->bonePos[n * 3 + 2];
 			}
-			if (p.extractRoot && n == p.rootNode) {
-				L.t[0] = m->bonePos[n * 3];
-				L.t[1] = m->bonePos[n * 3 + 1];
-			}
 		} else {
-			matToQuat(m->bindLocal + n * 12, L.q);
+			memcpy(L.q, m->bindQ + n * 4, sizeof L.q);
 			L.t[0] = m->bindLocal[n * 12 + 9];
 			L.t[1] = m->bindLocal[n * 12 + 10];
 			L.t[2] = m->bindLocal[n * 12 + 11];
 		}
+	}
+}
+
+static void compose(const mdl::Model* m, const s32* local, s32* world) {
+	// node list is topologically sorted (parents precede children)
+	for (int n = 0; n < m->numBones; n++) {
+		s32* wm = world + n * 12;
+		const int16_t par = m->nodes[n].parent;
+		if (par >= 0) matMul(local + n * 12, world + par * 12, wm);
+		else memcpy(wm, local + n * 12, 48);
 	}
 }
 
@@ -309,99 +286,38 @@ void blendWorld(const mdl::Model* m, const Local* const* locals, const s32* w409
 		evalBind(m, world);
 		return;
 	}
+	// weights -> one reciprocal for the translation average (no per-bone divides)
+	s32 wsum = 0;
+	for (int i = 0; i < n; i++) wsum += w4096[i] > 0 ? w4096[i] : 0;
+	if (wsum <= 0) {
+		evalBind(m, world);
+		return;
+	}
+	const s64 invW = ((s64)1 << 36) / wsum;     // 2^36 / wsum, applied as >> 36 after * w
 	for (int b = 0; b < m->numBones; b++) {
-		s32 q[4], t[3];
-		s32 wsum = 0;
-		bool any = false;
+		s32 q[4] = { 0, 0, 0, 0 };
+		s64 t[3] = { 0, 0, 0 };
+		const s32* ref = nullptr;
 		for (int i = 0; i < n; i++) {
 			const s32 w = w4096[i];
 			if (w <= 0) continue;
 			const Local& L = locals[i][b];
-			if (!any) {
-				memcpy(q, L.q, sizeof q);
-				memcpy(t, L.t, sizeof t);
-				wsum = w;
-				any = true;
-				continue;
-			}
-			const s32 f = divf32(w, wsum + w);
-			nlerp(q, L.q, f, q);
-			for (int c = 0; c < 3; c++)
-				t[c] = t[c] + (((L.t[c] - t[c]) * f) >> 12);
-			wsum += w;
+			s32 sgn = 1;
+			if (!ref) ref = L.q;
+			else if ((s64)ref[0] * L.q[0] + (s64)ref[1] * L.q[1] + (s64)ref[2] * L.q[2] + (s64)ref[3] * L.q[3] < 0)
+				sgn = -1;
+			for (int c = 0; c < 4; c++) q[c] += (sgn * L.q[c] * w) >> 12;
+			for (int c = 0; c < 3; c++) t[c] += (s64)L.t[c] * w;
 		}
 		s32* lm = mats + b * 12;
-		if (!any) {
-			memcpy(lm, m->bindLocal + b * 12, 48);
-			continue;
-		}
+		normalize(q);
 		quatToMat(q, lm);
-		lm[9] = t[0];
-		lm[10] = t[1];
-		lm[11] = t[2];
+		for (int c = 0; c < 3; c++) lm[9 + c] = (s32)((t[c] * invW) >> 36);
 	}
 	compose(m, mats, world);
 }
 
-bool rootEndTranslation(const Player& p, const mdl::Model* m, s32 out[3]) {
-	const ds::AnimSeq* s = rootSeq(p, m);
-	if (!s || !s->hasTrans || s->numFrames < 1) return false;
-	const int stride = seqKeyStride(s);
-	const int16_t* k = (const int16_t*)(seqKeys(s) + (s->numFrames - 1) * stride);
-	for (int c = 0; c < 3; c++) out[c] = (s32)k[5 + c] << 2;
-	return true;
-}
-
-void evalWorld(const mdl::Model* m, Player& p, s32* world) {
-	static s32 local[MAX_NODES * 12];
-	for (int n = 0; n < m->numBones; n++) {
-		s32* lm = local + n * 12;
-		const int16_t si = p.seqOfNode[n];
-		if (si >= 0) {
-			const ds::AnimSeq* sq = seqAt(p, si);
-			s32 q[4];
-			seqRot(sq, seqKeyStride(sq), p.cursor[si], p.time, q);
-			quatToMat(q, lm);
-			if (sq->hasTrans) {
-				seqTrans(sq, seqKeyStride(sq), p.cursor[si], p.time, lm + 9);
-				// Locomotion lives on the root bone (boneId 0): walk/run/sprint
-				// translate it by the whole stride, then the cycle snaps back.
-				// Same rule as FrameUpdateCallBackSkinnedWithVelocityExtraction:
-				// the XY delta is applied to the ped, and the bone keeps only
-				// its vertical bob plus the bind position. Otherwise the mesh
-				// walks out from under the camera and pops every loop.
-				if (p.extractRoot && n == p.rootNode) {
-					lm[9] = m->bonePos[n * 3];
-					lm[10] = m->bonePos[n * 3 + 1];
-				}
-			} else {
-				// bone-local rest position (same rule as RpSkin's update cb)
-				lm[9] = m->bonePos[n * 3];
-				lm[10] = m->bonePos[n * 3 + 1];
-				lm[11] = m->bonePos[n * 3 + 2];
-			}
-		} else {
-			memcpy(lm, m->bindLocal + n * 12, 48);
-		}
-	}
-	// The node list is topologically sorted (parents precede children), so a
-	// single pass composes local * world_parent into world space.
-	for (int n = 0; n < m->numBones; n++) {
-		s32* wm = world + n * 12;
-		const int16_t par = m->nodes[n].parent;
-		if (par >= 0) matMul(local + n * 12, world + par * 12, wm);
-		else memcpy(wm, local + n * 12, 48);
-	}
-}
-
-void evalBind(const mdl::Model* m, s32* world) {
-	for (int n = 0; n < m->numBones; n++) {
-		s32* wm = world + n * 12;
-		const int16_t par = m->nodes[n].parent;
-		if (par >= 0) matMul(m->bindLocal + n * 12, world + par * 12, wm);
-		else memcpy(wm, m->bindLocal + n * 12, 48);
-	}
-}
+void evalBind(const mdl::Model* m, s32* world) { compose(m, m->bindLocal, world); }
 
 void skinForPart(const mdl::Model* m, const s32* world, s32* skin) {
 	if (!(m->flags & ds::MDL_SKINNED) || !m->nodes) return;

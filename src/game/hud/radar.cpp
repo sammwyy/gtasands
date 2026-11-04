@@ -2,14 +2,13 @@
 
 #include <math.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
-#include "assets/pack.h"
+#include "assets/txdfile.h"
 #include "game/hud/hudtex.h"
 #include "game/hud/subfb.h"
 #include "game/player.h"
-#include "game/streaming.h"
+#include "mem/pool.h"
 
 // Port of the CRadar bits we need (gta-reversed Radar.cpp):
 //  - world -> radar space: offset from the player rotated so heading is up
@@ -26,6 +25,7 @@ static const int CX = 58, CY = 136, R = 50;
 // keeps the zoomed-out view coherent instead of aliased.
 static const int RMIN = 300, RMAX = 900;
 static const int MIP_RANGE = 390;         // range > this -> 32px mip tiles
+static const int MIP_HYST = 70;           // prefetch the other level this close to the switch
 
 struct Blip {
 	bool on;
@@ -35,20 +35,26 @@ struct Blip {
 };
 static Blip s_blips[16];
 
-static void* s_hudTxd;
+static TxdFile s_hudTxd;              // hud.txd directory: blip sprites decode on demand
 static subfb::Sprite s_arrow, s_north;
 
-// All 144 radar tiles decoded+pre-filtered at init into a static arena
-// (~1.15MB). Runtime never does file I/O or decoding: a tile miss on FAT
-// costs ms and tanks fps; decode-once also lets us box-filter in place so
-// the inner loop stays a single-texel lookup.
+// Tiles are streamed from models/radar.dsrt (pre-baked RGB15, fixed stride)
+// into two small pools: the 3x3-ish window of 64px tiles and the 5x5 window
+// of 32px mips around the player. A tile is one fseek+fread, never decoded;
+// the per-frame byte budget keeps a fast drive from ever stalling a frame.
 static const int TILES = 12;
-static const int TILE_PX = 64 * 64;
-static u16 s_tiles[TILES * TILES][TILE_PX];
-// quarter-res mip (32x32) for zoomed-out ranges: at >420 range the 64px
-// source under-samples and streets alias into noise
-static u16 s_tiles32[TILES * TILES][32 * 32];
-static u8 s_tok[TILES * TILES];
+static const int FULL_PX = 64 * 64, MIP_PX = 32 * 32;
+static const u32 IO_BUDGET = 12 * 1024;   // bytes per frame (one full tile + mips)
+
+struct FullTile { u16 px[FULL_PX]; u32 lastUse; u8 key; };
+struct MipTile { u16 px[MIP_PX]; u32 lastUse; u8 key; };
+static mem::Pool<FullTile> s_fullPool;
+static mem::Pool<MipTile> s_mipPool;
+static FullTile* s_full[TILES * TILES];
+static MipTile* s_mip[TILES * TILES];
+static u8 s_present[TILES * TILES];
+static FILE* s_file;
+static u32 s_fullOff, s_mipOff, s_frame;
 
 static float s_range = 180.0f;
 
@@ -67,71 +73,99 @@ static int isqrt(u32 v) {
 	return (int)r;
 }
 
-// in-place 2x2 box smooth: softens texel edges so nearest sampling doesn't
-// shimmer while the map scrolls/rotates (cheap bilinear stand-in)
-static void smooth(u16* t) {
-	for (int y = 0; y < 63; y++) {
-		for (int x = 0; x < 63; x++) {
-			const u16 c00 = t[(y << 6) | x],       c01 = t[(y << 6) | (x + 1)];
-			const u16 c10 = t[((y + 1) << 6) | x], c11 = t[((y + 1) << 6) | (x + 1)];
-			const int r  = ((c00 & 31) + (c01 & 31) + (c10 & 31) + (c11 & 31)) >> 2;
-			const int gg = (((c00 >> 5) & 31) + ((c01 >> 5) & 31) +
-			                ((c10 >> 5) & 31) + ((c11 >> 5) & 31)) >> 2;
-			const int b  = (((c00 >> 10) & 31) + ((c01 >> 10) & 31) +
-			                ((c10 >> 10) & 31) + ((c11 >> 10) & 31)) >> 2;
-			t[(y << 6) | x] = (u16)(BIT(15) | r | (gg << 5) | (b << 10));
-		}
-	}
-}
-
-void init() {
+bool init() {
 	s_sea = rgb(111, 137, 170);
-	memset(s_tok, 0, sizeof s_tok);
 	memset(s_blips, 0, sizeof s_blips);
-	s_hudTxd = hudtex::readFile("nitro:/models/hud.txd");
-	if (s_hudTxd) {
-		hudtex::decodeSprite(hudtex::find(s_hudTxd, "radar_centre"), s_arrow);
-		hudtex::decodeSprite(hudtex::find(s_hudTxd, "radar_north"), s_north);
+	memset(s_full, 0, sizeof s_full);
+	memset(s_mip, 0, sizeof s_mip);
+	memset(s_present, 0, sizeof s_present);
+	if (s_hudTxd.open("nitro:/models/hud.txd")) {
+		mem::Scratch scratch;
+		hudtex::decodeSprite(s_hudTxd.load("radar_centre", scratch), s_arrow);
+		hudtex::decodeSprite(s_hudTxd.load("radar_north", scratch), s_north);
 	}
-	// preload the whole map once: ~650KB of reads, no runtime stalls
-	for (int k = 0; k < TILES * TILES; k++) {
-		char name[16];
-		snprintf(name, sizeof name, "radar%02d.txd", k);
-		void* blob = streaming::g_models.load(streaming::g_models.find(name));
-		if (!blob) continue;
-		const ds::TxdHeader* th = (const ds::TxdHeader*)blob;
-		const ds::TxdEntry* e = (const ds::TxdEntry*)((const u8*)blob + sizeof(ds::TxdHeader));
-		if (th->magic == DS_FOURCC('D', 'T', 'X', 'D') && th->count &&
-		    hudtex::decodeRgbInto((const ds::TexHeader*)((const u8*)blob + e->offset),
-		                          s_tiles[k])) {
-			smooth(s_tiles[k]);
-			// 32px mip: 2x2 box over the smoothed 64px tile
-			const u16* t = s_tiles[k];
-			for (int y = 0; y < 32; y++)
-				for (int x = 0; x < 32; x++) {
-					const u16 c00 = t[(y << 7) | (x << 1)],     c01 = t[(y << 7) | (x << 1) | 1];
-					const u16 c10 = t[((y << 7) | 64) | (x << 1)], c11 = t[((y << 7) | 64) | (x << 1) | 1];
-					const int r  = ((c00 & 31) + (c01 & 31) + (c10 & 31) + (c11 & 31)) >> 2;
-					const int gg = (((c00 >> 5) & 31) + ((c01 >> 5) & 31) +
-					                ((c10 >> 5) & 31) + ((c11 >> 5) & 31)) >> 2;
-					const int b  = (((c00 >> 10) & 31) + ((c01 >> 10) & 31) +
-					                ((c10 >> 10) & 31) + ((c11 >> 10) & 31)) >> 2;
-					s_tiles32[k][(y << 5) | x] = (u16)(BIT(15) | r | (gg << 5) | (b << 10));
-				}
-			s_tok[k] = 1;
-		}
-		free(blob);
+	if (!s_fullPool.capacity()) {
+		s_fullPool.init(mem::budget::RADAR_TILE_SLOTS, mem::TAG_RADAR);
+		s_mipPool.init(mem::budget::RADAR_MIP_SLOTS, mem::TAG_RADAR);
+	}
+	if (!s_file) s_file = fopen("nitro:/models/radar.dsrt", "rb");
+	ds::RadarHeader h;
+	if (s_file && fread(&h, sizeof h, 1, s_file) == 1 && h.magic == DS_FOURCC('D', 'S', 'R', 'T') &&
+	    h.grid == TILES && h.tileSize == 64 && h.mipSize == 32 &&
+	    fread(s_present, 1, TILES * TILES, s_file) == TILES * TILES) {
+		s_fullOff = h.fullOffset;
+		s_mipOff = h.mipOffset;
+	} else {
+		memset(s_present, 0, sizeof s_present);
 	}
 	s_range = RMIN;
+	return s_file != nullptr;
 }
 
-// Returns tile data for tile key — 64x64 close range, 32x32 mip zoomed out —
-// or nullptr when the tile wasn't decoded.
+// Least recently used tile that this frame does not need.
+template <class T>
+static T* victim(mem::Pool<T>& pool) {
+	T* best = nullptr;
+	pool.forEach([&](T& t) {
+		if (t.lastUse != s_frame && (!best || t.lastUse < best->lastUse)) best = &t;
+	});
+	return best;
+}
+
+template <class T>
+static bool loadTile(int key, mem::Pool<T>& pool, T** map, u32 base, u32& budget) {
+	if (map[key]) { map[key]->lastUse = s_frame; return true; }
+	if (!s_present[key] || !s_file || budget < sizeof(T::px)) return false;
+	T* t = pool.create();
+	if (!t) {
+		t = victim(pool);
+		if (!t) return false;
+		map[t->key] = nullptr;
+	}
+	if (fseek(s_file, (long)(base + (u32)key * sizeof(T::px)), SEEK_SET) != 0 ||
+	    fread(t->px, 1, sizeof(T::px), s_file) != sizeof(T::px)) {
+		pool.destroy(t);
+		return false;
+	}
+	budget -= sizeof(T::px);
+	t->key = (u8)key;
+	t->lastUse = s_frame;
+	map[key] = t;
+	return true;
+}
+
+// Ensures the tiles under the disc (plus a prefetch margin) are resident,
+// nearest first, within the frame's I/O budget.
+static void stream(float px, float py, bool wantFull, bool wantMip, u32& budget) {
+	const float reach = s_range + 150.0f;   // the disc is a world circle of radius range + look-ahead
+	const int x0 = (int)((px - reach + 3000.0f) / 500.0f), x1 = (int)((px + reach + 3000.0f) / 500.0f);
+	const int y0 = (int)((3000.0f - py - reach) / 500.0f), y1 = (int)((3000.0f - py + reach) / 500.0f);
+	const int ptx = (int)((px + 3000.0f) / 500.0f), pty = (int)((3000.0f - py) / 500.0f);
+	// rings around the player's tile: the visible centre always wins the budget
+	for (int ring = 0; ring <= 3; ring++)
+		for (int ty = y0; ty <= y1; ty++)
+			for (int tx = x0; tx <= x1; tx++) {
+				if ((unsigned)tx >= (unsigned)TILES || (unsigned)ty >= (unsigned)TILES) continue;
+				const int dx = tx > ptx ? tx - ptx : ptx - tx, dy = ty > pty ? ty - pty : pty - ty;
+				if ((dx > dy ? dx : dy) != ring) continue;
+				const int key = ty * TILES + tx;
+				if (wantFull) loadTile(key, s_fullPool, s_full, s_fullOff, budget);
+				if (wantMip) loadTile(key, s_mipPool, s_mip, s_mipOff, budget);
+			}
+}
+
+void prefetch() {
+	u32 budget = 0xFFFFFFFFu;
+	s_frame++;
+	stream(player::g.x, player::g.y, true, true, budget);
+}
+
+// Tile data for a grid cell, or nullptr when it isn't resident (yet).
 static const u16* tile(int tx, int ty, bool mip) {
 	if ((unsigned)tx >= (unsigned)TILES || (unsigned)ty >= (unsigned)TILES) return nullptr;
 	const int key = ty * TILES + tx;
-	if (!s_tok[key]) return nullptr;
-	return mip ? s_tiles32[key] : s_tiles[key];
+	if (mip) return s_mip[key] ? s_mip[key]->px : nullptr;
+	return s_full[key] ? s_full[key]->px : nullptr;
 }
 
 // The map proper: for each fb row of the disc, march across in world space.
@@ -147,8 +181,15 @@ static void drawMap() {
 
 	// mip when a texel would cover more than ~1.4 fb pixels
 	const bool mip = s_range > (float)MIP_RANGE;
+	s_frame++;
+	u32 budget = IO_BUDGET;
+	stream(p.x, p.y, !mip || s_range < MIP_RANGE + MIP_HYST, mip || s_range > MIP_RANGE - MIP_HYST, budget);
+
 	const int tileShift = mip ? 5 : 6;
-	const int fracScale = mip ? 268435 : 536896;    // tilePx * 2^22 / 500
+	const int tileMask = (1 << tileShift) - 1;
+	const int texelShift = 12 + tileShift;           // Q12 texel coord -> tile index
+	// world units -> texels of the current level (64 or 32 per 500 units), Q16
+	const s64 texPerUnit = ((s64)(1 << tileShift) << 16) / 500;
 
 	// heading -> rotation (radar->world): wx = ox + k*(c*u + s*v)
 	// (libnds brads: 32768 = full circle)
@@ -164,6 +205,10 @@ static void drawMap() {
 	// normalizing by R once more put the radar ~50x too zoomed in (flat map).
 	const int dwx = (int)(((s64)kQ * c) >> 12);             // world step/px, Q12
 	const int dwy = (int)(((s64)kQ * s) >> 12);
+	// the same march in texel space (Q12, origin at the map's NW corner):
+	// the inner loop is two adds, two shifts and a lookup per pixel
+	const int dU = (int)(((s64)dwx * texPerUnit) >> 16);
+	const int dV = (int)(((s64)-dwy * texPerUnit) >> 16);
 
 	for (int j = CY - R; j <= CY + R; j++) {
 		if ((unsigned)j >= (unsigned)subfb::H) continue;
@@ -174,26 +219,19 @@ static void drawMap() {
 		const int x1 = CX + ((umax * R) >> 12);
 		// world coords at the row's left edge (radar -> world by heading)
 		const int u0 = xs - CX, v = CY - j;                 // px offsets
-		int wx = pxQ + (int)(((s64)kQ * (c * u0 - s * v)) >> 12);
-		int wy = pyQ + (int)(((s64)kQ * (s * u0 + c * v)) >> 12);
+		const int wx = pxQ + (int)(((s64)kQ * (c * u0 - s * v)) >> 12);
+		const int wy = pyQ + (int)(((s64)kQ * (s * u0 + c * v)) >> 12);
+		int U = (int)((((s64)wx + (3000 << 12)) * texPerUnit) >> 16);
+		int V = (int)((((s64)(3000 << 12) - wy) * texPerUnit) >> 16);
 		const u16* t = nullptr;
 		int tkey = -1;
-		for (int i = xs; i <= x1 && i < subfb::W; i++) {
-			// world -> tile grid (tile px = mod 500 * 64/500, no division)
-			const int wxi = wx >> 12, wyi = wy >> 12;
-			const int ax = wxi + 3000, ay = 3000 - wyi;
-			const int tx = (ax * 8389) >> 22, ty = (ay * 8389) >> 22;
-			const int key = ty * TILES + tx;
+		u16* dst = fb + j * subfb::STRIDE + xs;
+		const int xe = x1 < subfb::W ? x1 : subfb::W - 1;
+		for (int i = xs; i <= xe; i++, U += dU, V += dV) {
+			const int tx = U >> texelShift, ty = V >> texelShift;
+			const int key = (ty << 8) | (tx & 0xFF);
 			if (key != tkey) { t = tile(tx, ty, mip); tkey = key; }
-			u16 col = s_sea;
-			if (t) {
-				const int lx = ((ax - tx * 500) * fracScale) >> 22;
-				const int ly = ((ay - ty * 500) * fracScale) >> 22;
-				col = t[(ly << tileShift) | lx];
-			}
-			fb[j * subfb::STRIDE + i] = col;
-			wx += dwx;
-			wy += dwy;
+			*dst++ = t ? t[(((V >> 12) & tileMask) << tileShift) | ((U >> 12) & tileMask)] : s_sea;
 		}
 	}
 
@@ -261,8 +299,10 @@ void setBlip(int id, float x, float y, const char* sprite, u8 r, u8 g, u8 b) {
 	bl.on = true;
 	bl.x = (s16)x; bl.y = (s16)y;
 	bl.r = r; bl.g = g; bl.b = b;
-	if (sprite && *sprite && s_hudTxd)
-		hudtex::decodeSprite(hudtex::find(s_hudTxd, sprite), bl.spr);
+	if (sprite && *sprite && s_hudTxd.isOpen()) {
+		mem::Scratch scratch;
+		hudtex::decodeSprite(s_hudTxd.load(sprite, scratch), bl.spr);
+	}
 }
 
 void clearBlip(int id) {
@@ -273,11 +313,6 @@ void clearBlip(int id) {
 
 float range() { return s_range; }
 
-int tilesCached() {
-	int n = 0;
-	for (int i = 0; i < TILES * TILES; i++)
-		if (s_tok[i]) n++;
-	return n;
-}
+int tilesCached() { return s_fullPool.count() + s_mipPool.count(); }
 
 }

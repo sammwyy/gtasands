@@ -41,10 +41,12 @@ struct Model {
 	const ds::ModelNode* nodes;   // [numBones] hAnim order (null if !MDL_SKINNED)
 	const ds::fx32* bindLocal;    // [numBones][4][3] anim-less local matrix
 	const ds::fx32* bonePos;      // [numBones][3] default local translation
+	int32_t* bindQ;               // [numBones][4] bindLocal as quats (anim::prepare), or null
 	Geometry* geoms;
 };
 
-// Parses a DMDL blob. Returns nullptr on bad magic. Free with mdl::free.
+// Parses a DMDL blob (one mem::alloc block for the parsed view; the blob
+// stays owned by the caller). Returns nullptr on bad magic. Free with mdl::free.
 Model* load(const void* blob);
 void free(Model* m);
 

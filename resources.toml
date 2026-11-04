@@ -101,9 +101,9 @@ match_ide = "data/default.ide"
 model = { ratio = 0.5, max_tris = 200, normals = true }
 texture = { max_size = 32 }
 
-[[gta3_img.rule]]         # radar tiles -> bottom screen HUD
-match = "radar*.txd"
-texture = { scale = 0.5, max_size = 64, auto_colors = 256 }
+[[gta3_img.rule]]         # radar tiles: pre-baked into models/radar.dsrt (see [radar])
+match = "radar[0-9]*.txd"
+remove = true
 
 [[gta3_img.rule]]         # LOD models are seen from far away only
 match = "lod*.dff"
@@ -135,7 +135,13 @@ texture = { max_size = 64 }
 # stay bit-exact or CJ shows cracks; clustering moved seam verts up to 10cm.
 model = { ratio = 0.5, normals = true, decimate = "qem" }
 
-[anim_img]                # streamed anim blocks
+[radar]                   # bottom-screen radar: 12x12 radarNN.txd -> RGB15 64px tiles + 32px mips,
+kind = "radar"            # fixed-stride records streamed on demand by src/game/hud/radar.cpp
+src = "models/gta3.img"
+out = "models/radar.dsrt"
+grid = 12
+
+[anim_img]                # streamed anim blocks (DANM v2: per-clip directory, streamed per clip)
 kind = "img"
 src = "anim/anim.img"
 out = "anim/anim.dspk"

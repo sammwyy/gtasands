@@ -1,7 +1,8 @@
 #include "assets/model.h"
 
-#include <stdlib.h>
 #include <string.h>
+
+#include "mem/mem.h"
 
 namespace mdl {
 
@@ -28,11 +29,13 @@ Model* load(const void* blob) {
 	}
 	const uint32_t* geomOffs = (const uint32_t*)p;
 
-	Model* m = (Model*)malloc(sizeof(Model));
+	// Model, frames and geometry views in one block
+	Model* m = (Model*)mem::alloc(sizeof(Model) + sizeof(Frame) * h->numFrames +
+	                              sizeof(Geometry) * h->numGeometries, mem::TAG_MODEL);
 	if (!m) return nullptr;
-	m->frames = (Frame*)malloc(sizeof(Frame) * h->numFrames + sizeof(Geometry) * h->numGeometries);
-	if (!m->frames) { ::free(m); return nullptr; }
+	m->frames = (Frame*)(m + 1);
 	m->geoms = (Geometry*)(m->frames + h->numFrames);
+	m->bindQ = nullptr;
 
 	m->flags = h->flags;
 	m->numFrames = h->numFrames;
@@ -87,8 +90,8 @@ Model* load(const void* blob) {
 
 void free(Model* m) {
 	if (m) {
-		::free(m->frames); // frames and geoms live in one block
-		::free(m);
+		mem::free(m->bindQ);
+		mem::free(m); // frames and geoms live in the same block
 	}
 }
 

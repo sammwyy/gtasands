@@ -5,14 +5,18 @@
 #include <string.h>
 
 #include "assets/ds_formats.h"
+#include "assets/txdfile.h"
 #include "game/hud/hudtex.h"
 #include "game/hud/subfb.h"
+#include "mem/mem.h"
 
 namespace hudfont {
 
 static u8* s_cov[2];            // coverage maps: [0]=font2, [1]=font1
 static u8 s_prop[2][210];
 static bool s_ok;
+static constexpr u32 ARENA_BYTES = 72 * 1024;
+static u8* s_arena;             // glyph cache: fill (w*h) then stroke ((w+2e)*(h+2e)), PERM
 
 // same parser as font.cpp::loadFontValues
 static void loadProp(const char* path) {
@@ -42,20 +46,38 @@ static void loadProp(const char* path) {
 	fclose(f);
 }
 
-bool init() {
+// One font atlas per call (each is a 64 KB decode), then the metrics: the
+// loading screen spreads them over frames. The atlases and the glyph cache
+// live in PERM: they are never freed.
+static TxdFile s_txd;
+static int s_initStep;
+
+bool initStep() {
 	if (s_ok) return true;
-	void* txd = hudtex::readFile("nitro:/models/fonts.txd");
-	if (!txd) return false;
-	s_cov[0] = hudtex::decodeCoverage(hudtex::find(txd, "font2"));
-	s_cov[1] = hudtex::decodeCoverage(hudtex::find(txd, "font1"));
-	free(txd);
-	if (!s_cov[0] || !s_cov[1]) return false;
+	if (s_initStep == 0 && !s_txd.open("nitro:/models/fonts.txd")) return false;
+	if (s_initStep <= 1) {
+		mem::Scratch scratch;
+		const int fi = s_initStep;   // [0]=font2, [1]=font1
+		if (!s_cov[fi]) s_cov[fi] = hudtex::decodeCoverage(s_txd.load(fi == 0 ? "font2" : "font1", scratch));
+		if (!s_cov[fi]) return false;
+		s_initStep++;
+		return false;
+	}
+	s_txd.close();
+	if (!s_arena) s_arena = (u8*)mem::perm(ARENA_BYTES, mem::TAG_HUD);
+	if (!s_arena) return false;
 	loadProp("nitro:/data/fonts.dat");
 	for (int i = 0; i < 2; i++)
 		if (!s_prop[i][0]) for (u8& v : s_prop[i]) v = 12;
 	s_prop[0][208] = s_prop[1][208] = 10;
 	s_ok = true;
 	return true;
+}
+
+bool init() {
+	for (int i = 0; i < 4 && !s_ok; i++)
+		if (!initStep() && s_initStep == 0) return false;
+	return s_ok;
 }
 
 // texture index + sub-font remap for a style (mirrors font.cpp)
@@ -91,7 +113,6 @@ static u8 s_strTmp[32 * 32];                 // stroke raster while caching miss
 struct CEntry { u32 off; u16 w, h; u8 fi, id, edge; };
 static CEntry s_ent[80];
 static int s_nent;
-static u8 s_arena[72 * 1024];                // fill (w*h) then stroke ((w+2e)*(h+2e))
 static u32 s_arenaUsed;
 
 // rasterize glyph coverage (no alpha — mask applies it per stamp)
@@ -163,7 +184,7 @@ static void glyph(int fi, u8 id, int x, int y, float sw, float sh,
 		if (edge) dilate(s_covTmp, dstW, dstH, edge, s_strTmp);
 		const int need = dstW * dstH + (edge ? swd * shd : 0);
 		if (s_nent < (int)(sizeof s_ent / sizeof s_ent[0]) &&
-		    s_arenaUsed + (u32)need <= sizeof s_arena) {
+		    s_arenaUsed + (u32)need <= ARENA_BYTES) {
 			CEntry& e = s_ent[s_nent++];
 			e = { s_arenaUsed, (u16)dstW, (u16)dstH, (u8)fi, id, (u8)edge };
 			memcpy(s_arena + e.off, s_covTmp, (size_t)(dstW * dstH));

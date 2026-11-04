@@ -17,5 +17,8 @@ void present();            // vblank: DMA the game-screen backbuffer to VRAM
 Screen screen();
 void setScreen(Screen s);
 void toggleScreen();
+// The game HUD is drawn only while playing (set by main on INGAME); before
+// that the GAME screen stays a flat backdrop.
+void setGameActive(bool on);
 
 }

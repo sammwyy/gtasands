@@ -12,7 +12,7 @@ from fnmatch import fnmatchcase
 from multiprocessing import Pool
 from pathlib import Path
 
-from . import audio, ds_mesh, ds_misc, ds_texture, img, intro
+from . import audio, ds_mesh, ds_misc, ds_radar, ds_texture, img, intro
 from .dsfmt import name as fname, write_pack
 
 HANDLERS = {
@@ -34,6 +34,7 @@ HANDLER_SRC = {
     'anim': ['ifp', 'ds_misc', 'dsfmt'],
     'sfx': ['audio', 'dsfmt'],
     'stream': ['audio', 'dsfmt'],
+    'radar': ['rw', 'txd', 'ds_texture', 'ds_radar', 'dsfmt'],
 }
 CODE_HASH = {h: hashlib.sha1(b''.join((TOOLS_DIR / f'{m}.py').read_bytes() for m in mods)).hexdigest()[:12]
              for h, mods in HANDLER_SRC.items()}
@@ -126,6 +127,8 @@ def run_task(t):
             out, stats = audio.convert_bank(data, params)
         elif handler == 'stream':
             out, stats = audio.convert_track(data, offset, params)
+        elif handler == 'radar':
+            out, stats = ds_radar.convert_radar(data, params)
         else:
             out, stats = HANDLERS[handler][1](data, params, overrides)
     except Exception as e:  # noqa: BLE001 - one bad entry must not stop the build
@@ -400,6 +403,39 @@ class Builder:
             st['out'] += self._emit(out_dir / f'{pn.lower()}.dsst', bytes(blob))
             st['files'] += 1
 
+    def do_radar(self, name, sec, st):
+        """radarNN.txd (12x12 grid) -> one DSRT file: header, presence map, then
+        fixed-stride RGB15 tiles (64x64) and mips (32x32). Fixed offsets: the
+        runtime seeks straight to a tile, no TOC and no decoding."""
+        src = self.cfg.game / sec['src']
+        if not src.exists():
+            st['errors'].append(f'missing {src} (run: tools/assets.py sync)')
+            return
+        grid = int(sec.get('grid', 12))
+        n = grid * grid
+        tasks = []
+        for entry, off, size in img.read_toc(src):
+            stem = os.path.splitext(entry.lower())[0]
+            if entry.lower().endswith('.txd') and stem[:5] == 'radar' and stem[5:].isdigit() and int(stem[5:]) < n:
+                tasks.append(self._task(name, entry, 'radar', src, off, size, {}))
+        sizes = {t[3]: t[7] for t in tasks}
+        full_b, mip_b = ds_radar.FULL * ds_radar.FULL * 2, ds_radar.MIP * ds_radar.MIP * 2
+        tiles = [None] * n
+        for entry, (out, stats) in self._run(name, st, tasks).items():
+            tiles[int(os.path.splitext(entry.lower())[0][5:])] = out
+            self._account(st, entry, sizes[entry], len(out), stats)
+        present = bytes(1 if t else 0 for t in tiles)
+        hdr_size = 24 + len(present) + (-len(present) % 4)
+        full_off = hdr_size
+        mip_off = full_off + n * full_b
+        blob = bytearray(struct.pack('<4sHHHHHHII', b'DSRT', 1, n, grid, ds_radar.FULL, ds_radar.MIP, 0,
+                                     full_off, mip_off))
+        blob += present + b'\0' * (hdr_size - 24 - len(present))
+        blob += b''.join(t[:full_b] if t else b'\0' * full_b for t in tiles)
+        blob += b''.join(t[full_b:] if t else b'\0' * mip_b for t in tiles)
+        st['out'] += self._emit(sec['out'], bytes(blob))
+        st['files'] = sum(present)
+
     def _prune(self):
         cfg = self.cfg
         old = set(json.loads(cfg.manifest.read_text())) if cfg.manifest.exists() else set()
@@ -425,7 +461,7 @@ def sync(cfg, dry=False):
         if not sec.get('enabled', True):
             continue
         k = sec['kind']
-        if k == 'img':
+        if k in ('img', 'radar'):
             want.add(Path(sec['src']))
         elif k in ('files', 'copy', 'intro'):
             rm = sec.get('remove', [])

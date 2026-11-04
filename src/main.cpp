@@ -1,8 +1,6 @@
 #include <nds.h>
 #include <stdlib.h>
 
-#include "assets/pack.h"
-#include "assets/texture.h"
 #include "game/intro.h"
 #include "game/loadscreen.h"
 #include "game/player.h"
@@ -10,6 +8,7 @@
 #include "game/menu/menu.h"
 #include "game/text/gxt.h"
 #include "hud/hud.h"
+#include "mem/mem.h"
 #include "platform/fs.h"
 #include "platform/input.h"
 #include "platform/timing.h"
@@ -20,7 +19,16 @@ enum class AppState { TITLE, MENU, LOADING, INGAME };
 
 static AppState s_state = AppState::TITLE;
 
+// Pause menu closed in-game: its art goes back out of VRAM (and the menu
+// reloads it lazily next time), so the world keeps the whole texture budget.
+static void closePauseMenu() {
+	FrontEndMenuManager.m_bMenuActive = false;
+	FrontEndMenuManager.unloadTextures();
+	FrontEndMenuManager.m_bTexturesLoaded = false;
+}
+
 static void boot() {
+	mem::init();   // carve the RAM regions before anything allocates
 	video::init();
 	hud::init();
 	timing::init();
@@ -63,6 +71,7 @@ int main() {
 		}
 		if (FrontEndMenuManager.m_WantsStartGame) {
 			FrontEndMenuManager.m_WantsStartGame = false;
+			hud::setGameActive(false);
 			loadscreen::begin();
 			s_state = AppState::LOADING;
 		}
@@ -74,8 +83,8 @@ int main() {
 			s_state = AppState::MENU;
 		}
 		if (s_state == AppState::LOADING && loadscreen::update()) {
-			loadscreen::end();
-			player::init();
+			loadscreen::end();   // the loading jobs already set up CJ, the HUD and player state
+			hud::setGameActive(true);
 			s_state = AppState::INGAME;
 		}
 		if (s_state == AppState::INGAME) {
@@ -83,8 +92,10 @@ int main() {
 			if (in.down & KEY_SELECT) hud::toggleScreen();
 			if (in.down & KEY_START) {
 				sfx::start(); // AE_FRONTEND_START: whoosh on menu open/close
-				FrontEndMenuManager.m_bMenuActive = !FrontEndMenuManager.m_bMenuActive;
 				if (FrontEndMenuManager.m_bMenuActive) {
+					closePauseMenu();
+				} else {
+					FrontEndMenuManager.m_bMenuActive = true;
 					FrontEndMenuManager.ensureTextures();
 					FrontEndMenuManager.m_bDontDrawFrontEnd = false;
 					FrontEndMenuManager.m_bMainMenuSwitch = false;
@@ -95,12 +106,13 @@ int main() {
 			if (in.down & KEY_B && FrontEndMenuManager.m_bMenuActive &&
 			    FrontEndMenuManager.m_nCurrentScreen == SCREEN_PAUSE_MENU) {
 				FrontEndMenuManager.m_bDontDrawFrontEnd = false;
-				FrontEndMenuManager.m_bMenuActive = false;
+				closePauseMenu();
 			}
 		}
 		if (FrontEndMenuManager.m_bMenuActive) FrontEndMenuManager.process();
 
 		video::beginFrame();
+		u32 t = timing::ticks();
 		if (FrontEndMenuManager.m_bMenuActive) {
 			FrontEndMenuManager.drawFrontEnd();
 		} else if (s_state == AppState::TITLE || s_state == AppState::LOADING) {
@@ -108,11 +120,16 @@ int main() {
 		} else {
 			renderer::draw();
 		}
+		timing::setSection(timing::SEC_3D, timing::usSince(t));
+		t = timing::ticks();
 		if (s_state == AppState::INGAME && !FrontEndMenuManager.m_bMenuActive) player::update();
-		timing::frameEnd();
+		timing::setSection(timing::SEC_SIM, timing::usSince(t));
 		// bottom screen renders into a RAM backbuffer (safe mid-frame), then
 		// a ~0.6ms DMA pushes it to VRAM C inside vblank -> no tearing
+		t = timing::ticks();
 		hud::draw();
+		timing::setSection(timing::SEC_HUD, timing::usSince(t));
+		timing::frameEnd();   // cpu = everything the frame did (3D + sim + HUD)
 		video::endFrame();
 		hud::present();
 	}

@@ -7,10 +7,18 @@
 #include <algorithm>
 
 #include "assets/texture.h"
+#include "assets/txdfile.h"
+#include "game/animstore.h"
+#include "game/cj.h"
+#include "game/hud/chud.h"
+#include "game/hud/radar.h"
 #include "game/menu/menu.h"
+#include "game/player.h"
 #include "game/sfx.h"
 #include "game/streaming.h"
+#include "game/zones.h"
 #include "hud/hud.h"
+#include "mem/mem.h"
 #include "platform/input.h"
 #include "platform/timing.h"
 #include "render/sprite2d.h"
@@ -24,6 +32,10 @@ static constexpr int NUM_SPLASHES = 15;      // loadsc0..14
 static constexpr u32 MIN_VBLANKS = 90;       // minimum time on screen (~1.5s)
 static constexpr u32 TITLE_VBLANKS = 120;    // title screen hold (~2s, skippable)
 static constexpr u32 FADE_VBLANKS = 15;      // fade in/out (~0.25s)
+// CPU time the init jobs may take per frame. The rest of the frame draws the
+// splash + bar, so the loading screen keeps animating (and the music keeps
+// streaming) instead of freezing while the game loads.
+static constexpr u32 WORK_US = 10000;
 static const sprite::RGBA BAR_COLOR{ 225, 225, 225, 255 }; // HUD_COLOUR_LIGHT_GRAY
 
 enum class Phase : uint8_t { FADE_IN, LOADING, HOLD, FADE_OUT };
@@ -36,160 +48,84 @@ static int s_step;
 static Phase s_phase;
 static Mode s_mode;
 
-static void* readFile(const char* path) {
-	FILE* f = fopen(path, "rb");
-	if (!f) return nullptr;
-	fseek(f, 0, SEEK_END);
-	long n = ftell(f);
-	fseek(f, 0, SEEK_SET);
-	void* b = malloc(n);
-	if (b && fread(b, 1, n, f) != (size_t)n) { free(b); b = nullptr; }
-	fclose(f);
-	return b;
+static tex::Texture* loadSplash(const char* path, const char* name) {
+	TxdFile txd;
+	if (!txd.open(path)) return nullptr;
+	mem::Scratch scratch;
+	return tex::load(txd.load(name, scratch), tex::GROUP_FRONTEND);
 }
 
-// The init steps the bar covers: the real assets the in-game state uses. The
-// first one frees the frontend VRAM so the splash (and later the world) fits;
-// heavier loads (IDE/IPL tables, the streaming grid) slot in here later.
-static void stepFreeFrontend() {
+// --- init jobs ----------------------------------------------------------------
+// Each job does a bounded slice of work and returns true when it is finished;
+// update() keeps calling jobs until the frame's WORK_US is spent. Order is
+// what the in-game state needs: VRAM first (frontend out, splash in), music,
+// the streaming packs, the resident anim set, the HUD, CJ, the radar window.
+
+static bool jobFreeFrontend() {
 	FrontEndMenuManager.unloadTextures();
 	FrontEndMenuManager.m_bTexturesLoaded = false;
+	return true;
 }
-static void stepSplash() {
+static bool jobSplash() {
 	char name[16], path[64];
 	snprintf(name, sizeof name, "loadsc%d", rand() % NUM_SPLASHES);
 	snprintf(path, sizeof path, "nitro:/models/txd/%s.txd", name);
-	void* blob = readFile(path);
-	if (blob) {
-		s_splash = tex::loadFromTxd(blob, name);
-		free(blob);
-	}
+	s_splash = loadSplash(path, name);
 	hud::log("loadscreen: %s %s", name, s_splash ? "ok" : "FAILED");
+	return true;
 }
-static void stepModels() {
-	bool ok = streaming::g_models.open("nitro:/models/gta3.dspk");
+static bool jobTune() { return sfx::tuneStep(); }
+static bool jobOpenModels() {
+	const bool ok = streaming::g_models.open("nitro:/models/gta3.dspk");
 	hud::log("gta3.dspk: %u entries", ok ? (unsigned)streaming::g_models.count() : 0u);
+	return true;
 }
-static void stepPlayer() { streaming::g_player.open("nitro:/models/player.dspk"); }
-static void stepAnim() { streaming::g_anim.open("nitro:/anim/anim.dspk"); }
-// ped.ifp is 294 clips / ~870KB. Holding the whole block crowds out the HUD
-// fonts and the pause-menu texture staging. Keep the complete on-foot control
-// set instead: locomotion, jump, unarmed aim/fight and the armed aim shuffle.
-// It is only about 105 KB after conversion, while leaving the rest of ped.ifp
-// off the heap. In particular, do not trim JUMP_* or FIGHTIDLE: player.cpp
-// switches to those clips immediately, so their absence made CJ freeze in the
-// locomotion pose while jumping or aiming.
-static bool keepClip(const char* raw) {
-	static const char* k[] = {
-		"idle_stance", "walk_player", "run_player", "sprint_civi",
-		"walk_start", "idle_tired", "run_stop", "run_stopr",
-		"jump_launch", "jump_glide", "jump_land",
-		"fightidle", "fighta_1", "fighta_2", "fighta_3",
-		"fightsh_fwd", "fightsh_bwd", "fightsh_left", "fightsh_right",
-		"idle_armed", "gun_stand",
-		"gunmove_fwd", "gunmove_bwd", "gunmove_l", "gunmove_r",
-	};
-	char name[25];
-	int n = 0;
-	for (; n < 24 && raw[n]; n++) {
-		unsigned char c = (unsigned char)raw[n];
-		if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + 32);
-		name[n] = (char)c;
-	}
-	name[n] = 0;
-	for (const char* s : k)
-		if (!strcmp(name, s)) return true;
-	return false;
+// gta3's TOC is 256 KB: only a sparse index is built, 16 KB per slice
+static bool jobIndexModels() { return !streaming::g_models.isOpen() || streaming::g_models.indexStep(16); }
+static bool jobOpenPlayer() { streaming::g_player.open("nitro:/models/player.dspk"); return true; }
+static bool jobOpenAnim() { streaming::g_anim.open("nitro:/anim/anim.dspk"); return true; }
+static bool jobPedBlock() {
+	if (animstore::findBlock("ped") == animstore::NO_BLOCK &&
+	    animstore::openFile("nitro:/anim/ped.ifp") == animstore::NO_BLOCK)
+		hud::log("\x1b[31mped.ifp MISSING\x1b[39m");
+	return true;
+}
+static bool jobHud() { return chud::initStep(); }
+static bool jobZones() { zones::preload(); return true; }
+static bool jobCj() { return cj::initStep(); }
+static bool jobPlayer() { player::init(); return true; }
+static bool jobRadar() { radar::prefetch(); return true; }
+static bool jobReport() {
+	char buf[96];
+	mem::summary(buf, sizeof buf);
+	hud::log("%s", buf);
+	return true;
 }
 
-static bool skipSeq(FILE* f) {
-	uint8_t hdr[32];
-	if (fread(hdr, 1, 32, f) != 32) return false;
-	const uint16_t numFrames = (uint16_t)(hdr[28] | (hdr[29] << 8));
-	const uint32_t keyBytes = ((uint32_t)numFrames * (hdr[26] ? 16u : 10u) + 3u) & ~3u;
-	return fseek(f, (long)keyBytes, SEEK_CUR) == 0;
-}
-
-static void* loadPedClips(const char* path) {
-	FILE* f = fopen(path, "rb");
-	if (!f) return nullptr;
-	uint8_t fileHdr[32];
-	if (fread(fileHdr, 1, 32, f) != 32 || memcmp(fileHdr, "DANM", 4)) {
-		fclose(f);
-		return nullptr;
-	}
-	const int numAnims = fileHdr[6] | (fileHdr[7] << 8);
-	struct Span { long off; long size; };
-	static constexpr int MAX_PED_CLIPS = 32;
-	Span spans[MAX_PED_CLIPS];
-	int kept = 0;
-	long bytes = 32;
-	for (int i = 0; i < numAnims; i++) {
-		const long start = ftell(f);
-		uint8_t ent[28];
-		if (fread(ent, 1, 28, f) != 28) { fclose(f); return nullptr; }
-		const int numSeqs = ent[24] | (ent[25] << 8);
-		bool ok = true;
-		for (int s = 0; s < numSeqs && ok; s++) ok = skipSeq(f);
-		if (!ok) { fclose(f); return nullptr; }
-		if (kept < MAX_PED_CLIPS && keepClip((const char*)ent)) {
-			spans[kept].off = start;
-			spans[kept].size = ftell(f) - start;
-			bytes += spans[kept].size;
-			kept++;
-		}
-	}
-	uint8_t* blob = (uint8_t*)malloc((size_t)bytes);
-	if (!blob) { fclose(f); return nullptr; }
-	memcpy(blob, fileHdr, 32);
-	blob[6] = (uint8_t)kept;
-	blob[7] = (uint8_t)(kept >> 8);
-	uint8_t* w = blob + 32;
-	for (int i = 0; i < kept; i++) {
-		if (fseek(f, spans[i].off, SEEK_SET) != 0 ||
-		    fread(w, 1, (size_t)spans[i].size, f) != (size_t)spans[i].size) {
-			free(blob);
-			fclose(f);
-			return nullptr;
-		}
-		w += spans[i].size;
-	}
-	fclose(f);
-	hud::log("ped.ifp %d clips %ld", kept, bytes);
-	return blob;
-}
-
-static void stepPedIfp() {
-	if (streaming::g_pedIfp) return;
-	streaming::g_pedIfp = loadPedClips("nitro:/anim/ped.ifp");
-	if (!streaming::g_pedIfp) hud::log("\x1b[31mped.ifp MISSING\x1b[39m");
-}
-static void stepTune() {    // ~200ms decode: runs under the bar, not on New Game press
-	sfx::tuneStart();
-}
-
-static void (*const s_steps[])() = {
-	stepFreeFrontend,
-	stepSplash,
-	stepModels,
-	stepPlayer,
-	stepAnim,
-	stepPedIfp,
-	stepTune,
+static bool (*const s_jobs[])() = {
+	jobFreeFrontend,
+	jobSplash,
+	jobTune,
+	jobOpenModels,
+	jobIndexModels,
+	jobOpenPlayer,
+	jobOpenAnim,
+	jobPedBlock,
+	jobCj,
+	jobPlayer,
+	jobHud,
+	jobZones,
+	jobRadar,
+	jobReport,
 };
-static constexpr int NUM_STEPS = sizeof(s_steps) / sizeof(s_steps[0]);
+static constexpr int NUM_JOBS = sizeof(s_jobs) / sizeof(s_jobs[0]);
 
 void beginTitle() {
 	s_mode = Mode::TITLE;
-	s_splash = nullptr;
 	s_phase = Phase::FADE_IN;
 	s_progress = 0.0f;
 	s_t0 = timing::vblanks();
-	void* blob = readFile("nitro:/models/txd/loadscs.txd");
-	if (blob) {
-		s_splash = tex::loadFromTxd(blob, "title_pc_US");
-		free(blob);
-	}
+	s_splash = loadSplash("nitro:/models/txd/loadscs.txd", "title_pc_US");
 	hud::log("title: %s", s_splash ? "ok" : "FAILED");
 }
 
@@ -215,19 +151,22 @@ bool update() {
 		return s_phase == Phase::FADE_OUT && now - s_fadeT0 >= FADE_VBLANKS;
 	}
 
-	if (s_step < NUM_STEPS) {
-		s_steps[s_step++]();
+	// run jobs until this frame's budget is spent (at least one slice/frame)
+	const u32 start = timing::ticks();
+	while (s_step < NUM_JOBS) {
+		if (s_jobs[s_step]()) s_step++;
+		if (timing::usSince(start) >= WORK_US) break;
 	}
 	if (s_phase == Phase::FADE_IN && now - s_t0 >= FADE_VBLANKS)
 		s_phase = Phase::LOADING;
 
-	// the bar follows whichever is slower: real steps or the minimum on-screen
+	// the bar follows whichever is slower: real jobs or the minimum on-screen
 	// time (keeps the artwork up for a moment like a console load would)
-	const float stepF = (float)s_step / NUM_STEPS;
+	const float stepF = (float)s_step / NUM_JOBS;
 	const float timeF = std::min((float)(now - s_t0) / MIN_VBLANKS, 1.0f);
 	s_progress = 100.0f * std::min(stepF, timeF);
 
-	if (s_phase != Phase::FADE_OUT && s_step == NUM_STEPS && s_progress >= 100.0f) {
+	if (s_phase != Phase::FADE_OUT && s_step == NUM_JOBS && s_progress >= 100.0f) {
 		s_phase = Phase::FADE_OUT;
 		s_fadeT0 = now;
 	}

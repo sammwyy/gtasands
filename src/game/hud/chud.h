@@ -5,8 +5,14 @@
 // names) plus the rotating radar, all into the software framebuffer.
 namespace chud {
 
-bool init();   // loads hud/fonts assets + radar; false if assets unavailable
-void draw();   // renders one frame into the fb (call once per frame)
+// Loads hud/fonts assets + radar, one slice per call (loading screen);
+// true once done. ready() tells hud::draw whether the HUD can be shown.
+bool initStep();
+bool ready();
+// Renders one frame into the fb (call once per frame). Only regions whose
+// content changed are repainted; invalidate() forces a full repaint.
+void draw();
+void invalidate();
 
 // Fills buf with a one-line subsystem summary (tile cache, sprites, zone).
 // Used by the fat-backend smoke marker in DEBUG builds.

@@ -1,8 +1,9 @@
 #include "game/text/gxt.h"
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+
+#include "mem/mem.h"
 
 CText TheText;
 
@@ -37,12 +38,12 @@ bool CText::load(const char* path) {
 		if (fread(magic, 1, 4, f) != 4 || fread(&size, 4, 1, f) != 1 || !size) break;
 		if (!memcmp(magic, "TKEY", 4)) {
 			m_keyCount = size / 8;
-			m_keys = (KeyEntry*)malloc(size);
-			gotTkey = fread(m_keys, 1, size, f) == size;
+			m_keys = (KeyEntry*)mem::alloc(size, mem::TAG_TEXT);
+			gotTkey = m_keys && fread(m_keys, 1, size, f) == size;
 		} else if (!memcmp(magic, "TDAT", 4)) {
-			m_data = (char*)malloc(size);
+			m_data = (char*)mem::alloc(size, mem::TAG_TEXT);
 			m_dataSize = size;
-			gotTdat = fread(m_data, 1, size, f) == size;
+			gotTdat = m_data && fread(m_data, 1, size, f) == size;
 		} else {
 			fseek(f, size, SEEK_CUR); // TABL etc.
 		}
@@ -56,8 +57,8 @@ bool CText::load(const char* path) {
 }
 
 void CText::unload() {
-	free(m_keys);
-	free(m_data);
+	mem::free(m_keys);
+	mem::free(m_data);
 	m_keys = nullptr;
 	m_data = nullptr;
 	m_keyCount = m_dataSize = 0;

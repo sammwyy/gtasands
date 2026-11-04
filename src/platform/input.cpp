@@ -22,4 +22,9 @@ void poll() {
 
 const State& get() { return s; }
 
+void consumeEdges() {
+	s.down = 0;
+	s.up = 0;
+}
+
 }

@@ -1,8 +1,10 @@
 #pragma once
 
 // CJ: the player model assembled from player.dspk clothing parts, animated by
-// ped.ifp plus the fat/muscular motion groups, CPU-skinned on the ARM9 (the
-// DS GE has no per-vertex matrices; dominant-bone skinning is fixed point).
+// ped.ifp plus the fat/muscular motion groups (clips streamed by animstore).
+// Skinned on the geometry engine: each part is a prebuilt display list that
+// restores one matrix-stack slot per dominant bone, so the CPU never touches
+// a vertex after load.
 namespace cj {
 
 // One clip in this frame's pose. Up to four play at once; their weights are
@@ -34,7 +36,11 @@ struct Motion {
 // Loads the default outfit (SCM defaults: vest/jeansdenim/sneakerbincblk +
 // player_face head). vest.dff is the whole torso; it and the hands sample the
 // player_torso+vest composite, like BODY_PART_TEX_NAMES / ConstructTextures.
+// initStep() does one part per call (loading-screen friendly) and returns
+// true when done; init() runs all of them. Requires the "ped" anim block.
+bool initStep();
 bool init();
+void shutdown();
 
 // Replaces the pose targets with these clips. A clip already playing keeps its
 // time unless `restart` or `sync` is set. Clips not listed blend out over a

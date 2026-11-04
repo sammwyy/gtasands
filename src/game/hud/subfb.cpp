@@ -51,9 +51,14 @@ void rect(int x, int y, int w, int h, u16 c) {
 	if (x + w > W) w = W - x;
 	if (y + h > H) h = H - y;
 	if (w <= 0 || h <= 0) return;
+	const u32 w2 = (u32)c | ((u32)c << 16);
 	for (int j = 0; j < h; j++) {
 		u16* p = fb() + (y + j) * STRIDE + x;
-		for (int i = 0; i < w; i++) p[i] = c;
+		int n = w;
+		if ((uintptr_t)p & 2) { *p++ = c; n--; }      // align to a word
+		u32* q = (u32*)p;
+		for (; n >= 2; n -= 2) *q++ = w2;           // two pixels per store
+		if (n) *(u16*)q = c;
 	}
 }
 

@@ -1,9 +1,9 @@
 #include "game/hud/chud.h"
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
+#include "assets/txdfile.h"
 #include "game/hud/hudfont.h"
 #include "game/hud/hudtex.h"
 #include "game/hud/radar.h"
@@ -157,14 +157,22 @@ static void drawMoney() {
 	                                    (const GxtChar*)s, MONEY_SW);
 }
 
-static void drawWanted(int y) {
+// DrawWanted's level/flash bookkeeping, once per frame; returns the visual
+// state (0 = no stars, 1 = steady, 2/3 = flash phases) for dirty checks.
+static int updateWanted() {
 	const int lvl = player::g.wantedLevel;
-	if (lvl == 0) { s_wantedShown = 0; return; } // PC: no stars at all at 0
+	if (lvl == 0) { s_wantedShown = 0; return 0; } // PC: no stars at all at 0
 	if (lvl != s_wantedShown) {
 		if (lvl > s_wantedShown) s_wantedFlash = 0;
 		s_wantedShown = lvl;
 	}
 	s_wantedFlash++;
+	return s_wantedFlash < 60 ? 2 + (s_wantedFlash / 6) % 2 : 1;
+}
+
+static void drawWanted(int y) {
+	const int lvl = player::g.wantedLevel;
+	if (lvl == 0) return;
 	// 6 stars under the bars, evenly spaced STAR_W apart with the last
 	// quad's right edge pinned to RCOL; the newest star flashes ~5x like
 	// the original DrawWanted. y tracks the bottom of the bar block, so
@@ -184,10 +192,10 @@ static void drawWanted(int y) {
 	}
 }
 
-static void drawWeapon() {
+// weapon icon: "<name>icon" from its dspk txd; fist sprite when unarmed or
+// while the weapon sprite hasn't decoded yet (retry every 30 frames)
+static const subfb::Sprite& updateWeaponSprite() {
 	const player::Weapon& w = player::g.weapon;
-	// weapon icon: "<name>icon" from its dspk txd; fist sprite when unarmed
-	// or while the weapon sprite hasn't decoded yet (retry every 30 frames)
 	static int s_retry;
 	if (w.txd != s_weaponTxd) {
 		hudtex::freeSprite(s_weapon);
@@ -196,13 +204,19 @@ static void drawWeapon() {
 	}
 	if (w.txd && w.icon && !s_weapon.col && s_retry-- <= 0) {
 		s_retry = 30;
-		void* blob = streaming::g_models.load(streaming::g_models.find(w.txd));
-		if (blob) {
-			hudtex::decodeSprite(hudtex::find(blob, w.icon), s_weapon);
-			free(blob);
+		ds::PackEntry e;
+		if (streaming::g_models.find(w.txd, e)) {
+			mem::Scratch scratch;
+			void* blob = scratch.alloc(e.size);
+			if (blob && streaming::g_models.read(e.offset, blob, e.size))
+				hudtex::decodeSprite(hudtex::find(blob, w.icon), s_weapon);
 		}
 	}
-	const subfb::Sprite& s = (w.icon && s_weapon.col) ? s_weapon : s_fist;
+	return (w.icon && s_weapon.col) ? s_weapon : s_fist;
+}
+
+static void drawWeapon(const subfb::Sprite& s) {
+	const player::Weapon& w = player::g.weapon;
 	if (s.col) subfb::blitScaled(s, ICON_X, ICON_Y, ICON_S, ICON_S);
 
 	// ammo: "reserve-clip" (DrawAmmo: totalAmmo-clip - clip), gothic under the icon
@@ -238,31 +252,43 @@ static int drawBars() {
 	return y + 4;
 }
 
-static void drawNames() {
+// Runs both NAME_* state machines; returns true while either name is visible.
+static int s_zoneAlpha, s_vehAlpha;
+static bool updateNames() {
 	static int s_lastMs;
 	const int now = frameMs();
 	const int dt = now - s_lastMs;
 	s_lastMs = now;
-	int za = nameFsm(s_zoneState, s_zoneTimer, s_zoneFade, player::g.zoneName,
-	                 s_zoneLast, s_zoneShow, s_vehicleState, dt);
-	if (za > 0 && s_zoneShow)
+	s_zoneAlpha = nameFsm(s_zoneState, s_zoneTimer, s_zoneFade, player::g.zoneName,
+	                      s_zoneLast, s_zoneShow, s_vehicleState, dt);
+	s_vehAlpha = nameFsm(s_vehicleState, s_vehicleTimer, s_vehicleFade, player::g.vehicleName,
+	                     s_vehLast, s_vehShow, s_zoneState, dt);
+	return (s_zoneAlpha > 0 && s_zoneShow) || (s_vehAlpha > 0 && s_vehShow);
+}
+
+static void drawNames() {
+	if (s_zoneAlpha > 0 && s_zoneShow)
 		hudfont::print(hudfont::STYLE_GOTHIC, RCOL, ZONE_Y, s_zoneShow,
-		               0.55f, 0.9f, c_lightBlue, hudfont::RIGHT, 2, c_black, (u8)za);
-	int va = nameFsm(s_vehicleState, s_vehicleTimer, s_vehicleFade, player::g.vehicleName,
-	                 s_vehLast, s_vehShow, s_zoneState, dt);
-	if (va > 0 && s_vehShow)
+		               0.55f, 0.9f, c_lightBlue, hudfont::RIGHT, 2, c_black, (u8)s_zoneAlpha);
+	if (s_vehAlpha > 0 && s_vehShow)
 		hudfont::print(hudfont::STYLE_MENU, RCOL, VEHICLE_Y, s_vehShow,
-		               0.5f, 0.75f, c_green, hudfont::RIGHT, 2, c_black, (u8)va);
+		               0.5f, 0.75f, c_green, hudfont::RIGHT, 2, c_black, (u8)s_vehAlpha);
 }
 
 // ---- lifecycle ---------------------------------------------------------------
 
-bool init() {
+// Driven by the loading screen, one piece per call: fonts (2 atlas decodes),
+// then radar + sprites. hud::draw only shows the game HUD once it is done,
+// so none of this work can land in the middle of a frame anymore.
+static int s_initStep;
+
+bool initStep() {
 	if (s_ok) return true;
-	// the GAME screen is the default now, so init runs while the frontend is
-	// still up — wait for the pack (the loadscreen opens it) or the radar
-	// would latch an empty tile cache forever
-	if (!streaming::g_models.isOpen()) return false;
+	if (s_initStep == 0) {
+		if (!hudfont::initStep()) return false;
+		s_initStep = 1;
+		return false;
+	}
 	c_bg = RGB15(10, 14, 22) | BIT(15);
 	c_red = rgb(180, 25, 29);
 	c_green = rgb(54, 104, 44);
@@ -272,26 +298,86 @@ bool init() {
 	c_gold = rgb(144, 98, 16);
 	c_cream = rgb(226, 192, 99);
 	c_black = rgb(0, 0, 0);
-	if (!hudfont::init()) return false;
 	radar::init();
-	void* hud = hudtex::readFile("nitro:/models/hud.txd");
-	if (hud) {
-		hudtex::decodeSprite(hudtex::find(hud, "fist"), s_fist);
-		free(hud);
+	TxdFile hud;
+	if (hud.open("nitro:/models/hud.txd")) {
+		mem::Scratch scratch;
+		hudtex::decodeSprite(hud.load("fist", scratch), s_fist);
 	}
 	s_ok = true;
 	return true;
 }
 
+bool ready() { return s_ok; }
+
+// ---- dirty-region drawing ----------------------------------------------------
+// The backbuffer persists between frames (it is only ever DMA'd out), so only
+// what changed is repainted: the radar box every frame (it moves), the other
+// blocks when a hash of what they show changes. Text was ~80% of the old
+// full-redraw cost and changes about once per game minute.
+struct Region { int x, y, w, h; u32 sig; bool valid; };
+static const int RADAR_BOX_X1 = 120;                              // radar box: x < 120, y >= 76
+static Region s_radarBox = { 0, 76, RADAR_BOX_X1, subfb::H - 76, 0, false };
+static Region s_statsBox = { 124, 0, subfb::W - 124, 128, 0, false };
+static Region s_weaponBox = { 0, 0, 100, 76, 0, false };
+static Region s_namesBox = { RADAR_BOX_X1, 148, subfb::W - RADAR_BOX_X1, subfb::H - 148, 0, false };
+static bool s_namesShown;
+
+static u32 mix(u32 h, u32 v) { return (h ^ v) * 0x01000193u; }
+
+// Clears the region when its content signature changed; true = repaint it.
+static bool dirty(Region& r, u32 sig) {
+	if (r.valid && r.sig == sig) return false;
+	r.sig = sig;
+	r.valid = true;
+	subfb::rect(r.x, r.y, r.w, r.h, c_bg);
+	return true;
+}
+
+void invalidate() {
+	s_radarBox.valid = s_statsBox.valid = s_weaponBox.valid = s_namesBox.valid = false;
+	s_namesShown = true;
+	if (s_ok) subfb::clear(c_bg);
+}
+
 void draw() {
-	subfb::clear(c_bg);
+	// radar: map + rim + sprites, cleared and redrawn every frame
+	subfb::rect(s_radarBox.x, s_radarBox.y, s_radarBox.w, s_radarBox.h, c_bg);
 	radar::draw();
-	drawClock();
-	drawMoney();
-	drawWanted(drawBars());
-	drawWeapon();
-	drawNames();
-	// fps counter in the empty corner the round radar leaves
+
+	// stats column: clock, money, bars, wanted stars
+	const player::State& p = player::g;
+	const int flash = updateWanted();
+	u32 sig = 0x811C9DC5u;
+	sig = mix(sig, player::g_clockH * 60 + player::g_clockM);
+	sig = mix(sig, (u32)p.money);
+	sig = mix(sig, (u32)(p.health * 16.0f)); sig = mix(sig, (u32)p.maxHealth);
+	sig = mix(sig, (u32)(p.armour * 16.0f)); sig = mix(sig, (u32)p.maxArmour);
+	sig = mix(sig, (u32)(p.breath * 16.0f)); sig = mix(sig, (u32)p.maxBreath);
+	sig = mix(sig, (u32)p.wantedLevel); sig = mix(sig, (u32)flash);
+	if (dirty(s_statsBox, sig)) {
+		drawClock();
+		drawMoney();
+		drawWanted(drawBars());
+	}
+
+	// weapon icon + ammo
+	const subfb::Sprite& icon = updateWeaponSprite();
+	sig = mix(mix(mix(0x811C9DC5u, (u32)(uintptr_t)icon.col), (u32)p.weapon.total), (u32)p.weapon.clip);
+	sig = mix(sig, (u32)(uintptr_t)p.weapon.txd);
+	if (dirty(s_weaponBox, sig)) drawWeapon(icon);
+
+	// zone / vehicle names: repainted every frame while fading or shown (long
+	// names spill into the radar box, which was just cleared), once more to
+	// erase them
+	const bool shown = updateNames();
+	if (shown || s_namesShown) {
+		subfb::rect(s_namesBox.x, s_namesBox.y, s_namesBox.w, s_namesBox.h, c_bg);
+		drawNames();
+	}
+	s_namesShown = shown;
+
+	// fps counter in the empty corner the round radar leaves (radar box)
 	char fb[8];
 	snprintf(fb, sizeof fb, "%lu", timing::fps());
 	hudfont::print(hudfont::STYLE_GOTHIC, 5, 178, (const GxtChar*)fb,
