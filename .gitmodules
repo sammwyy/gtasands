@@ -1,0 +1,3 @@
+[submodule "third_party/gta-reversed"]
+	path = third_party/gta-reversed
+	url = https://github.com/gta-reversed/gta-reversed.git

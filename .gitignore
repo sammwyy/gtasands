@@ -1,0 +1,12 @@
+/build/
+*.nds
+*.elf
+*.map
+/compile_commands.json
+/.cache/
+
+# original PC game files (copyrighted, copied locally from the Steam install)
+/game/
+
+# generated from game/ by tools/build_assets.sh
+/nitrofs/
