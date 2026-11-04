@@ -12,6 +12,7 @@
 #include "game/text/gxt.h"
 #include "platform/fs.h"
 #include "platform/input.h"
+#include "hud/hud.h"
 #include "platform/timing.h"
 #include "render/sprite2d.h"
 
@@ -86,6 +87,8 @@ void CMenuManager::loadAllTextures() {
 		s_font1 = tex::loadFromTxd(fd, "font1");
 	}
 	m_bTexturesLoaded = s_font1 && s_font2;
+	int f1 = s_font1 ? s_font1->id : 0, f2 = s_font2 ? s_font2->id : 0;
+	hud::log("fe tex: %d loaded, font1=%d font2=%d", tex::loadedCount(), f1, f2);
 }
 
 void CMenuManager::unloadTextures() { tex::clear(); }

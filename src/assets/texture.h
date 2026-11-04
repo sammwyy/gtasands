@@ -21,5 +21,6 @@ Texture* load(const void* blob);
 Texture* loadFromTxd(const void* dtxd, const char* name);
 void unload(Texture* t);
 void clear();
+int loadedCount();
 
 }

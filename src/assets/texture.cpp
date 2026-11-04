@@ -4,7 +4,7 @@
 
 namespace tex {
 
-static Texture pool[24];
+static Texture pool[40];
 
 Texture* load(const void* blob) {
 	const ds::TexHeader* h = (const ds::TexHeader*)blob;
@@ -18,7 +18,7 @@ Texture* load(const void* blob) {
 	if (glGenTextures(1, &t->id) != 1) return nullptr;
 	glBindTexture(0, t->id);
 	const u8* texels = (const u8*)h + sizeof(ds::TexHeader);
-	const u8* pal = texels + (h->texelBytes + 3 & ~3);
+	const u8* pal = texels + ((h->texelBytes + 3) & ~3);
 	if (glTexImage2D(0, 0, (GL_TEXTURE_TYPE_ENUM)h->format, h->width, h->height, 0,
 	                 TEXGEN_TEXCOORD | (h->flags & ds::TEX_COLOR0_TRANSPARENT ? GL_TEXTURE_COLOR0_TRANSPARENT : 0), texels) == 0) {
 		glDeleteTextures(1, &t->id);
@@ -52,6 +52,12 @@ void unload(Texture* t) {
 
 void clear() {
 	for (Texture& t : pool) unload(&t);
+}
+
+int loadedCount() {
+	int n = 0;
+	for (Texture& t : pool) n += t.id != 0;
+	return n;
 }
 
 }
