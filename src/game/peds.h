@@ -53,9 +53,13 @@ void draw(const View& v);
 void vblank();            // ped model texture uploads
 
 // --- interactions (the player / vehicles call these) ---
-// CTaskSimpleFight::FightHitPed: the strike of a melee move from (x, y, z)
-// facing `heading` reaches `range` m. True if a ped took it.
-bool meleeHit(float x, float y, float z, float heading, float range, int weaponType, bool knockDown);
+// CTaskSimpleFight::FightHitPed: the strike of melee.dat move `move`
+// (melee::Move) from (x, y, z) facing `heading` reaches `range` m. Standing
+// moves only find standing peds, MOVE_GROUND only peds on the floor. True if a
+// ped took it.
+bool meleeHit(float x, float y, float z, float heading, float range, int weaponType, int move);
+// A ped lying on the floor in front (CTaskSimpleFight::FindTargetOnGround).
+bool downedInFront(float x, float y, float z, float heading, float range);
 // CWeapon::DoBulletImpact on peds: the first ped crossed by a -> b takes the
 // shot; b is moved to the hit. True on a hit.
 bool bulletHit(const float a[3], float b[3], int weaponType);

@@ -60,6 +60,8 @@ void pose(const Clip* clips, int n);
 float clipPhase(const char* name);
 // A non-looping clip has reached its last tick.
 bool clipEnded(const char* name);
+// Play head of a playing clip in 1/60 s ticks, -1 when not in the pose.
+int clipTime(const char* name);
 
 // Advances every playing clip by dt60 ticks (1/60 s) and accumulates the
 // extracted root motion, weighted by each clip's blend.

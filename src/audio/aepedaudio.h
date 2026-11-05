@@ -24,7 +24,7 @@ void landing(bool collapse, uint8_t surface, const Pos& p);
 void swing(int weaponType, const Pos& p);
 
 // CAEPedSpeechAudioEntity pain contexts the player raises (gPainSpeechLookup, CARL)
-enum Pain : uint8_t { PAIN_CJ_BOXING, PAIN_CJ_HIGH_FALL };
+enum Pain : uint8_t { PAIN_CJ_BOXING, PAIN_CJ_HIGH_FALL, PAIN_CJ_GENERIC_HIGH, PAIN_CJ_GENERIC_LOW, PAIN_CJ_DEATH };
 void sayPain(Pain ctx, const Pos& p);
 
 // The generic ped voices of PAIN_A_MALE / PAIN_A_FEMALE (gPainSpeechLookup

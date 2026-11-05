@@ -102,6 +102,11 @@ bool ended(const Set& s, const char* name) {
 
 bool playing(const Set& s, const char* name) { return findSlot(s, ds::fnv1a(name)) >= 0; }
 
+int time(const Set& s, const char* name) {
+	const int k = findSlot(s, ds::fnv1a(name));
+	return k < 0 ? -1 : (int)s.slots[k].anim.time;
+}
+
 // cj::advance: weighted root deltas, the end key closes a looping seam
 void advance(Set& s, const mdl::Model* skel, int dt60) {
 	s.rootX = s.rootY = 0.0f;

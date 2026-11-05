@@ -410,7 +410,13 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   attack, a cop nearby gives a star), aimed at (hands up / flee / attack), acquaintances (Ballas + Vagos hate CJ, Grove
   respect him, gangs fight each other within 10 m, cops chase while wanted), damage response by ped type + temper/fear,
   gang mates join, witnesses of a death flee. AI LOD: peds off screen and away from CJ think every 2nd / 4th frame.
-- **Interactions**: `player.cpp` calls `peds::meleeHit` at phase 0.3 of each punch (3rd move knocks down),
+- **Melee** (`game/melee.h`, melee.dat UNARMED_1 for CJ and the peds): FightA_1/2/3 (+ FightA_G on a body on the
+  floor), strike at the move's hit frame, a press during a move queues the next one at its chain frame, damage
+  6/9/15/25 (peds x attackStrength). Victims (peds and CJ, CTaskSimpleBeHit): HitA_n of the attacker's move from the
+  front, HIT_L/back/R otherwise, the 3rd move knocks down (KO_skid_* + getup / getup_front), FLOOR_hit(_f) when kicked
+  down, KO_* death. CJ: `player::meleeHitBy` (ACT_BEHIT / ACT_DOWN / ACT_GETUP / ACT_DEAD, controls locked) with his
+  PAIN_A_CARL generic low / high / death voice; `player::isDown()` makes peds kick.
+- **Interactions**: `player.cpp` calls `peds::meleeHit` at each move's hit frame (`peds::downedInFront` picks the kick),
   `peds::bulletHit` before `veh::bulletHit` (headshots x3), `peds::gunShot`, `peds::pushPlayer` in collide();
   `veh::pushPed(.., skip, &hit)` per ped (CPed::KillPedWithCar by speed), `peds::explosion` from BlowUpCar. CJ takes ped
   damage through `player::takeDamage` (armour first); CWanted chaos (`player::registerCrime`, ReportCrimeNow multipliers,

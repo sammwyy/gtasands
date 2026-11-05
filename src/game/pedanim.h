@@ -37,6 +37,7 @@ void pose(Set& s, const mdl::Model* skel, const cj::Clip* clips, int n, int dt60
 float phase(const Set& s, const char* name);   // -1 when not playing
 bool ended(const Set& s, const char* name);
 bool playing(const Set& s, const char* name);
+int time(const Set& s, const char* name);       // play head in 1/60 s ticks, -1 when not playing
 void advance(Set& s, const mdl::Model* skel, int dt60);
 // Blends the live slots into bone world matrices (numBones x 12).
 void evaluate(Set& s, const mdl::Model* skel, s32* world);

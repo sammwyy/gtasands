@@ -126,6 +126,12 @@ void explosionDamage(float x, float y, float z, float damage);
 void hitByVehicle(float vx, float vy, float damage);   // m/s of the car
 // CPed::InflictDamage on CJ from a ped's fist / bullet (armour first).
 void takeDamage(float damage);
+// CTaskSimpleFight::FightHitPed on CJ: melee.dat move `move` (melee::Move) from
+// a ped at (fx, fy): damage, the be-hit anim (HitA_n from the front, HIT_L /
+// back / R), knock-down + getup on the combo's last move, FLOOR_hit while down,
+// CJ's pain voice; death (KO_*) when it empties the health.
+void meleeHitBy(float fx, float fy, int move, float damage);
+bool isDown();   // knocked down / getting up / dead: peds kick instead of punching
 // CWanted::RegisterCrime -> ReportCrimeNow multipliers: chaos points, stars at
 // 50 / 180 / 550 / 1200 / 2400 / 4600 (UpdateWantedLevel), one point lost per
 // second without police within 18 m (CWanted::Update).

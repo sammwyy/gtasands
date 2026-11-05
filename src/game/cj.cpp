@@ -540,6 +540,11 @@ bool clipEnded(const char* name) {
 	return !p.loop && p.time >= p.duration;
 }
 
+int clipTime(const char* name) {
+	const int s = findSlot(name);
+	return s < 0 ? -1 : (int)s_slots[s].anim.time;
+}
+
 const char* animName() {
 	int best = -1;
 	for (int i = 0; i < SLOTS; i++)

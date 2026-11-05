@@ -16,6 +16,7 @@
 #ifdef GTASADS_DEBUG
 #include "audio/aehardware.h"
 #include "audio/audioengine.h"
+#include "game/cj.h"
 #include "game/collision.h"
 #include "game/timecycle.h"
 #include "game/weather.h"
@@ -278,8 +279,8 @@ static void pedTest(int f) {
 	auto log = [&](const char* what) {
 		if (!out) return;
 		const peds::Stats& ps = peds::stats();
-		fprintf(out, "%4d %-6s cj=%.2f,%.2f hp=%d $%d wanted=%d live=%u drawn=%u upd=%lu draw=%lu fps=%lu |", f, what,
-		        player::g.x, player::g.y, (int)player::g.health, player::g.money, player::g.wantedLevel, ps.live, ps.drawn,
+		fprintf(out, "%4d %-6s cj=%.2f,%.2f hp=%d anim=%s $%d wanted=%d live=%u drawn=%u upd=%lu draw=%lu fps=%lu |", f, what,
+		        player::g.x, player::g.y, (int)player::g.health, cj::animName(), player::g.money, player::g.wantedLevel, ps.live, ps.drawn,
 		        (unsigned long)ps.updateUs, (unsigned long)ps.drawUs, timing::fps());
 		for (int i = 0; i < peds::MAX; i++) {
 			peds::Info in;
@@ -306,7 +307,7 @@ static void pedTest(int f) {
 		peds::debugPlace(a, player::g.x, player::g.y + 1.0f, player::g.z, 3.1416f);
 		peds::debugPlace(b, player::g.x + 2.0f, player::g.y + 7.0f, player::g.z, 3.1416f);
 	}
-	if (f > 600 && f < 1200 && f % 20 == 0) log(f < 760 ? "punch" : f < 900 ? "after" : "shoot");
+	if (f > 600 && f < 1200 && (f % 20 == 0 || (f > 640 && f < 900 && f % 5 == 0))) log(f < 760 ? "punch" : f < 900 ? "after" : "shoot");
 	if (f == 640) video::requestCapture("fat:/gtasads_shot6.dscr");
 	for (int k = 0; k < 3; k++) {
 		if (f == 650 + k * 22) input::debugHold(KEY_A);

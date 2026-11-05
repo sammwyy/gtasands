@@ -150,6 +150,9 @@ struct PainCtx { uint16_t first, last; uint16_t repeatMs; float volume; };
 static const PainCtx k_pain[] = {
 	{ 0, 13, 3000, 0.0f },    // CTX_PAIN_CJ_BOXING
 	{ 64, 78, 3000, 0.0f },   // CTX_PAIN_CJ_HIGH_FALL
+	{ 87, 100, 500, 0.0f },   // CTX_PAIN_CJ_GENERIC_HIGH (knocked down)
+	{ 101, 121, 500, 0.0f },  // CTX_PAIN_CJ_GENERIC_LOW (CTaskSimpleBeHit: Say(CTX_GLOBAL_PAIN_LOW))
+	{ 25, 33, 0, 0.0f },      // CTX_PAIN_CJ_DEATH
 };
 static uint32_t s_lastPain[sizeof k_pain / sizeof k_pain[0]];
 
@@ -157,8 +160,8 @@ void sayPain(Pain ctx, const Pos& p) {
 	const PainCtx& c = k_pain[ctx];
 	const uint32_t now = ae::timeMs();
 	if (s_lastPain[ctx] && now - s_lastPain[ctx] < c.repeatMs) return;
-	// one voice at a time (a speech slot)
-	if (aesound::playing(ae::AE_UNDEFINED, aesound::OWNER_SPEECH)) return;
+	// one voice of CJ's at a time (a speech slot); the street peds' own ones may overlap
+	if (aesound::playing(ae::AE_UNDEFINED, aesound::OWNER_SPEECH) >= 2) return;
 	const uint16_t id = (uint16_t)ae::randInt(c.first, c.last);
 	if (aebank::find(ae::BANK_PAIN_A_CARL, id) < 0) {
 		// speech is streamed in per line on PC too; the next one will be there

@@ -10,6 +10,7 @@
 #include "game/cj.h"
 #include "game/collision.h"
 #include "game/debugopts.h"
+#include "game/melee.h"
 #include "game/pad.h"
 #include "game/pedmove.h"
 #include "game/peds.h"
@@ -155,13 +156,18 @@ static bool s_hungryTold;
 static pedmove::State s_move;    // CJ's locomotion (move blend, phases, clip weights)
 static const pedmove::PoseApi k_cjPose = { cj::pose, cj::clipPhase, cj::clipEnded };
 
-enum Action { ACT_NONE, ACT_LAUNCH, ACT_GLIDE, ACT_LAND, ACT_PUNCH };
+// ACT_BEHIT: CTaskSimpleBeHit, ACT_DOWN / ACT_GETUP: CTaskComplexFallAndGetUp,
+// ACT_DEAD: CTaskComplexDie (held until the WASTED respawn)
+enum Action { ACT_NONE, ACT_LAUNCH, ACT_GLIDE, ACT_LAND, ACT_PUNCH, ACT_BEHIT, ACT_DOWN, ACT_GETUP, ACT_DEAD };
 static Action s_action;
 static int s_combo;
 static float s_jumpVX, s_jumpVY, s_jumpVZ;
 static int s_reload;             // frames left before the clip refills
 static int s_fireCd;
-static const char* k_punch[] = { "FightA_1", "FightA_2", "FightA_3" };
+static bool s_queued;            // CTaskSimpleFight::m_nNextCommand: the next move of the combo is asked for
+static const char* s_hitClip;    // the be-hit / knock-down / death clip
+static const char* s_getupClip;
+static int s_downSteps;          // lying on the floor before the getup
 
 static constexpr float CAM_TIMESTEP = 0.5f; // CTimer is 1 at 30 fps; we step at 60
 static constexpr float DT = 1.0f / 60.0f;
@@ -353,6 +359,7 @@ void respawn() {
 	s_camYaw = 0.0f;
 	s_action = ACT_NONE;
 	s_jumpVX = s_jumpVY = s_jumpVZ = 0.0f;
+	pedmove::reset(s_move);
 	placeOnGround();
 }
 
@@ -565,32 +572,64 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 	if (s_fireCd > 0) s_fireCd--;
 
 	if (s_action == ACT_PUNCH) {
-		const char* name = k_punch[s_combo];
-		const float ph = cj::clipPhase(name);
-		// CTaskSimpleFight: the swing sound as the strike comes through, CJ's
-		// boxing grunt with it (the speech context's 3 s repeat time)
-		if (!s_swung && ph >= 0.2f) {
+		// CTaskSimpleFight with melee.dat's UNARMED_1: the strike lands at the
+		// move's hit frame, a press during the move queues the next one, which
+		// starts at the chain frame (FightA_1 -> 2 -> 3; FightA_G alone)
+		const melee::Info& mv = melee::k_unarmed[s_combo];
+		const int t = cj::clipTime(mv.clip);
+		if (!s_swung && t >= melee::hitTicks(s_combo) - 4) {
 			s_swung = true;
 			aeped::swing(s_slots[s_slot].type, pedPos());
 			aeped::sayPain(aeped::PAIN_CJ_BOXING, pedPos());
 		}
-		// the fist / weapon arrives: whoever stands in front takes it, the
-		// third move of the combo knocks down
-		if (!s_struck && ph >= 0.3f) {
+		if (!s_struck && t >= melee::hitTicks(s_combo)) {
 			s_struck = true;
-			peds::meleeHit(g.x, g.y, g.z, g.heading, 1.3f, s_slots[s_slot].type, s_combo == 2);
+			peds::meleeHit(g.x, g.y, g.z, g.heading, melee::REACH, s_slots[s_slot].type, s_combo);
 		}
-		if (attackDown && melee && ph >= 0.45f && s_combo < 2) {
+		if (attackDown && melee && s_combo < melee::MOVE_HIT_3) s_queued = true;
+		const bool ended = t < 0 || cj::clipEnded(mv.clip);
+		if (s_queued && s_struck && (t >= melee::chainTicks(s_combo) || ended)) {
 			s_combo++;
-			s_swung = s_struck = false;
+			s_queued = s_swung = s_struck = false;
 			// Fight clips carry the authored lunge on the root (FIGHT_* are
 			// CAN_EXTRACT_VELOCITY). Extracting it moves the ped for real.
-			poseOne(k_punch[s_combo], false, true, true);
-		} else if (ph < 0.0f || cj::clipEnded(name)) {
+			poseOne(melee::k_unarmed[s_combo].clip, false, true, true);
+		} else if (ended) {
 			s_action = ACT_NONE;
 		} else {
-			poseOne(name, false, true, false);
+			poseOne(mv.clip, false, true, false);
 		}
+		return;
+	}
+	if (s_action == ACT_BEHIT) {
+		if (cj::clipEnded(s_hitClip) || cj::clipPhase(s_hitClip) < 0.0f) {
+			s_action = ACT_NONE;
+			pedmove::resume(s_move, false);
+		} else {
+			poseOne(s_hitClip, false, false, false);
+		}
+		return;
+	}
+	if (s_action == ACT_DOWN) {
+		// on the floor until the knock-down (or floor hit) clip ends + ~1 s
+		poseOne(s_hitClip, false, false, false);
+		if ((cj::clipEnded(s_hitClip) || cj::clipPhase(s_hitClip) < 0.0f) && ++s_downSteps > 60) {
+			s_action = ACT_GETUP;
+			poseOne(s_getupClip, false, false, true);
+		}
+		return;
+	}
+	if (s_action == ACT_GETUP) {
+		if (cj::clipEnded(s_getupClip) || cj::clipPhase(s_getupClip) < 0.0f) {
+			s_action = ACT_NONE;
+			pedmove::resume(s_move, false);
+		} else {
+			poseOne(s_getupClip, false, false, false);
+		}
+		return;
+	}
+	if (s_action == ACT_DEAD) {
+		poseOne(s_hitClip, false, false, false);
 		return;
 	}
 	if (s_action == ACT_LAUNCH) {
@@ -684,10 +723,11 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 		return;
 	}
 	if (attackDown && melee) {
+		// a ped on the floor in front gets the kick (AGROUND), else the combo starts
 		s_action = ACT_PUNCH;
-		s_combo = 0;
-		s_swung = s_struck = false;
-		poseOne(k_punch[0], false, true, true);
+		s_combo = peds::downedInFront(g.x, g.y, g.z, g.heading, melee::REACH) ? melee::MOVE_GROUND : melee::MOVE_HIT_1;
+		s_queued = s_swung = s_struck = false;
+		poseOne(melee::k_unarmed[s_combo].clip, false, true, true);
 	}
 }
 
@@ -1304,6 +1344,56 @@ void takeDamage(float damage) {
 	if (g.health < 0.0f) g.health = 0.0f;
 }
 
+bool isDown() { return s_action == ACT_DOWN || s_action == ACT_GETUP || s_action == ACT_DEAD; }
+
+static float relHeading(float fx, float fy) {
+	return wrap(atan2f(-(fx - g.x), fy - g.y) - g.heading);   // 0 = in front, > 0 on the left
+}
+
+static void dieNow(float rel) {
+	const bool front = fabsf(rel) < 0.785f, back = fabsf(rel) > 2.356f;
+	s_hitClip = front ? "KO_skid_front" : back ? "KO_skid_back" : rel > 0.0f ? "KO_spin_L" : "KO_spin_R";
+	s_action = ACT_DEAD;
+	s_jumpVX = s_jumpVY = s_jumpVZ = 0.0f;
+	pedmove::suspend(s_move);
+	aeped::sayPain(aeped::PAIN_CJ_DEATH, pedPos());
+	poseOne(s_hitClip, false, false, true);
+}
+
+void meleeHitBy(float fx, float fy, int move, float damage) {
+	if (s_action == ACT_DEAD || g.health <= 0.0f) return;
+	if (s_carTask != CT_NONE && s_carTask != CT_GOTO) { takeDamage(damage); return; }
+	if (s_carTask == CT_GOTO) endCarTask(false);
+	takeDamage(damage);
+	aeped::pedHit(pedPos());
+	const float rel = relHeading(fx, fy);
+	const bool front = fabsf(rel) < 0.785f, back = fabsf(rel) > 2.356f;
+	if (g.health <= 0.0f) { dieNow(rel); return; }
+	pedmove::suspend(s_move);
+	s_footPhase = -1.0f;
+	s_jumpVX = s_jumpVY = s_jumpVZ = 0.0f;
+	if (s_action == ACT_DOWN || s_action == ACT_GETUP) {
+		// kicked on the floor (AGROUND): FLOOR_hit lying on the back, _f face down
+		s_hitClip = !strcmp(s_getupClip, "getup") ? "FLOOR_hit" : "FLOOR_hit_f";
+		s_action = ACT_DOWN;
+		s_downSteps = 0;
+		aeped::sayPain(aeped::PAIN_CJ_GENERIC_LOW, pedPos());
+	} else if (melee::knocksDown(move)) {
+		// CTaskComplexFallAndGetUp: hit from the front = on the back
+		s_hitClip = back ? "KO_skid_back" : "KO_skid_front";
+		s_getupClip = back ? "getup_front" : "getup";
+		s_action = ACT_DOWN;
+		s_downSteps = 0;
+		aeped::sayPain(aeped::PAIN_CJ_GENERIC_HIGH, pedPos());
+	} else {
+		// CTaskSimpleBeHit::StartAnim: the attacker's combo move from the front
+		s_hitClip = front ? melee::frontHitClip(move) : back ? "HIT_back" : rel > 0.0f ? "HIT_L" : "HIT_R";
+		s_action = ACT_BEHIT;
+		aeped::sayPain(aeped::PAIN_CJ_GENERIC_LOW, pedPos());
+	}
+	poseOne(s_hitClip, false, false, true);
+}
+
 // CWanted::UpdateWantedLevel
 static void updateWanted() {
 	if (s_chaos > 4600) s_chaos = 4600;   // MaximumChaosLevel
@@ -1448,6 +1538,8 @@ void update() {
 	// WASTED, reduced: a few seconds, then back to the Grove Street spawn
 	if (g.health <= 0.0f) {
 		if (s_carTask != CT_NONE) endCarTask(true);
+		// shot / starved / blown up on foot: CTaskComplexDie (a fall finishes first)
+		if (s_action != ACT_DEAD && s_action != ACT_GLIDE) dieNow(0.0f);
 		if ((s_wastedT += (float)dv / 60.0f) > 3.0f) {
 			hud::log("wasted");
 			s_wastedT = 0.0f;

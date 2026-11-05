@@ -10,6 +10,7 @@
 #include "audio/aeweaponaudio.h"
 #include "game/collision.h"
 #include "game/debugopts.h"
+#include "game/melee.h"
 #include "game/pedanim.h"
 #include "game/peddata.h"
 #include "game/pedmodel.h"
@@ -522,8 +523,9 @@ static void attackerPos(int attacker, float& x, float& y) {
 
 // CPed::InflictDamage + CPedDamageResponseCalculator + the reactions of
 // CEventDamage (decision makers reduced to the ped type and its stats).
+// `move`: the melee.dat move of a melee hit (-1 otherwise).
 static void damage(Ped& p, float dmg, float fx, float fy, DamageKind kind, int weapon, int attacker, bool knockDown,
-                   float vx = 0.0f, float vy = 0.0f) {
+                   float vx = 0.0f, float vy = 0.0f, int move = -1) {
 	if (!alive(p)) return;
 	p.health -= dmg;
 	const float rel = wrap(headingTo(fx - p.x, fy - p.y) - p.heading);   // 0 = attacker in front, > 0 on the left
@@ -544,6 +546,7 @@ static void damage(Ped& p, float dmg, float fx, float fy, DamageKind kind, int w
 		p.health = 0.0f;
 		if (kind == DMG_BULLET) p.clip = front ? (irand(2) ? "KO_shot_front" : "KO_shot_stom") : back ? "KO_skid_back" : rel > 0.0f ? "KO_spin_L" : "KO_spin_R";
 		else p.clip = front ? "KO_skid_front" : back ? "KO_skid_back" : rel > 0.0f ? "KO_spin_L" : "KO_spin_R";
+		if (move == melee::MOVE_GROUND) p.clip = p.getup && !strcmp(p.getup, "getup_front") ? "FLOOR_hit_f" : "FLOOR_hit";
 		aeped::sayPedPain(p.female, kind >= DMG_CAR ? aeped::PAIN_PED_DEATH_HIGH : aeped::PAIN_PED_DEATH_LOW, vp);
 		p.deathFrame = s_frame;
 		p.target = TARGET_NONE;
@@ -567,15 +570,20 @@ static void damage(Ped& p, float dmg, float fx, float fy, DamageKind kind, int w
 	}
 	attackerPos(attacker, p.thx, p.thy);
 	if (attacker == TARGET_NONE) { p.thx = fx; p.thy = fy; }
-	if (knockDown || kind == DMG_CAR || kind == DMG_EXPLOSION) {
+	if (move == melee::MOVE_GROUND) {
+		// kicked while down (AGROUND): FLOOR_hit on the back, _f face down; stays down
+		p.clip = p.getup && !strcmp(p.getup, "getup_front") ? "FLOOR_hit_f" : "FLOOR_hit";
+		setTask(p, TASK_FALL);
+	} else if (knockDown || kind == DMG_CAR || kind == DMG_EXPLOSION) {
 		// CTaskComplexFallAndGetUp
 		if (kind == DMG_CAR && !front && !back) { p.clip = rel > 0.0f ? "KD_left" : "KD_right"; p.getup = "getup"; }
 		else if (back) { p.clip = "KO_skid_back"; p.getup = "getup_front"; }
 		else { p.clip = "KO_skid_front"; p.getup = "getup"; }
 		setTask(p, TASK_FALL);
 	} else {
-		// CTaskSimpleHitFront / Back / Left / Right
-		p.clip = front ? "HIT_front" : back ? "HIT_back" : rel > 0.0f ? "HIT_L" : "HIT_R";
+		// CTaskSimpleBeHit::StartAnim: the attacker's fist move from the front
+		// (HitA_1..3), else HIT_front / back / L / R
+		p.clip = front ? (move >= 0 ? melee::frontHitClip(move) : "HIT_front") : back ? "HIT_back" : rel > 0.0f ? "HIT_L" : "HIT_R";
 		setTask(p, TASK_HIT);
 	}
 	p.after = after;
@@ -586,14 +594,18 @@ static void damage(Ped& p, float dmg, float fx, float fy, DamageKind kind, int w
 	alarmOthers(p, attacker, ax, ay, false);
 }
 
-static void damageTarget(Ped& p, float dmg, DamageKind kind) {
+static void damageTarget(Ped& p, float dmg, DamageKind kind, int move = -1) {
 	if (p.target == TARGET_PLAYER) {
-		player::takeDamage(dmg);
-		if (kind == DMG_MELEE) aeped::pedHit({ player::g.x, player::g.y, player::g.z + 1.0f });
-		else aeped::bulletHitPed({ player::g.x, player::g.y, player::g.z + 1.0f });
+		if (kind == DMG_MELEE) {
+			player::meleeHitBy(p.x, p.y, move, dmg);
+		} else {
+			player::takeDamage(dmg);
+			aeped::bulletHitPed({ player::g.x, player::g.y, player::g.z + 1.0f });
+		}
 		return;
 	}
-	if (Ped* o = pedAt(p.target)) damage(*o, dmg, p.x, p.y, kind, p.weapon, indexOf(p), false);
+	if (Ped* o = pedAt(p.target))
+		damage(*o, dmg, p.x, p.y, kind, p.weapon, indexOf(p), move >= 0 && melee::knocksDown(move), 0.0f, 0.0f, move);
 }
 
 // ----------------------------------------------------------------------------
@@ -740,32 +752,44 @@ static void taskStep(Ped& p, int dt) {
 			else locomote(p, want, 0.0f, false, dt);
 			break;
 		}
-		// CTaskComplexKillPedOnFootMelee: close in, FightA_1..3, a short FIGHTIDLE
-		static const char* const k_moves[3] = { "FightA_1", "FightA_2", "FightA_3" };
+		// CTaskComplexKillPedOnFootMelee + CTaskSimpleFight::ChooseAttackAI with
+		// melee.dat's UNARMED_1: close in to RANGES, then a FightA_1 -> 2 -> 3
+		// combo (each move chained at its chain frame, the strike at its hit
+		// frame), a FIGHTIDLE pause, again; a target on the floor gets FightA_G
+		const bool down = p.target == TARGET_PLAYER ? player::isDown()
+		                                            : pedAt(p.target) && (pedAt(p.target)->task == TASK_FALL || pedAt(p.target)->task == TASK_GETUP);
 		if (p.sub == 0) {
-			if (d > 1.05f) { locomote(p, avoid(p, want, dt), d > 4.0f ? 2.0f : 1.2f, false, dt); break; }
+			if (d > melee::RANGE - 0.4f) { locomote(p, avoid(p, want, dt), d > 4.0f ? 2.0f : 1.2f, false, dt); break; }
 			p.sub = 1;
+			p.combo = down ? melee::MOVE_GROUND : melee::MOVE_HIT_1;
 			p.struck = false;
-			p.clip = k_moves[p.combo % 3];
 			p.t = 0;
 		}
 		if (p.sub == 1) {
+			const melee::Info& mv = melee::k_unarmed[p.combo];
 			pedmove::turn(p.heading, want, DT * (float)dt, true);
-			oneShot(p, p.clip, false, true, dt);
-			const float ph = pedanim::phase(p.anim, p.clip);
-			if (!p.struck && ph >= 0.35f) {
+			oneShot(p, mv.clip, false, true, dt);
+			const int at = pedanim::time(p.anim, mv.clip);
+			if (!p.struck && at >= melee::hitTicks(p.combo)) {
 				p.struck = true;
 				aeped::swing(player::WEAPON_UNARMED, voicePos(p));
-				if (d < 1.5f && fabsf(wrap(want - p.heading)) < 0.8f) {
+				const bool kick = p.combo == melee::MOVE_GROUND;
+				if (d < melee::REACH + 0.15f && fabsf(wrap(want - p.heading)) < 0.8f && kick == down) {
+					// GetStrikeDamage: the move's damage by the ped's attack strength
 					const float strength = p.stat ? p.stat->attackStrength / 20.0f : 1.0f;
-					damageTarget(p, 3.0f + 3.0f * strength, DMG_MELEE);
+					damageTarget(p, (float)mv.damage * strength, DMG_MELEE, p.combo);
 				}
 			}
-			if (clipDone(p, p.clip)) {
-				p.sub = 2;
+			const bool ended = clipDone(p, mv.clip);
+			const bool more = p.combo < melee::MOVE_HIT_3 && !down && d < melee::RANGE;
+			if (p.struck && more && (at >= melee::chainTicks(p.combo) || ended)) {
 				p.combo++;
+				p.struck = false;
 				p.t = 0;
-				p.cooldown = 15 + irand(40);
+			} else if (ended) {
+				p.sub = 2;
+				p.t = 0;
+				p.cooldown = 20 + irand(50);
 			}
 			break;
 		}
@@ -1494,22 +1518,41 @@ void draw(const View& v) {
 }
 
 // --- interactions -----------------------------------------------------------
-bool meleeHit(float x, float y, float z, float heading, float range, int weaponType, bool knockDown) {
+static bool isDown(const Ped& p) { return p.health > 0.0f && (p.task == TASK_FALL || p.task == TASK_GETUP) && p.vz == 0.0f; }
+
+// nearest ped in the strike's path: standing ones for the fist moves, lying ones for the kick
+static Ped* strikeTarget(float x, float y, float z, float heading, float range, bool ground) {
 	const float fx = -fsin(heading), fy = fcos(heading);
 	Ped* best = nullptr;
 	float bestD = range;
 	for (int i = 0; i < MAX; i++) {
 		Ped* p = pedAt(i);
-		if (!p || !alive(*p) || fabsf(p->z - z) > 1.2f) continue;
+		if (!p || !alive(*p) || isDown(*p) != ground || fabsf(p->z - z) > 1.2f) continue;
+		// a body on the floor lies about 0.8 m from its origin along its fall
 		const float dx = p->x - x, dy = p->y - y;
 		const float along = dx * fx + dy * fy, side = fabsf(dx * fy - dy * fx);
-		if (along < 0.0f || along > bestD || side > 0.6f) continue;
+		if (along < 0.0f || along > bestD || side > (ground ? 0.9f : 0.6f)) continue;
 		best = p;
 		bestD = along;
 	}
+	return best;
+}
+
+bool downedInFront(float x, float y, float z, float heading, float range) {
+	return strikeTarget(x, y, z, heading, range + 0.3f, true) != nullptr;
+}
+
+bool meleeHit(float x, float y, float z, float heading, float range, int weaponType, int move) {
+	const bool ground = move == melee::MOVE_GROUND;
+	Ped* best = strikeTarget(x, y, z, heading, ground ? range + 0.3f : range, ground);
 	if (!best) return false;
-	const bool heavy = weaponType != player::WEAPON_UNARMED && weaponType != player::WEAPON_BRASSKNUCKLE;
-	damage(*best, weaponDamage(weaponType), x, y, DMG_MELEE, weaponType, TARGET_PLAYER, knockDown || (heavy && !irand(3)));
+	// melee.dat damage for fists, weapon.dat's for melee weapons (their own
+	// combos are not ported: the fist moves carry them)
+	const bool fists = weaponType == player::WEAPON_UNARMED || weaponType == player::WEAPON_BRASSKNUCKLE;
+	float dmg = fists ? (float)melee::k_unarmed[move].damage : weaponDamage(weaponType);
+	if (weaponType == player::WEAPON_BRASSKNUCKLE) dmg *= 1.5f;
+	const bool knock = melee::knocksDown(move) || (!fists && !ground && !irand(3));
+	damage(*best, dmg, x, y, DMG_MELEE, weaponType, TARGET_PLAYER, knock, 0.0f, 0.0f, move);
 	return true;
 }
 
