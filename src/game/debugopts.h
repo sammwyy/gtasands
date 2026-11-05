@@ -26,6 +26,10 @@ struct Options {
 	int fogView = 140;       // DS view distance (m) the timecyc far clip is scaled to
 	bool weatherFx = true;   // rain / sandstorm streaks, lightning
 	bool pedLight = true;    // timecyc lighting on CJ (off = full bright)
+	// vehicles (GAME / REND tabs)
+	bool water = true;       // water.dat surfaces (game/waterlevel)
+	bool skidmarks = true;   // CSkidmarks strips
+	bool vehLights = true;   // head / tail light coronas + the headlight pool on the ground
 };
 
 extern Options opts;

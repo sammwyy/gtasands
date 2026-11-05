@@ -115,6 +115,7 @@ float camLookH();         // the current one (higher behind a car)
 // brake / reverse, R handbrake, L horn.
 int vehicleId();          // car CJ is entering / driving / leaving, -1 = on foot
 bool driving();           // sitting in it (CTaskSimpleCarDrive)
+bool hiddenInVehicle();   // RC toy driven from outside: CJ is not drawn
 void enterVehicleNow(int id);   // debug: straight into the driver seat
 void leaveVehicleNow();         // the car is gone: CJ stands at its door
 // CJ's entity matrix while attached to a car (player-local GL, origin = the

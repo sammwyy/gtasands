@@ -47,7 +47,8 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `game/weather.*` | CWeather port |
 | `game/streaming.*` | open packs (`g_models` gta3, `g_player`, `g_anim`) |
 | `game/world.*` | streamed map: DWLD sector window, map model/texture streaming, GX list compile, culling + draw (section 6b) |
-| `game/vehicledata.*`, `game/vehiclemodel.*`, `game/vehicle.*` | vehicles (section 6d): DVEH tables, model streaming + per-atomic lit GX lists, CAutomobile physics / damage / fire / explosion / debris / draw |
+| `game/vehicledata.*`, `game/vehiclemodel.*`, `game/vehicle.*`, `game/vehphys.cpp`, `game/vehicleint.h`, `game/fx.*` | vehicles (section 6d): DVEH tables, model streaming + per-atomic lit GX lists (animated parts), fixed-point physics for every type, damage / fire / explosion / debris / lights / draw |
+| `game/waterlevel.*`, `game/skidmarks.*` | CWaterLevel (water.dat polygons, level query, flat surfaces), CSkidmarks |
 | `game/collision.*` | map collision: per-model COL records streamed from world.dwld, near list, segment cast / ground probe / sphere push, debug overlay (section 6c) |
 | `game/loadscreen.*` | CLoadingScreen + resumable init jobs |
 | `game/zones.*` | info.zon -> zone GXT names |
@@ -287,14 +288,18 @@ CCollision / CColStore / CWorld::ProcessLineOfSight reduced to an on-foot player
   boxes, blue spheres, purple ped spheres, white ground hit) use it; REND: colls, outline,
   range, poly budget (`colPolys`, 5x per face with the outline).
 
-## 6d. Vehicles (`game/vehicledata.*`, `game/vehiclemodel.*`, `game/vehicle.*`, `audio/aevehicleaudio.*`)
+## 6d. Vehicles (`game/vehicledata.*`, `game/vehiclemodel.*`, `game/vehicle.*`, `game/vehphys.cpp`, `audio/aevehicleaudio.*`)
 
-CVehicleModelInfo / cHandlingDataMgr / CAutomobile / CPhysical / CDamageManager / CAEVehicleAudioEntity, reduced to
-cars (`car`, `mtruck`; no bikes, boats, aircraft, trailers yet), pool of 8 (`veh::MAX`).
-- **Data** (offline, `tools/gtasa/vehicles.py`, section `[vehicles]` -> `data/vehicles.dveh`, `ds::Veh*`):
-  vehicles.ide cars + handling.cfg already through ConvertDataToGameUnits (speeds per 1/50 s step) + carcols
-  pairs + the surface adhesion matrix (surface.dat) and per-surface group / wet grip / skidmark (surfinfo.dat).
-  Runtime keeps a 4 B index per vehicle + colour/surface tables; a 228 B VehInfo is read on demand.
+CVehicleModelInfo / cHandlingDataMgr / CAutomobile / CBike / CBoat / CHeli / CPlane / CTrain / CPhysical /
+CDamageManager / CAEVehicleAudioEntity, reduced; every IDE type spawns, pool of 8 (`veh::MAX`).
+- **Data** (offline, `tools/gtasa/vehicles.py`, section `[vehicles]` -> `data/vehicles.dveh` v2, `ds::Veh*`):
+  vehicles.ide (parsed like sscanf: commas or blanks, "dodo		dodo" has no comma) + handling.cfg through
+  ConvertDataToGameUnits (speeds per 1/50 s step) + the `!` bike / `%` boat / `$` flying lines (VehInfo `ext[15]`,
+  `fly[21]`, `extKind`, `hasFlying`) + carcols pairs + surface adhesion (surface.dat / surfinfo.dat) + the water.dat
+  polygons (`WaterPoly`, 307) + the 4 tracks*.dat loops (`TrackInfo` / `TrackNode`, 1949 nodes, cumulative length).
+  Runtime keeps a 4 B index per vehicle + colour/surface tables; a 380 B VehInfo is read on demand.
+- **Classes** (`veh::Class` from the IDE type): AUTOMOBILE (car, mtruck, quad, kart, trailer, RC), BIKE (bike, bmx),
+  BOAT (boats + the Skimmer: plane type with boat handling), HELI, PLANE, TRAIN.
 - **Models** (`vehmdl`, 4 slots, refcounted): vehicle DFFs keep `*_dam` frames (`drop_damage = false` rule,
   ratio 0.25, max 320 tris/geometry). Streamed like map models: DMDL read + textures staged (model TXD, then
   `models/generic/vehicle.txd` as txd parent, 64-entry shared cache), uploaded in `vehmdl::vblank`, then one GX
@@ -303,38 +308,71 @@ cars (`car`, `mtruck`; no bikes, boats, aircraft, trailers yet), pool of 8 (`veh
   four light slots are DIF_AMB words patched in place (`setColours`, only on change). Atomics are classified by
   frame name: chassis, wheel (one geometry drawn at the 4 wheel dummies, scaled to the IDE wheel size, left
   side turned 180 deg), components with `_ok/_dam` under their `*_dummy` hinge (doors, bonnet, boot, bumpers,
-  windscreen, wings); children follow their parent. Dummies: wheels, ped_frontseat (driver = mirrored x),
-  engine, exhaust. GX: body matrix x hinge matrix x door Rz x part-below matrix (all by the GE).
-- **Physics** (`veh::step`, inside player's 60 Hz loop, SA units with timestep 50/60): ProcessControlInputs,
-  ApplyGravity, 4 suspension lines (SetupSuspensionLines) cast with `col::castSegment`,
-  ApplySpringCollisionAlt + ApplySpringDampening, ProcessCarWheelPair / ProcessWheel (tyre adhesion from the
-  surface tables, wet roads, traction bias, handbrake), cTransmission gears + CalculateDriveAcceleration,
-  air resistance, Apply{Move,Turn}Speed, then 6-8 body spheres vs the map (`col::sphereContact`: 3D push-out +
-  impulse e=0.05 + friction) and car vs car sphere pairs. Cars > 10 m from the player (outside the collision
-  near list) are frozen; resting undriven cars sleep (m_nFakePhysics) until hit. ~0.9 ms per step for the
-  driven car (soft float).
+  windscreen, wings); children follow their parent. **Animated frames** (`vehmdl::Anim`, up to two per part:
+  outer model matrix `animM[m1]` x rotation x inner chain `animM[m2]` x rotation x `below`): forks_front /
+  handlebars (steer), wheel_front / wheel_rear (bike wheel spin), moving/static_rotor(2) (heli; moving_* shown
+  above 60% rotor speed, static_* below), moving/static_prop(2), rudder, elevator(_l/_r), aileron_l/r. Rotors and
+  props are left out of the body bounds. Dummies: wheels (bikes: wheel_front / wheel_rear frames), ped_frontseat
+  (driver = mirrored x), engine, exhaust, headlights / taillights / boat_lights (corona positions).
+- **Physics** (`game/vehphys.cpp`, fixed point `game/fx.h`: Q8.24 `fx::q` for velocities / axes / offsets /
+  coefficients, world positions Q24 in s64; `normalise` divides per component (1/len overflows for force vectors);
+  sin/cos Taylor, asin A&S, ln/exp for the flying resistance powers; hardware divider / sqrt). Every force is per
+  unit mass (`kTurn` = mass / turnMass); `publish()` writes the float `veh::Vehicle` view after every step, `pull()`
+  imports it after a debug edit. One `col::focus()` broad phase per step (the swept box) restricts the wheel line
+  casts (`col::castSegmentCu`) and body spheres (`col::sphereContactCu`) to the near instances under the vehicle.
+  - AUTOMOBILE: ProcessControlInputs, ApplyGravity, 4 suspension lines, ApplySpringCollisionAlt + Dampening,
+    ProcessCarWheelPair / ProcessWheel (surface adhesion, wet roads, traction bias, handbrake, burst tyre grip x0.4
+    and the line raised by 0.4 r), cTransmission gears + CalculateDriveAcceleration, air resistance, Apply{Move,Turn}Speed,
+    body spheres vs the map (e=0.05 + friction), vehicle vs vehicle sphere pairs.
+  - BIKE: the same wheel code on two line pairs 0.22 m either side of the centre line, the lock shrinks with speed
+    (SpeedSteer), a roll stabiliser keeps the body upright; the lean (MaxLean x steer x speed) is visual only: body,
+    rider (`attachMatrix`) rotate about the ground line.
+  - BOAT: 6 hull samples vs `water::levelCu` (buoyancy so the hull floats at percentSubmerged), keel / move / turn
+    resistance from the boat handling, ProcessBoatControl thrust + rudder at the prop point, aquaplane lift; on land
+    the body spheres carry it. Cars in deep water sink and stall.
+  - HELI / PLANE (+ Skimmer): wheels / skids roll free (no drive), rotor / prop spin-up (`v.rotor` 0..1), then
+    CVehicle::FlyingControl FLIGHTMODEL_HELI / PLANE ported term by term (thrust + fall-off, side slip, yaw/roll/pitch
+    + stabilisers, attack / form lift, hover compensation, ceiling 800 m, turn / speed resistance, speed caps).
+  - TRAIN: kinematic on the nearest tracks.dat loop (accel / brake along the track, bogie points give the axes).
+  Vehicles > 10 m from the player are frozen (outside the collision near list), resting undriven ones sleep.
+  Host harness used while porting: compile `vehphys.cpp` + `fx.cpp` with stubbed col / vehdata / water (flat
+  ground or sea), see git history of this section; it reproduced 0-100 km/h ~4.5 s (Greenwood), heli hover/climb,
+  Dodo take-off ~130 km/h, Speeder ~180 km/h.
 - **Damage**: impulse above mass/1500*25 -> health loss (collisionDamageMult*0.6) + the component at the impact
   point (front: bumper -> bonnet -> windscreen, rear: bumper -> boot, sides: doors, top: windscreen): > 150 =
-  `_dam` mesh, accumulated > 2500 = falls off (debris pool: tumbling part with gravity / ground bounce).
-  Flipped and still -> health drains. Health < 250: engine fire, 5 s burn timer (per frame, also asleep) ->
-  BlowUpCar: wrecked, dark light, jump + spin, panels fly, fireball/smoke sprites (`sky::glowTexture/
-  puffTexture`), blast damage / knock-back on CJ (inside = wasted -> respawn after 3 s), nearby cars pushed.
-- **Player** (`player.cpp` car tasks): Y near a car (driver door within 5 m) -> CT_GOTO (scripted pad stick,
-  `pad::setOverride`) -> CAR_open_LHS -> CAR_getin_LHS -> CAR_closedoor_LHS -> CT_DRIVE (CAR_sit + Drive_L/R by
-  the steer) -> Y: brakes to a stop, CAR_getout_LHS -> CAR_close_LHS. IS_LOW cars use the L variants. The clips
-  are not extracted: the ped origin stays at the door point D = seat - getin end root translation, the door
-  ratio follows the clip phase (open / close sounds on the edges). Driving: d-pad L/R steer, UP/A gas,
-  DOWN/B brake/reverse, R handbrake, L horn. Camera: Process_FollowCar-ish (velocity heading, distance from
-  the model length, look height from its top). `player::g` follows the seat; HUD shows the GXT car name.
-  On foot CJ is pushed out of car boxes (`veh::pushPed`); a moving car knocks him down.
-- **Audio** (`aeveh`, settings table `audio/aevehiclesettings.inc` generated from gVehicleAudioSettings):
-  dummy engine idle/rev crossfade, player engine ID / AC (acceleration sweep per audio gear) / CRZ / wheel
-  spin with the player bank, horn, skid loop by surface, door open/close by door type, engine start, crash
-  thumps by impulse, ped hit, windscreen, part off, explosion, fire loop.
-- **Debug**: GAME tab rows 15-22 (pick a car `<` `>`, spawn in front, enter, delete, repair, boom, flip,
-  hp250, state / suspension / damage / perf rows). `GTASADS_VEHTEST` (AGENTS.md).
-- Not done: AI traffic, passengers, bikes/boats/planes, wheel collision with peds, skidmarks, lights corona,
-  tyre bursts, siren, radio, the vehicle's own COL (body spheres come from the bounds).
+  `_dam` mesh, accumulated > 2500 = falls off (debris pool). Flipped and still -> health drains. Health < 250:
+  engine fire, 5 s burn timer -> BlowUpCar (wreck, panels fly, fireball/smoke, blast on CJ / nearby vehicles).
+  Bullets (`veh::bulletHit` from player::fireOne, along the aim, stopped by the map): a wheel sphere in the way
+  bursts the tyre (CAutomobile::BurstTyre: pop sound, squashed wheel, less grip), the body loses health.
+- **Lights / marks**: at night (20-7 h, engine on) head + tail coronas (glow sprites at the light dummies, mirrored),
+  brake lights brighter, a glow pool on the road ahead (CShadows car light, cars / bikes); `dbg::opts.vehLights`.
+  Skidmarks (`game/skidmarks`, CSkidmarks: 24 marks x 16 parts, new part every 100 ms, fade 2.5..20 s, colour by
+  surface type, <= 140 polys/frame, `dbg::opts.skidmarks`) registered by fixed / slipping wheels.
+- **Water** (`game/waterlevel`): GetWaterLevel over the water.dat polygons (bilinear quads, flat triangles, last-hit
+  cache, z = 0 outside the map square), one translucent timecyc-water-coloured quad per polygon clipped to the view
+  square (`dbg::opts.water`). In the Grove box there is only a pond at (2310, -1416); the debug spawn moves CJ to
+  the nearest water / track.
+- **Player** (`player.cpp`, `chooseStyle`): cars: Y -> walk to door -> CAR_open/getin/closedoor -> CAR_sit + Drive_L/R
+  (IS_LOW = L variants), exit with getout/close. Bikes / BMX / quads: the IDE anim group's block is opened
+  (`cj::setVehicleBlock`, bikes/bikev/bikeh/biked/bmx/choppa/mtb/wayfarer/quad.ifp), jumponL / getoffLHS (quad
+  geton_LHS / getoff_LHS) with the root extracted while the origin slides side point <-> seat, riding =
+  `<P>Ride` + Left/Right (bicycles: `<P>pedal` while pedalling). Boats / aircraft / trains: walk next to the hull and
+  sit at once (Drive_boat(_L/_R) or CAR_sit); exit steps off on a side with ground above the water. RC toys
+  (`veh::isRemote`): CJ is hidden while driving (`player::hiddenInVehicle`). Controls: cars/bikes/boats d-pad L/R
+  steer, UP/A gas, DOWN/B brake/reverse, R handbrake, L horn; helis/planes A throttle, B descend/brake, d-pad up/down
+  pitch (up = nose down), left/right roll, L/R yaw. Camera: Process_FollowCar-ish, aircraft further back + pitch.
+- **Audio** (`aeveh`, settings table `audio/aevehiclesettings.inc` from gVehicleAudioSettings): cars get the player
+  engine (ID / AC / CRZ sweeps), every other type (bikes, boats, aircraft by rotor speed, trains) the dummy engine
+  loops of its banks; BMX none. Horn, skid loop by surface, doors, engine start, crash thumps, ped hit, windscreen,
+  part off, tyre burst, explosion, fire loop.
+- **Debug**: GAME tab rows 15-23: pick within a type `<` `>`, `type<` `type>` (car, bike, bmx, quad, boat, heli,
+  plane, train, trailer, rc), spawn / rnd, model id `-10 - + +10 go` (400..611), enter (any type), del all, repair,
+  boom, flip, hp250, tyre (burst all), skid on/off, state / susp / damage+burst+lean+rotor / perf rows.
+  `GTASADS_VEHTEST` (AGENTS.md; the log line has gas / brake / handbrake / skid and the frame sections).
+- **Cost** (DEBUG -Og, melonDS, Greenwood + a second awake car): `veh::step` ~2 ms per call (was 3.5 ms in soft
+  float), ~1 ms of it collision queries (`step=..us(qN)` in the vehtest log). Still 15-25 fps while driving: see the
+  roadmap in AGENTS.md.
+- Not done: see AGENTS.md roadmap (vehicles).
 
 ## 7. Bottom screen
 
@@ -495,8 +533,8 @@ Streaming.cpp/StreamingInfo (model streaming), FileLoader.cpp (gta.dat, IDE, IPL
 TxdStore, Models/ (ModelInfo), Collision/ (incl. ColourSet), Animation/ (AnimManager),
 Audio/ (AEBankLoader, AESoundManager, AEPed/Weapon/WeatherAudioEntity, AmbienceTrackManager,
 AudioZones), Renderer.cpp, World.cpp, Entity/, Pools/, Camera.cpp,
-Hud.cpp, Radar.cpp, TimeCycle.cpp, Weather.cpp, Clouds.cpp, Coronas.cpp, Clock.cpp,
-`app/app_light.cpp` (lighting setup), Scripts/ (SCM VM), Core/. Vehicles: Automobile.cpp, Vehicle.cpp (ProcessWheel), Physical.cpp, cTransmission.cpp, cHandlingDataMgr.cpp,
+Hud.cpp, Radar.cpp, TimeCycle.cpp, Weather.cpp, Clouds.cpp, Coronas.cpp, Clock.cpp, Skidmarks.cpp, WaterLevel.cpp,
+`app/app_light.cpp` (lighting setup), Scripts/ (SCM VM), Core/. Vehicles: Automobile.cpp, Bike.cpp, Boat.cpp, Heli.cpp, Plane.cpp, Train.cpp, Vehicle.cpp (ProcessWheel, FlyingControl, ProcessBoatControl), Physical.cpp, cTransmission.cpp, cHandlingDataMgr.cpp,
 Audio/Entities/AEVehicleAudioEntity.cpp (section 6d). Ported so far: Clock (in player),
 TimeCycle, Weather, Clouds (sky polys + Render), Coronas (sun only), Hud, Radar, MenuManager,
 LoadingScreen, Text/Font, ClothesBuilder (CJ), parts of Ped/PlayerPed control, FileLoader

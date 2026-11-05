@@ -224,6 +224,27 @@ static Comp classify(const char* n, Variant& var, bool& dummy) {
 	return COMP_NONE;
 }
 
+// CBike::SetupModelNodes / CHeli / CPlane / CBoat frame names that animate
+struct NameAnim { const char* name; Anim anim; Vis vis; };
+static const NameAnim k_anims[] = {
+	{ "forks_front", ANIM_STEER, VIS_ALWAYS }, { "handlebars", ANIM_STEER, VIS_ALWAYS },
+	{ "wheel_front", ANIM_WHEEL_F, VIS_ALWAYS }, { "wheel_rear", ANIM_WHEEL_R, VIS_ALWAYS },
+	{ "moving_rotor", ANIM_ROTOR, VIS_FAST }, { "static_rotor", ANIM_ROTOR, VIS_SLOW },
+	{ "moving_rotor2", ANIM_ROTOR2, VIS_FAST }, { "static_rotor2", ANIM_ROTOR2, VIS_SLOW },
+	{ "moving_prop", ANIM_PROP, VIS_FAST }, { "static_prop", ANIM_PROP, VIS_SLOW },
+	{ "moving_prop2", ANIM_PROP, VIS_FAST }, { "static_prop2", ANIM_PROP, VIS_SLOW },
+	{ "rudder", ANIM_RUDDER, VIS_ALWAYS }, { "elevator", ANIM_ELEVATOR, VIS_ALWAYS },
+	{ "elevator_l", ANIM_ELEVATOR, VIS_ALWAYS }, { "elevator_r", ANIM_ELEVATOR, VIS_ALWAYS },
+	{ "aileron_l", ANIM_AILERON_L, VIS_ALWAYS }, { "aileron_r", ANIM_AILERON_R, VIS_ALWAYS },
+};
+
+static Anim animOf(const char* n, Vis& vis) {
+	vis = VIS_ALWAYS;
+	for (const NameAnim& a : k_anims)
+		if (!strncasecmp(n, a.name, 24)) { vis = a.vis; return a.anim; }
+	return ANIM_NONE;
+}
+
 static inline s32 posAt(const mdl::Geometry& g, int v, int k) {
 	const int pe = g.h->posExp;
 	return g.h->offset[k] + (pe >= 0 ? (s32)g.pos[v][k] * (1 << pe) : (s32)g.pos[v][k] >> -pe);
@@ -416,6 +437,10 @@ static bool finishLoad(Model& m) {
 		else if (!strcmp(n, "ped_frontseat")) { m.seat[0] = -p[0]; m.seat[1] = p[1]; m.seat[2] = p[2]; }
 		else if (!strcmp(n, "exhaust")) memcpy(m.exhaust, p, 12);
 		else if (!strcmp(n, "engine")) memcpy(m.engine, p, 12);
+		else if (!strcmp(n, "headlights") || (!strcmp(n, "boat_lights") && !m.hasHead)) { memcpy(m.headlight, p, 12); m.hasHead = true; }
+		else if (!strcmp(n, "taillights")) { memcpy(m.taillight, p, 12); m.hasTail = true; }
+		else if (!strcmp(n, "wheel_front")) { wheelFrame[WHEEL_FL] = wheelFrame[WHEEL_FR] = i; m.bikeWheels = true; }
+		else if (!strcmp(n, "wheel_rear")) { wheelFrame[WHEEL_RL] = wheelFrame[WHEEL_RR] = i; m.bikeWheels = true; }
 		Variant v;
 		bool dummy;
 		const Comp c = classify(n, v, dummy);
@@ -476,15 +501,49 @@ static bool finishLoad(Model& m) {
 		}
 		if (comp == COMP_WHEEL) hinge = -1;
 		const bool moving = comp >= COMP_DOOR_LF && comp <= COMP_BOOT && hinge >= 0;
+		// animated frames on the way to the root: inner (nearest) and outer
+		int animF[2] = { -1, -1 };
+		Anim animK[2] = { ANIM_NONE, ANIM_NONE };
+		Vis vis = VIS_ALWAYS;
+		for (int f = at.frame, n = 0; !moving && comp != COMP_WHEEL && f >= 0 && f < nf && n < 2; f = view->frames[f].parent) {
+			Vis fv;
+			const Anim an = animOf(sf[f].name, fv);
+			if (an == ANIM_NONE) continue;
+			if (fv != VIS_ALWAYS) vis = fv;
+			animF[n] = f;
+			animK[n++] = an;
+		}
+		if (animF[1] < 0 && animF[0] >= 0) {   // one: it is the outer
+			animF[1] = animF[0]; animK[1] = animK[0];
+			animF[0] = -1; animK[0] = ANIM_NONE;
+		}
+		if (animF[1] >= 0 && m.numAnimM + 2 > MAX_ANIM_M) animF[0] = animF[1] = -1;
+		static const float I[12] = { 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0 };
 		float below[12];
-		if (moving) {
+		p.vis = vis;
+		if (animF[1] >= 0) {
+			// outer: model space matrix; inner: its frame chain up to the outer;
+			// below: part frame chain up to the innermost anim frame
+			p.anim1 = animK[1];
+			p.m1 = (int8_t)m.numAnimM;
+			toGx(W + animF[1] * 12, m.animM[m.numAnimM++]);
+			const int stop = animF[0] >= 0 ? animF[0] : animF[1];
+			if (animF[0] >= 0) {
+				float mid[12];
+				memcpy(mid, I, sizeof mid);
+				for (int f = animF[0]; f >= 0 && f != animF[1]; f = view->frames[f].parent) mul(mid, L + f * 12, mid);
+				p.anim2 = animK[0];
+				p.m2 = (int8_t)m.numAnimM;
+				toGx(mid, m.animM[m.numAnimM++]);
+			}
+			memcpy(below, I, sizeof below);
+			for (int f = at.frame; f >= 0 && f != stop; f = view->frames[f].parent) mul(below, L + f * 12, below);
+		} else if (moving) {
 			// part frame -> hinge, excluding the hinge's own transform
-			static const float I[12] = { 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0 };
 			memcpy(below, I, sizeof below);
 			for (int f = at.frame; f >= 0 && f != hinge; f = view->frames[f].parent) mul(below, L + f * 12, below);
 			p.hinge = (int8_t)hinge;
 		} else if (comp == COMP_WHEEL) {
-			static const float I[12] = { 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0 };
 			memcpy(below, I, sizeof below);
 		} else {
 			memcpy(below, W + at.frame * 12, sizeof below);
@@ -506,7 +565,8 @@ static bool finishLoad(Model& m) {
 		if (comp == COMP_WHEEL) {
 			m.wheelPart = m.numParts;
 			wheelGeomR = (float)(hi[2] - lo[2]) * (0.5f / 4096.0f);
-		} else if (var != VAR_DAM && geo.h->numVerts) {
+		} else if (var != VAR_DAM && geo.h->numVerts && p.anim1 != ANIM_ROTOR && p.anim1 != ANIM_ROTOR2 &&
+		           p.anim1 != ANIM_PROP) {   // rotor discs / propellers would blow the body spheres up
 			const float* M = W + at.frame * 12;
 			for (int c = 0; c < 8; c++) {
 				const float q[3] = { (float)(c & 1 ? hi[0] : lo[0]) / 4096.0f, (float)(c & 2 ? hi[1] : lo[1]) / 4096.0f,

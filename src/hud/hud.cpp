@@ -199,15 +199,21 @@ static void vehTest(int f) {
 		fprintf(out, "%4d %-7s cj=%.2f,%.2f,%.2f hp=%d task=%d", f, what, player::g.x, player::g.y, player::g.z,
 		        (int)player::g.health, player::vehicleId());
 		if (v)
-			fprintf(out, " car=%.2f,%.2f,%.2f up=%.2f spd=%.1fkmh g=%u hp=%d st=%u susp=%.2f,%.2f,%.2f,%.2f contact=%u sleep=%d door=%.2f",
+			fprintf(out, " car=%.2f,%.2f,%.2f up=%.2f spd=%.1fkmh g=%u hp=%d st=%u susp=%.2f,%.2f,%.2f,%.2f contact=%u sleep=%d door=%.2f gas=%.2f brk=%.2f hb=%d skid=%.2f",
 			        v->pos[0], v->pos[1], v->pos[2], v->up[2], v->speedFwd * 180.0f, v->gear, (int)v->health, v->status,
-			        v->susp[0], v->susp[1], v->susp[2], v->susp[3], v->numContact, (int)v->asleep, v->door[0]);
+			        v->susp[0], v->susp[1], v->susp[2], v->susp[3], v->numContact, (int)v->asleep, v->door[0], v->gas, v->brake,
+			        (int)v->handbrake, v->skid);
 		const veh::Stats& vs = veh::stats();
 		const vehmdl::Stats& ms = vehmdl::stats();
-		fprintf(out, " | mdl=%u/%u tex=%u fail=%u vram=%luK lists=%luK tris=%u step=%luus draw=%luus fps=%lu polys=%d\n",
+		fprintf(out, " | mdl=%u/%u tex=%u fail=%u vram=%luK lists=%luK tris=%u step=%luus(q%lu) draw=%luus fps=%lu polys=%d",
 		        ms.ready, ms.models, ms.textures, ms.texFailed, (unsigned long)(ms.texVram >> 10),
-		        (unsigned long)(ms.listBytes >> 10), vs.polys, (unsigned long)vs.stepUs, (unsigned long)vs.drawUs,
-		        timing::fps(), renderer::polyCount());
+		        (unsigned long)(ms.listBytes >> 10), vs.polys, (unsigned long)vs.stepUs, (unsigned long)vs.queryUs,
+		        (unsigned long)vs.drawUs, timing::fps(), renderer::polyCount());
+		const world::Stats& ws = world::stats();
+		const col::Stats& cs = col::stats();
+		fprintf(out, " | 3d=%lu sim=%lu hud=%lu wu=%u wd=%u cu=%u cq=%u\n", (unsigned long)timing::sectionUs(timing::SEC_3D),
+		        (unsigned long)timing::sectionUs(timing::SEC_SIM), (unsigned long)timing::sectionUs(timing::SEC_HUD),
+		        ws.updateUs, ws.drawUs, cs.updateUs, cs.queryUs);
 	};
 	if (f == 600) {
 		player::respawn();

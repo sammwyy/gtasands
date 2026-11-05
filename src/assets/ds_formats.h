@@ -246,14 +246,25 @@ struct WorldColFace { uint16_t a, b, c; uint8_t surface, light; int16_t n[3]; ui
 // Floats are IEEE singles (read on the ARM9 with soft float, never per vertex).
 struct VehHeader {
 	uint32_t magic;          // 'DVEH'
-	uint16_t version;        // 1
+	uint16_t version;        // 2
 	uint16_t numVehicles;
 	uint16_t numColours, numSurfaces;
 	uint32_t vehOffset;      // VehInfo[numVehicles]
 	uint32_t colourOffset;   // uint8_t rgbx[numColours][4] (carcols.dat col table)
 	uint32_t surfaceOffset;  // VehSurface[numSurfaces] (surfinfo.dat order = eSurfaceType)
 	float adhesive[6][6];    // SurfaceInfos_c::m_adhesiveLimits [group B][group A]
+	uint32_t waterOffset;    // WaterPoly[numWater] (water.dat)
+	uint16_t numWater, numTracks;
+	uint32_t trackOffset;    // TrackInfo[numTracks], then TrackNode[numTrackNodes]
+	uint32_t numTrackNodes;
 };
+// CWaterLevel polygon: 3 or 4 corners (quads: 0 1 / 2 3 on a grid), x / y in
+// metres, z in cm, flags (1 visible, 2 shallow)
+struct WaterPoly { int16_t x[4], y[4], z[4]; uint8_t numVerts, flags; uint16_t pad; };
+// CTrain track (tracks.dat .. tracks4.dat): a closed loop of nodes
+struct TrackInfo { uint16_t first, count; float length; };
+struct TrackNode { int16_t x, y, z; uint16_t dist; };   // 1/8 m, cumulative distance in 1/2 m
+enum VehExt : uint8_t { VEHEXT_NONE, VEHEXT_BIKE, VEHEXT_BOAT };
 enum VehType : uint8_t {     // eVehicleType (CFileLoader::LoadVehicleObject)
 	VEH_CAR, VEH_MTRUCK, VEH_QUAD, VEH_HELI, VEH_PLANE, VEH_BOAT, VEH_TRAIN, VEH_FHELI, VEH_FPLANE,
 	VEH_BIKE, VEH_BMX, VEH_TRAILER, VEH_UNKNOWN = 0xFF
@@ -279,6 +290,20 @@ struct VehInfo {
 	float seatOffset, collisionDamageMult;          // damage mult already * 2000 / mass
 	uint32_t modelFlags, handlingFlags, value;
 	uint8_t frontLights, rearLights, animGroup, percentSubmerged;
+	uint8_t extKind;         // VehExt: what `ext` holds
+	uint8_t hasFlying;       // `fly` is valid
+	uint8_t pad[2];
+	float bikeSteerAngle;    // IDE (bikes), degrees
+	// tBikeHandlingData (after ConvertBikeDataToGameUnits): LeanFwdCOM, LeanFwdForce,
+	// LeanBakCOM, LeanBakForce, MaxLean, FullAnimLean, DesLean, SpeedSteer, SlipSteer,
+	// NoPlayerCOMz, WheelieAng, StoppieAng, WheelieSteer, WheelieStabMult, StoppieStabMult
+	// | tBoatHandlingData: ThrustY, ThrustZ, ThrustAppZ, AqPlaneForce, AqPlaneLimit,
+	// AqPlaneOffset, WaveAudioMult, MoveRes xyz, TurnRes xyz, LookLRBehindCamHeight
+	float ext[15];
+	// tFlyingHandlingData: Thrust, ThrustFallOff, Yaw, YawStab, SideSlip, Roll, RollStab,
+	// Pitch, PitchStab, FormLift, AttackLift, GearUpR, GearDownL, WindMult, MoveRes,
+	// TurnRes xyz, SpeedRes xyz
+	float fly[21];
 };
 struct VehSurface { uint8_t adhesionGroup; int8_t wetGrip; uint8_t skidmark, pad; };
 
@@ -345,7 +370,8 @@ static_assert(sizeof(WorldHeader) == 40 && sizeof(WorldModel) == 36 && sizeof(Wo
               sizeof(WorldSector) == 8 && sizeof(WorldInstance) == 32);
 static_assert(sizeof(WorldColIndex) == 12 && sizeof(WorldCol) == 24 && sizeof(WorldColSphere) == 12 &&
               sizeof(WorldColBox) == 16 && sizeof(WorldColNode) == 16 && sizeof(WorldColFace) == 16);
-static_assert(sizeof(VehHeader) == 168 && sizeof(VehInfo) == 228 && sizeof(VehSurface) == 4);
+static_assert(sizeof(VehHeader) == 184 && sizeof(VehInfo) == 380 && sizeof(VehSurface) == 4);
+static_assert(sizeof(WaterPoly) == 28 && sizeof(TrackInfo) == 8 && sizeof(TrackNode) == 8);
 static_assert(sizeof(SoundHeader) == 24 && sizeof(SfxPakBank) == 12 && sizeof(BankLookupHeader) == 12 && sizeof(StreamTrack) == 12);
 
 }

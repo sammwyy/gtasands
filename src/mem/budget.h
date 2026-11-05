@@ -54,7 +54,7 @@ constexpr int MAX_VEHICLES = 8;
 constexpr int MAX_OBJECTS = 48;
 constexpr int MAX_TEX_SLOTS = 384;        // VRAM texture slots (banks A+B+D), mostly map textures
 constexpr int MAX_ANIM_CLIPS = 64;        // resident clips across all blocks
-constexpr int MAX_ANIM_BLOCKS = 8;        // ped.ifp + fat/muscle + future vehicle/weapon blocks
+constexpr int MAX_ANIM_BLOCKS = 16;       // ped.ifp + fat/muscle + future vehicle/weapon blocks
 constexpr int RADAR_TILE_SLOTS = 16;      // 64px tiles (8 KB): worst-case 4x4 window at range ~460
 constexpr int RADAR_MIP_SLOTS = 36;       // 32px tiles (2 KB): worst-case 6x6 window at range 900
 

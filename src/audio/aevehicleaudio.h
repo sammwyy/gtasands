@@ -2,7 +2,8 @@
 
 #include <stdint.h>
 
-// CAEVehicleAudioEntity, reduced to cars (AE_CAR):
+// CAEVehicleAudioEntity, reduced (AE_CAR the full player engine, bikes / boats /
+// aircraft / trains the dummy engine loops of their banks):
 //  - dummy engine (ProcessDummyVehicleEngine / ProcessDummyStateTransition):
 //    the dummy bank's idle (1) and rev (0) loops crossfaded by speed ratio,
 //  - player engine (ProcessPlayerVehicleEngine, states ID / AC / CRZ): the
@@ -31,7 +32,7 @@ struct Params {
 };
 void update(int h, const Params& p);
 
-enum Event : uint8_t { EV_DOOR_OPEN, EV_DOOR_CLOSE, EV_START_ENGINE, EV_CRASH, EV_PED_HIT, EV_WINDSCREEN, EV_EXPLOSION, EV_PART_OFF };
+enum Event : uint8_t { EV_DOOR_OPEN, EV_DOOR_CLOSE, EV_START_ENGINE, EV_CRASH, EV_PED_HIT, EV_WINDSCREEN, EV_EXPLOSION, EV_PART_OFF, EV_TYRE_BURST };
 void event(int h, Event e, float x, float y, float z, float intensity = 0.0f);
 
 }

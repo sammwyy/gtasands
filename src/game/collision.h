@@ -59,6 +59,17 @@ bool pushSphere(float& x, float& y, float z, float r);
 // normal, its length the depth); surface = COL surface of the last face hit.
 bool sphereContact(const float c[3], float r, float out[3], uint8_t& surface);
 
+// Integer versions for the fixed-point vehicle physics: SA world in cu
+// (1/128 m). t = 16.16 fraction, p = hit point (cu), n = world normal (4.12).
+struct HitCu { int32_t t; int32_t p[3]; int32_t n[3]; uint8_t surface, light; };
+bool castSegmentCu(const int32_t a[3], const int32_t b[3], HitCu& hit);
+bool sphereContactCu(const int32_t c[3], int32_t rc, int32_t out[3], uint8_t& surface);
+// Restricts the following queries to the near instances overlapping the
+// world box [lo, hi] (cu) until unfocus(): one broad phase per vehicle step
+// instead of one per wheel line / body sphere.
+void focus(const int32_t lo[3], const int32_t hi[3]);
+void unfocus();
+
 // REND "collision" overlay: near volumes within dbg::opts.colRange as
 // outlined wireframe on top of the scene (+ the ped spheres and ground hit).
 // Call with the view matrix loaded; origin = SA point at the GL origin.

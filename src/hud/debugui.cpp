@@ -218,17 +218,57 @@ static void pageMem() {
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 
-// GAME tab, rows 15..23: vehicles (spawn from vehicles.dveh, enter, damage)
+// GAME tab, rows 15..23: vehicles (spawn from vehicles.dveh by type or model id, enter, damage)
+enum VCat { VC_CAR, VC_BIKE, VC_BMX, VC_QUAD, VC_BOAT, VC_HELI, VC_PLANE, VC_TRAIN, VC_TRAILER, VC_RC, VC_COUNT };
+static const char* const k_vcat[VC_COUNT] = { "car", "bike", "bmx", "quad", "boat", "heli", "plane", "train", "trailer", "rc" };
 static int s_vehPick = -1;
 static int s_lastCar = -1;
+static int s_vcat = VC_CAR;
+static int s_spawnId = 400;
 
-static int nextDrivable(int from, int dir) {
+static int catOf(int i) {
+	const int id = vehdata::modelId(i);
+	if (veh::isRemote(id)) return VC_RC;
+	switch (vehdata::type(i)) {
+	case ds::VEH_BIKE: return VC_BIKE;
+	case ds::VEH_BMX: return VC_BMX;
+	case ds::VEH_QUAD: return VC_QUAD;
+	case ds::VEH_BOAT: return VC_BOAT;
+	case ds::VEH_HELI: case ds::VEH_FHELI: return VC_HELI;
+	case ds::VEH_PLANE: case ds::VEH_FPLANE: return VC_PLANE;
+	case ds::VEH_TRAIN: return VC_TRAIN;
+	case ds::VEH_TRAILER: return VC_TRAILER;
+	default: return VC_CAR;
+	}
+}
+
+static int nextOfCat(int from, int dir, int cat) {
 	const int n = vehdata::count();
 	for (int k = 1; k <= n; k++) {
 		const int i = ((from + dir * k) % n + n) % n;
-		if (vehdata::drivable(i)) return i;
+		if (vehdata::spawnable(i) && catOf(i) == cat) return i;
 	}
 	return -1;
+}
+
+// in front of CJ (boats: the nearest water, trains: the nearest track; CJ is
+// moved next to them), side on
+static void spawnHere(int index) {
+	if (index < 0) return;
+	player::State& p = player::g;
+	const int cat = catOf(index);
+	const float d = cat == VC_PLANE ? 14.0f : cat == VC_HELI || cat == VC_TRAIN ? 10.0f : cat == VC_BOAT ? 8.0f : 6.0f;
+	float x = p.x - sinf(p.heading) * d, y = p.y + cosf(p.heading) * d, z = p.z + 1.0f;
+	float sx, sy, sz;
+	if (veh::spawnPoint(index, x, y, sx, sy, sz)) {
+		if ((sx - x) * (sx - x) + (sy - y) * (sy - y) > 25.0f) {
+			p.x = sx + 6.0f; p.y = sy; p.z = sz + 2.0f;   // next to it; the collision streams in first
+			player::placeOnGround();
+		}
+		x = sx; y = sy; z = sz + 0.5f;
+	}
+	const int id = veh::spawn(index, x, y, z, p.heading + 1.5708f);
+	if (id >= 0) s_lastCar = id;
 }
 
 static void pageVehicles() {
@@ -237,21 +277,39 @@ static void pageVehicles() {
 		blank(16, 23);
 		return;
 	}
-	if (s_vehPick < 0) s_vehPick = vehdata::findModel(492) >= 0 ? vehdata::findModel(492) : nextDrivable(0, 1);
+	if (s_vehPick < 0) s_vehPick = vehdata::findModel(492) >= 0 ? vehdata::findModel(492) : nextOfCat(0, 1, VC_CAR);
 	ds::VehInfo info;
 	const bool have = vehdata::read(s_vehPick, info);
-	line(15, "\x1b[33mcar\x1b[39m %-9.9s %d", have ? info.model : "?", have ? info.modelId : 0);
-	int c = 20;
-	if (button(15, c, "<")) s_vehPick = nextDrivable(s_vehPick, -1);
-	if (button(15, c, ">")) s_vehPick = nextDrivable(s_vehPick, 1);
+	line(15, "\x1b[33m%-5s\x1b[39m %-9.9s %d", k_vcat[s_vcat], have ? info.model : "?", have ? info.modelId : 0);
+	int c = 21;
+	if (button(15, c, "<")) s_vehPick = nextOfCat(s_vehPick, -1, s_vcat);
+	if (button(15, c, ">")) s_vehPick = nextOfCat(s_vehPick, 1, s_vcat);
 	put(16, 0, "");
 	c = 0;
-	const player::State& p = player::g;
-	if (button(16, c, "spawn")) {
-		// in front of CJ, side on
-		const float h = p.heading;
-		const int id = veh::spawn(s_vehPick, p.x - sinf(h) * 6.0f, p.y + cosf(h) * 6.0f, p.z + 1.0f, h + 1.5708f);
-		if (id >= 0) s_lastCar = id;
+	const bool prev = button(16, c, "type<");
+	const bool next = button(16, c, "type>");
+	if (prev || next) {
+		s_vcat = (s_vcat + (next ? 1 : VC_COUNT - 1)) % VC_COUNT;
+		const int i = nextOfCat(-1, 1, s_vcat);
+		if (i >= 0) s_vehPick = i;
+	}
+	if (button(16, c, "spawn")) spawnHere(s_vehPick);
+	if (button(16, c, "rnd")) {
+		for (int k = rand() % 8 + 1; k > 0; k--) s_vehPick = nextOfCat(s_vehPick, 1, s_vcat);
+		spawnHere(s_vehPick);
+	}
+	line(17, "id %3d", s_spawnId);
+	c = 7;
+	if (button(17, c, "-10")) s_spawnId -= 10;
+	if (button(17, c, "-")) s_spawnId -= 1;
+	if (button(17, c, "+")) s_spawnId += 1;
+	if (button(17, c, "+10")) s_spawnId += 10;
+	if (s_spawnId < 400) s_spawnId = 611;
+	if (s_spawnId > 611) s_spawnId = 400;
+	if (button(17, c, "go")) {
+		const int i = vehdata::findModel(s_spawnId);
+		if (i >= 0) { s_vehPick = i; s_vcat = catOf(i); spawnHere(i); }
+		else hud::log("\x1b[33mno vehicle %d\x1b[39m", s_spawnId);
 	}
 	int cur = player::vehicleId() >= 0 ? player::vehicleId() : s_lastCar;
 	if (!veh::get(cur)) {
@@ -259,34 +317,36 @@ static void pageVehicles() {
 		for (int i = 0; i < veh::MAX && cur < 0; i++)
 			if (veh::get(i)) cur = i;
 	}
-	if (button(16, c, "enter") && cur >= 0) player::enterVehicleNow(cur);
-	if (button(16, c, "del all")) { veh::removeAll(); s_lastCar = -1; }
+	put(18, 0, "");
+	c = 0;
+	if (button(18, c, "enter") && cur >= 0) player::enterVehicleNow(cur);
+	if (button(18, c, "del all")) { veh::removeAll(); s_lastCar = -1; }
+	if (button(18, c, "repair")) veh::repair(cur);
+	if (button(18, c, "boom")) veh::blowUp(cur);
 	const veh::Vehicle* v = veh::get(cur);
 	if (v) {
 		static const char* const k_st[] = { "-", "phys", "PLAYER", "WRECK" };
-		line(17, "#%d %-6s hp%4d %3dkm/h g%d", cur, k_st[v->status & 3], (int)v->health,
-		     (int)(fabsf(v->speedFwd) * 50.0f * 3.6f), v->gear);
-		line(18, "susp %.2f %.2f %.2f %.2f %s", v->susp[0], v->susp[1], v->susp[2], v->susp[3], v->asleep ? "zz" : "");
+		line(19, "#%d %-6s hp%4d %3dkm/h g%d %s", cur, k_st[v->status & 3], (int)v->health,
+		     (int)(fabsf(v->speedFwd) * 50.0f * 3.6f), v->gear, v->inWater ? "wet" : "");
+		line(20, "susp %.2f %.2f %.2f %.2f %s", v->susp[0], v->susp[1], v->susp[2], v->susp[3], v->asleep ? "zz" : "");
 		char d[vehmdl::COMP_COUNT + 1];
 		for (int k = 0; k < vehmdl::COMP_COUNT; k++) d[k] = "o~x"[v->dmg[k] < 3 ? v->dmg[k] : 0];
 		d[vehmdl::COMP_COUNT] = 0;
-		line(19, "dmg %s skid %.1f", d + vehmdl::COMP_DOOR_LF, v->skid);
+		line(21, "dmg %s t%x l%+.2f r%.2f", d + vehmdl::COMP_DOOR_LF, v->burst, v->lean, v->rotor);
 	} else {
-		line(17, "(no car)");
-		blank(18, 19);
+		line(19, "(no vehicle)");
+		blank(20, 21);
 	}
-	put(20, 0, "");
+	put(22, 0, "");
 	c = 0;
-	if (button(20, c, "repair")) veh::repair(cur);
-	if (button(20, c, "boom")) veh::blowUp(cur);
-	if (button(20, c, "flip")) veh::flip(cur);
-	if (button(20, c, "hp250") && v) veh::setHealth(cur, 249.0f);
+	if (button(22, c, "flip")) veh::flip(cur);
+	if (button(22, c, "hp250") && v) veh::setHealth(cur, 249.0f);
+	if (button(22, c, "tyre")) veh::burstTyre(cur, -1);
+	if (button(22, c, dbg::opts.skidmarks ? "skid:on" : "skid:off")) dbg::opts.skidmarks = !dbg::opts.skidmarks;
 	const vehmdl::Stats& ms = vehmdl::stats();
 	const veh::Stats& vs = veh::stats();
-	line(21, "mdl %u/%u tex %u f%u %luK", ms.ready, ms.models, ms.textures, ms.texFailed, (unsigned long)(ms.texVram >> 10));
-	line(22, "cars %u awake %u tris %u st%lu dr%lu", vs.active, vs.awake, vs.polys, (unsigned long)vs.stepUs,
-	     (unsigned long)vs.drawUs);
-	blank(23, 23);
+	line(23, "m%u/%u t%u %luK n%u st%lu dr%lu sk%u", ms.ready, ms.models, ms.textures, (unsigned long)(ms.texVram >> 10),
+	     vs.active, (unsigned long)vs.stepUs, (unsigned long)vs.drawUs, vs.skids);
 }
 
 static void pageGame(bool inGame) {

@@ -239,12 +239,14 @@ void update(int h, const aeveh::Params& p) {
 	if ((unsigned)h >= 8 || !s_e[h].used) return;
 	Entity& e = s_e[h];
 	prepare(e);
-	if (p.wrecked || !p.engineOn || e.s->type != 0 || e.s->dummyBank < 0) {
+	// eAEVehicleAudioType: bmx (2) and no-vehicle (10) have no engine; bikes, boats,
+	// aircraft and trains run the dummy engine loops (their rotor / prop / motor banks)
+	if (p.wrecked || !p.engineOn || e.s->type == 2 || e.s->type >= 10 || e.s->dummyBank < 0) {
 		for (int k : { S_IDLE, S_REV, S_AC, S_CRZ, S_HORN, S_SKID }) stopSnd(e, k);
 		e.state = ST_OFF;
 	} else {
 		const float base = ae::defaultVolume(AE_GENERAL_VEHICLE_SOUND) + e.s->volOffset - (p.player ? 0.0f : 3.0f);
-		if (p.player && e.s->playerBank >= 0) playerEngine(e, p, base);
+		if (p.player && e.s->playerBank >= 0 && e.s->type == 0) playerEngine(e, p, base);
 		else {
 			stopSnd(e, S_AC);
 			stopSnd(e, S_CRZ);
@@ -310,6 +312,9 @@ void event(int h, Event ev, float x, float y, float z, float intensity) {
 	case EV_PART_OFF:
 		play(e, BANK_VEHICLE_GEN, SND_HOOD_FLY, x, y, z, CRASH_VOL - 6.0f, 1.0f, 1.5f, 0, -1, 0.06f);
 		play(e, BANK_COLLISIONS, SND_COL_METAL_SCRAPE, x, y, z, CRASH_VOL - 6.0f, 1.2f, 1.5f, 0, -1, 0.06f);
+		break;
+	case EV_TYRE_BURST:   // AE_TYRE_BURST: a short low pop
+		play(e, BANK_COLLISIONS, SND_COL_COLCAR01, x, y, z, CRASH_VOL - 2.0f, 1.45f, 1.5f, 0, -1, 0.05f);
 		break;
 	case EV_EXPLOSION: {
 		// CAEExplosionAudioEntity::AddAudioEvent: main blast + low boom + a distant copy

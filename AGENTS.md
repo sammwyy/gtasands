@@ -14,9 +14,10 @@ bottom-screen GTA HUD with radar, debug UI, time cycle + weather + sky/fog/rain,
 map (Grove Street / Ganton box from `[world] bounds`: sectors, map models + textures, culling,
 poly budget; no LODs yet) and map collision (COL baked into world.dwld: CJ walks on the real
 ground, walls stop him, falls off ledges, the camera is pulled in front of walls; REND tab
-overlays: skeleton + collision wireframe on top with an outline), vehicles (ARCHITECTURE 6d: spawn from the
-debug GAME tab, enter/exit with the CAR_* anims, CAutomobile physics, damage panels, fire, explosion, engine /
-horn / skid / door / crash sounds). 30 fps at the spawn (~15-20 while driving fast).
+overlays: skeleton + collision wireframe on top with an outline), vehicles (ARCHITECTURE 6d: every IDE type - cars, bikes/BMX/quads,
+boats on water.dat, helis, planes, trains on tracks.dat, trailers, RC - spawned by type or model id from the debug
+GAME tab, enter/exit per type, fixed-point physics, damage panels, burst tyres, fire, explosion, skidmarks, head /
+tail lights, engine / horn / skid / door / crash sounds). 30 fps at the spawn (~15-25 while driving).
 
 ## Toolchain
 - devkitPro at `~/devkitpro` (`source ~/devkitpro/devkitarm.sh`).
@@ -120,8 +121,26 @@ while tuning. Current total ~413 MB of the 448 MB budget.
    on demand; the TXD table is resident).
 2. Performance: the HUD costs ~8 ms/frame and the map draw ~8 ms -> 30 fps; strips + chaining
    the list DMAs from the DMA IRQ (CPU free while the GE works) would bring back 60.
-3. Physics: ped vs world collision and cars are done (ARCHITECTURE 6c / 6d). Next: fixed-point vehicle step
-   (soft float ~0.9 ms/step), AI traffic on paths, bikes, skidmarks / headlight coronas, ledge climbing.
+3. Physics: ped vs world collision and all vehicle types are done (ARCHITECTURE 6c / 6d). Vehicle TODO:
+   - [ ] Perf while driving (15-25 fps): `veh::step` is ~2 ms per call (DEBUG), half of it collision queries.
+     Run 1-2 body spheres per step (rotate them, or only the leading ones by velocity) instead of all 6-8; cast the
+     wheel lines against a per-step ground plane cached from the previous hits; skip sleeping-car pair tests by AABB;
+     cap sim steps per frame at 2 for vehicles (MAX_STEPS 4 = death spiral at 15 fps); measure a release (-O2) build.
+   - [ ] World streaming hitches while driving fast (`wu` spikes 10-45 ms in the vehtest log): `world.cpp startLoad`
+     reads every texture of a model synchronously; queue the texture reads (TEX_QUEUED) and read them under the
+     stream() budget, one sector read per frame, prefetch along the velocity.
+   - [ ] Collision near list follows the player only (14 m): fast cars outrun it and planes have none at altitude;
+     gather around the driven vehicle with a velocity lead.
+   - [ ] Bikes: real CBike lean physics (now visual), wheelies / stoppies (Wheelie/StoppieAng), falling off, kick-stand.
+   - [ ] Boats: wake / splashes, waves (water.dat wave floats), CJ swimming (exit into water), real mod_Buoyancy volumes.
+   - [ ] Aircraft: landing gear up/down (GearUpR, gear frames), Hydra nozzle / vortex, rotor blade collisions,
+     stall, plane audio states, parachute on bail-out.
+   - [ ] Trains: carriages, stations / doors, track switching (tracks2-4 are separate loops), level crossings.
+   - [ ] Trailers: towing (CTrailer / tow bar hitch), RC: CJ standing outside + RC camera instead of hiding him.
+   - [ ] Lights: per-light damage, reverse lights, indicator / siren lights, VRAM headlight texture instead of the glow.
+   - [ ] Enter/exit: passenger side + passengers, CAR anims for helis / planes with doors, jacking, bike get-off
+     while moving, exit point checks against walls.
+   - [ ] AI traffic on paths (nodes*.dat), vehicle LODs (`*_vlo` kept), number plates, carmods / paintjobs.
 4. Audio: engine done (ARCHITECTURE 8b: footsteps, weapons, weather bed, thunder, ambience
    stream). Next: collision sounds (CAECollisionAudioEntity), ped speech, radio on the stream channel.
 5. Scripts: SCM VM (`data/script/main.scm`), start with mission-less free roam.

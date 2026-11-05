@@ -75,6 +75,10 @@ float fat();
 float muscle();
 Motion motion();
 
+// Vehicle anim block searched before the ped / motion group blocks: the IDE
+// anim group of the vehicle ("bikes", "bmx", "quad"...), null / "null" = none.
+void setVehicleBlock(const char* ifp);
+
 // Heaviest clip currently playing (debug / HUD).
 const char* animName();
 

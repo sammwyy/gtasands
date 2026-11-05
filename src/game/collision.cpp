@@ -259,9 +259,28 @@ static void castLocal(const ds::WorldCol* c, const int32_t O[3], const int32_t E
 	}
 }
 
-bool castSegment(const float a[3], const float b[3], Hit& hit) {
+// Near instances the queries walk: all of them, or the subset picked by
+// focus() (a vehicle's swept box: 1-5 instead of up to COL_NEAR_MAX).
+static uint8_t s_sub[COL_NEAR_MAX];
+static int s_numSub = -1;
+
+void focus(const int32_t lo[3], const int32_t hi[3]) {
+	s_numSub = 0;
+	for (int i = 0; i < s_numNear; i++)
+		if (aabbHit(s_near[i], lo, hi)) s_sub[s_numSub++] = (uint8_t)i;
+}
+void unfocus() { s_numSub = -1; }
+
+template <class F>
+static inline void forNear(F&& fn) {
+	if (s_numSub < 0)
+		for (int i = 0; i < s_numNear; i++) fn(s_near[i]);
+	else
+		for (int k = 0; k < s_numSub; k++) fn(s_near[s_sub[k]]);
+}
+
+bool castSegmentCu(const int32_t wa[3], const int32_t wb[3], HitCu& hit) {
 	const u32 t0 = timing::ticks();
-	const int32_t wa[3] = { cu(a[0]), cu(a[1]), cu(a[2]) }, wb[3] = { cu(b[0]), cu(b[1]), cu(b[2]) };
 	LocalHit best = { 1 << 16, { 0, 0, 0 }, 0, 0 };
 	const Near* bestN = nullptr;
 	int32_t lo[3], hi[3];
@@ -269,33 +288,40 @@ bool castSegment(const float a[3], const float b[3], Hit& hit) {
 		lo[k] = wa[k] < wb[k] ? wa[k] : wb[k];
 		hi[k] = wa[k] < wb[k] ? wb[k] : wa[k];
 	}
-	for (int i = 0; i < s_numNear; i++) {
-		const Near& n = s_near[i];
-		if (!aabbHit(n, lo, hi)) continue;
+	forNear([&](const Near& n) {
+		if (!aabbHit(n, lo, hi)) return;
 		int32_t O[3], E[3];
 		toLocal(n, wa, O);
 		toLocal(n, wb, E);
 		const int32_t before = best.t;
 		castLocal(n.c, O, E, best);
 		if (best.t != before) bestN = &n;
-	}
+	});
 	s_queryUs += timing::usSince(t0);
 	if (!bestN) return false;
-	const float t = (float)best.t * (1.0f / 65536.0f);
+	hit.t = best.t;
+	for (int k = 0; k < 3; k++) hit.p[k] = wa[k] + (int32_t)(((int64_t)(wb[k] - wa[k]) * best.t) >> 16);
+	const int32_t nl[3] = { best.n[0], best.n[1], best.n[2] };
+	toWorldDir(*bestN, nl, hit.n);
+	hit.surface = best.surface;
+	hit.light = best.light;
+	return true;
+}
+
+bool castSegment(const float a[3], const float b[3], Hit& hit) {
+	const int32_t wa[3] = { cu(a[0]), cu(a[1]), cu(a[2]) }, wb[3] = { cu(b[0]), cu(b[1]), cu(b[2]) };
+	HitCu h;
+	if (!castSegmentCu(wa, wb, h)) return false;
+	const float t = (float)h.t * (1.0f / 65536.0f);
 	hit.t = t;
 	hit.x = a[0] + (b[0] - a[0]) * t;
 	hit.y = a[1] + (b[1] - a[1]) * t;
 	hit.z = a[2] + (b[2] - a[2]) * t;
-	{
-		const int32_t nl[3] = { best.n[0], best.n[1], best.n[2] };
-		int32_t nw[3];
-		toWorldDir(*bestN, nl, nw);
-		hit.nx = (float)nw[0] * (1.0f / 4096.0f);
-		hit.ny = (float)nw[1] * (1.0f / 4096.0f);
-		hit.nz = (float)nw[2] * (1.0f / 4096.0f);
-	}
-	hit.surface = best.surface;
-	hit.light = best.light;
+	hit.nx = (float)h.n[0] * (1.0f / 4096.0f);
+	hit.ny = (float)h.n[1] * (1.0f / 4096.0f);
+	hit.nz = (float)h.n[2] * (1.0f / 4096.0f);
+	hit.surface = h.surface;
+	hit.light = h.light;
 	return true;
 }
 
@@ -326,17 +352,16 @@ static void closestOnSegment(const int16_t* p, const int16_t* q, const int32_t c
 // groundAt's); otherwise every face, pushed along the contact normal (cars).
 static bool sphereCore(int32_t w[3], int32_t rc, bool walls, uint8_t* surface) {
 	bool touched = false;
-	for (int i = 0; i < s_numNear; i++) {
-		const Near& n = s_near[i];
+	forNear([&](const Near& n) {
 		{
 			const int32_t wl[3] = { w[0] - rc, w[1] - rc, w[2] - rc }, wh[3] = { w[0] + rc, w[1] + rc, w[2] + rc };
-			if (!aabbHit(n, wl, wh)) continue;
+			if (!aabbHit(n, wl, wh)) return;
 		}
 		const ds::WorldCol* c = n.c;
 		int32_t C[3];
 		toLocal(n, w, C);
 		const int32_t lo[3] = { C[0] - rc, C[1] - rc, C[2] - rc }, hi[3] = { C[0] + rc, C[1] + rc, C[2] + rc };
-		if (!overlaps(c->bmin, c->bmax, lo, hi)) continue;
+		if (!overlaps(c->bmin, c->bmax, lo, hi)) return;
 		const View v = view(c);
 		// moves the sphere along `dir` (model space, any length) by `amount` cu,
 		// horizontally in the world
@@ -415,7 +440,7 @@ static bool sphereCore(int32_t w[3], int32_t rc, bool walls, uint8_t* surface) {
 			const int32_t q[3] = { s.c[0], s.c[1], s.c[2] };
 			pushFrom(q, rc + s.r);
 		}
-	}
+	});
 	return touched;
 }
 
@@ -432,18 +457,25 @@ bool pushSphere(float& x, float& y, float z, float r) {
 	return touched;
 }
 
-bool sphereContact(const float c[3], float r, float out[3], uint8_t& surface) {
-	if (!s_numNear) return false;
+bool sphereContactCu(const int32_t c[3], int32_t rc, int32_t out[3], uint8_t& surface) {
+	if (!s_numNear || !s_numSub) return false;
 	const u32 t0 = timing::ticks();
-	const int32_t w0[3] = { cu(c[0]), cu(c[1]), cu(c[2]) };
-	int32_t w[3] = { w0[0], w0[1], w0[2] };
+	int32_t w[3] = { c[0], c[1], c[2] };
 	surface = 0;
-	const bool touched = sphereCore(w, (int32_t)(r * 128.0f), false, &surface);
-	for (int k = 0; k < 3; k++) out[k] = (float)(w[k] - w0[k]) * (1.0f / 128.0f);
+	const bool touched = sphereCore(w, rc, false, &surface);
+	for (int k = 0; k < 3; k++) out[k] = w[k] - c[k];
 	const u32 us = timing::usSince(t0);
 	s_queryUs += us;
 	s_pushUs += us;
-	return touched && (out[0] != 0.0f || out[1] != 0.0f || out[2] != 0.0f);
+	return touched && (out[0] || out[1] || out[2]);
+}
+
+bool sphereContact(const float c[3], float r, float out[3], uint8_t& surface) {
+	const int32_t w0[3] = { cu(c[0]), cu(c[1]), cu(c[2]) };
+	int32_t d[3];
+	if (!sphereContactCu(w0, (int32_t)(r * 128.0f), d, surface)) return false;
+	for (int k = 0; k < 3; k++) out[k] = (float)d[k] * (1.0f / 128.0f);
+	return true;
 }
 
 // ----------------------------------------------------------------------------

@@ -39,13 +39,30 @@ enum Comp : uint8_t {
 enum Variant : uint8_t { VAR_ANY, VAR_OK, VAR_DAM };
 enum Patch : uint8_t { PATCH_PRIMARY = 1, PATCH_SECONDARY, PATCH_LIGHT_FRONT, PATCH_LIGHT_REAR };
 
+// Frames that move on their own (CBike forks / handlebars / wheels,
+// CHeli rotors, CPlane / CBoat propellers and control surfaces): the part is
+// drawn as anim frame matrix x rotation x (second anim frame x rotation) x below.
+enum Anim : uint8_t {
+	ANIM_NONE, ANIM_STEER,          // about z: the front wheel steer angle (forks_front, handlebars)
+	ANIM_WHEEL_F, ANIM_WHEEL_R,     // about x: bike wheel spin (wheel_front / wheel_rear)
+	ANIM_ROTOR, ANIM_ROTOR2,        // about z / x: main / tail rotor (moving_rotor*, static_rotor*)
+	ANIM_PROP,                      // about y: propellers (moving_prop*, static_prop*)
+	ANIM_RUDDER, ANIM_ELEVATOR,     // about z / x: yaw / pitch input
+	ANIM_AILERON_L, ANIM_AILERON_R, // about x: roll input
+};
+// moving_* blurred discs show while the rotor / prop is fast, static_* while slow
+enum Vis : uint8_t { VIS_ALWAYS, VIS_FAST, VIS_SLOW };
+constexpr int MAX_ANIM_M = 12;
+
 struct Part {
 	u32* list;
 	uint16_t tris;
 	uint8_t comp, variant;
 	int8_t hinge;               // frame index of the component's *_dummy (rotation pivot), -1 = static
-	uint8_t numPatch, wheel, pad;
-	s32 below[12];              // part frame -> hinge (or model space when hinge < 0), GX 4x3 rows
+	uint8_t numPatch, wheel, vis;
+	uint8_t anim1, anim2;       // Anim of the outer / inner animated frame
+	int8_t m1, m2;              // animM slots: model space matrix of anim frame 1, anim frame 2 in frame 1
+	s32 below[12];              // part frame -> hinge / inner anim frame (or model space), GX 4x3 rows
 	bool identity;              // `below` is the identity
 	uint16_t patchAt[MAX_PATCH];
 	uint8_t patchKind[MAX_PATCH];
@@ -68,6 +85,13 @@ struct Model {
 	float wheelScale[2];        // geometry scale so the wheel mesh matches the IDE size
 	float seat[3];              // driver seat (ped_frontseat mirrored to the left)
 	float exhaust[3], engine[3];
+	// CVehicleModelInfo light dummies (right side; the left one is x mirrored,
+	// a centred one (bikes, boat_lights) is drawn once)
+	float headlight[3], taillight[3];
+	bool hasHead, hasTail;
+	bool bikeWheels;            // wheel_front / wheel_rear geometries (bikes): no shared wheel
+	s32 animM[MAX_ANIM_M][12];
+	uint8_t numAnimM;
 	float hinge[COMP_COUNT][3]; // *_dummy positions (doors: hinge line)
 	s32 hingeM[COMP_COUNT][12]; // *_dummy model-space matrices, GX 4x3
 	float bmin[3], bmax[3];     // body bounds (ok parts, not the wheels)

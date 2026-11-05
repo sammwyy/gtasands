@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <nds.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "assets/texture.h"
@@ -431,10 +432,25 @@ static int extraBlock(int which) {
 	return s_extraBlock[which];
 }
 
+// Vehicle anim blocks (IDE anim group: bikes.ifp, bmx.ifp, quad.ifp ...):
+// directories opened on first use, the current one searched first.
+static int s_vehBlock = animstore::NO_BLOCK;
+
+void setVehicleBlock(const char* ifp) {
+	s_vehBlock = animstore::NO_BLOCK;
+	if (!ifp || !ifp[0] || !strcmp(ifp, "null") || !streaming::g_anim.isOpen()) return;
+	s_vehBlock = animstore::findBlock(ifp);
+	if (s_vehBlock != animstore::NO_BLOCK) return;
+	char file[32];
+	snprintf(file, sizeof file, "%.20s.ifp", ifp);
+	s_vehBlock = animstore::openInPack(streaming::g_anim, file);
+	hud::log("cj %s %s", file, s_vehBlock != animstore::NO_BLOCK ? "ok" : "MISSING");
+}
+
 static bool playName(Slot& sl, const char* name) {
 	if (!s_skel || !name) return false;
 	const int g = groupId();
-	const int blocks[2] = { g != 0 ? extraBlock(g) : animstore::NO_BLOCK, s_pedBlock };
+	const int blocks[3] = { s_vehBlock, g != 0 ? extraBlock(g) : animstore::NO_BLOCK, s_pedBlock };
 	for (int b : blocks) {
 		if (!animstore::hasClip(b, name)) continue;
 		animstore::Clip* c = animstore::acquire(b, name);

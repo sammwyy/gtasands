@@ -1,18 +1,23 @@
-"""vehicles.ide + handling.cfg + carcols.dat + surface.dat/surfinfo.dat -> DVEH.
+"""vehicles.ide + handling.cfg + carcols.dat + surface.dat/surfinfo.dat + water.dat + tracks*.dat -> DVEH.
 
 CFileLoader::LoadVehicleObject, cHandlingDataMgr::LoadHandlingData (+
 ConvertDataToGameUnits), CVehicleModelInfo::LoadVehicleColours and
 SurfaceInfos_c::LoadAdhesiveLimits / LoadSurfaceInfos run here, so the DS
 reads one table of fixed records (handling already in game units: speeds per
-1/50 s step, accelerations per step^2). Layout: src/assets/ds_formats.h.
+1/50 s step, accelerations per step^2). The bike ('!'), boat ('%') and flying
+('$') handling lines ride along in the vehicle record; CWaterLevel's water.dat
+polygons and CTrain's track nodes (data/paths/tracks*.dat) follow the tables.
+Layout: src/assets/ds_formats.h.
 """
+import math
+import re
 import struct
 from pathlib import Path
 
 from .dsfmt import name as fname
 from .world import resolve
 
-VERSION = 1
+VERSION = 2
 MAX_COLOURS = 8
 
 # CFileLoader::LoadVehicleObject type names -> eVehicleType
@@ -42,22 +47,101 @@ def parse_ide(path):
             continue
         if sec != 'cars':
             continue
-        a = [x.strip() for x in line.split(',')]
+        # CFileLoader::LoadVehicleObject reads it with sscanf after commas -> spaces
+        # (vehicles.ide has "dodo		dodo," and "wayfarer	wayfarer," without the comma)
+        a = [x for x in re.split(r'[,\s]+', line) if x]
         if len(a) < 11:
             continue
         try:
             vt = a[3].lower()
             wf = wr = 0.7
-            if vt in ('car', 'mtruck', 'quad', 'trailer') and len(a) >= 14:
+            steer = 0.0
+            # cars / aircraft / trains: wheel model, front, rear scale; bikes: steer angle, front, rear
+            if vt not in ('boat',) and len(a) >= 14:
                 wf, wr = float(a[12]), float(a[13])
-            elif vt in ('bike', 'bmx') and len(a) >= 13:
-                wf = wr = float(a[12])
+                if vt in ('bike', 'bmx'):
+                    steer = float(a[11])
             out.append(dict(id=int(a[0]), model=a[1].lower(), txd=a[2].lower(),
                             type=VEH_TYPES.index(vt) if vt in VEH_TYPES else 0xFF,
                             handling=a[4].upper(), gxt=a[5], anims=a[6].lower(), flags=int(a[9], 0) if a[9] else 0,
-                            wheelF=wf, wheelR=wr))
+                            wheelF=wf, wheelR=wr, steer=steer))
         except ValueError:
             continue
+    return out
+
+
+def _floats(tokens, n):
+    out = []
+    for t in tokens[:n]:
+        out.append(float(t.rstrip('sS')))   # RCRAIDER's '0.1s' (tFlyingHandlingData::InitFromData skips it)
+    return out if len(out) == n else None
+
+
+def parse_special(path):
+    """'!' tBikeHandlingData (+ ConvertBikeDataToGameUnits), '%' tBoatHandlingData, '$' tFlyingHandlingData."""
+    bike, boat, fly = {}, {}, {}
+    for line in path.read_text(errors='replace').splitlines():
+        line = line.split(';', 1)[0].strip()
+        if not line or line[0] not in '!$%':
+            continue
+        a = line[1:].split()
+        if not a:
+            continue
+        try:
+            if line[0] == '!':
+                v = _floats(a[1:], 15)
+                if v:
+                    v[4] = math.sin(math.radians(v[4]))     # MaxLean
+                    v[5] = math.radians(v[5])               # FullAnimLean
+                    v[10] = math.sin(math.radians(v[10]))   # WheelieAng
+                    v[11] = math.sin(math.radians(v[11]))   # StoppieAng
+                    bike[a[0].upper()] = v
+            elif line[0] == '%':
+                v = _floats(a[1:], 14)
+                if v:
+                    boat[a[0].upper()] = v
+            else:
+                v = _floats(a[1:], 21)
+                if v:
+                    fly[a[0].upper()] = v
+        except ValueError:
+            continue
+    return bike, boat, fly
+
+
+def parse_water(path):
+    """CWaterLevel::LoadWaterLevels: quads (4 corners) and triangles (3), each corner x y z + 4 wave floats, flags."""
+    out = []
+    if not path:
+        return out
+    for line in path.read_text(errors='replace').splitlines():
+        p = line.split()
+        if len(p) not in (22, 29):
+            continue
+        try:
+            v = [float(x) for x in p[:-1]]
+            flags = int(p[-1])
+        except ValueError:
+            continue
+        nv = 4 if len(p) == 29 else 3
+        out.append(([(v[i * 7], v[i * 7 + 1], v[i * 7 + 2]) for i in range(nv)], flags))
+    return out
+
+
+def parse_tracks(paths):
+    """CTrain::ReadAndInterpretTrackFile: node count, then x y z flags; cumulative length along the loop."""
+    out = []
+    for path in paths:
+        nodes = []
+        if path:
+            for line in path.read_text(errors='replace').splitlines()[1:]:
+                p = line.split()
+                if len(p) >= 3:
+                    try:
+                        nodes.append((float(p[0]), float(p[1]), float(p[2])))
+                    except ValueError:
+                        pass
+        out.append(nodes)
     return out
 
 
@@ -180,10 +264,13 @@ def build(game, sec):
         ('ide', 'data/vehicles.ide'), ('handling', 'data/handling.cfg'), ('carcols', 'data/carcols.dat'),
         ('surface', 'data/surface.dat'), ('surfinfo', 'data/surfinfo.dat'))}
     missing = [k for k, p in paths.items() if not p]
+    water = parse_water(resolve(game, sec.get('water', 'data/water.dat')))
+    tracks = parse_tracks([resolve(game, f'data/paths/tracks{n}.dat') for n in ('', '2', '3', '4')])
     if missing:
         raise FileNotFoundError(f'vehicles: missing {missing} (run: tools/assets.py sync)')
     ide = parse_ide(paths['ide'])
     hand = parse_handling(paths['handling'])
+    bike, boat, fly = parse_special(paths['handling'])
     table, cars = parse_carcols(paths['carcols'])
     lim, surf = parse_surfaces(paths['surface'], paths['surfinfo'])
 
@@ -213,21 +300,60 @@ def build(game, sec):
         recs += struct.pack('<2f', h['seatOffset'], h['damageMult'])
         recs += struct.pack('<3I', h['modelFlags'] & 0xFFFFFFFF, h['handlingFlags'] & 0xFFFFFFFF, max(0, h['value']))
         recs += struct.pack('<4B', h['frontLights'], h['rearLights'], h['animGroup'], h['submerged'] & 0xFF)
+        hid = v['handling']
+        ext = bike.get(hid) or boat.get(hid)
+        kind = 1 if hid in bike else 2 if hid in boat else 0
+        f = fly.get(hid)
+        recs += struct.pack('<BBBBf', kind, 1 if f else 0, 0, 0, v['steer'])
+        recs += struct.pack('<15f', *((ext or []) + [0.0] * (15 - len(ext or []))))
+        recs += struct.pack('<21f', *(f or [0.0] * 21))
     rec_size = len(recs) // max(1, len(ide))
 
-    hdr_size = 24 + 36 * 4
+    # water polygons: whole metres for x / y (the .dat corners are on a 2 m grid), z in cm
+    wblob = bytearray()
+    for verts, flags in water:
+        vs = verts + [verts[-1]] * (4 - len(verts))
+        wblob += struct.pack('<4h', *[int(round(x)) for x, _, _ in vs])
+        wblob += struct.pack('<4h', *[int(round(y)) for _, y, _ in vs])
+        wblob += struct.pack('<4h', *[max(-32768, min(32767, int(round(z * 100.0)))) for _, _, z in vs])
+        wblob += struct.pack('<BBH', len(verts), flags & 0xFF, 0)
+    # tracks: per track (first node, count, length m), then nodes at 1/8 m + cumulative distance (1/2 m)
+    tblob, nblob, first = bytearray(), bytearray(), 0
+    for nodes in tracks:
+        dist = 0.0
+        for i, (x, y, z) in enumerate(nodes):
+            if i:
+                px, py, pz = nodes[i - 1]
+                dist += math.sqrt((x - px) ** 2 + (y - py) ** 2 + (z - pz) ** 2)
+            nblob += struct.pack('<3hH', int(round(x * 8)), int(round(y * 8)), int(round(z * 8)), min(65535, int(dist * 2)))
+        total = dist
+        if nodes:
+            x, y, z = nodes[-1]
+            fx_, fy, fz = nodes[0]
+            total += math.sqrt((x - fx_) ** 2 + (y - fy) ** 2 + (z - fz) ** 2)
+        tblob += struct.pack('<HHf', first, len(nodes), total)
+        first += len(nodes)
+
+    hdr_size = 24 + 36 * 4 + 16
     veh_off = hdr_size
     col_off = veh_off + len(recs)
     surf_off = col_off + 4 * len(table)
+    water_off = surf_off + 4 * len(surf)
+    track_off = water_off + len(wblob)
     out = bytearray(struct.pack('<4sHHHHIII', b'DVEH', VERSION, len(ide), len(table), len(surf),
                                 veh_off, col_off, surf_off))
     for r in lim:
         out += struct.pack('<6f', *r)
+    out += struct.pack('<IHHI', water_off, len(water), len(tracks), track_off)
+    out += struct.pack('<I', first)
     assert len(out) == hdr_size
     out += recs
     for r, g, b in table:
         out += struct.pack('<4B', r, g, b, 0)
     for g, wet, sk in surf:
         out += struct.pack('<BbBB', g, wet, sk, 0)
-    stats = dict(vehicles=len(ide), rec=rec_size, colours=len(table), surfaces=len(surf), no_handling=no_handling)
+    assert len(out) == water_off
+    out += wblob + tblob + nblob
+    stats = dict(vehicles=len(ide), rec=rec_size, colours=len(table), surfaces=len(surf), no_handling=no_handling,
+                 water=len(water), track_nodes=first)
     return bytes(out), stats
