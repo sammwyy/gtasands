@@ -1,5 +1,6 @@
 #include "game/world.h"
 
+#include <algorithm>
 #include <math.h>
 #include <nds.h>
 #include <stdio.h>
@@ -106,7 +107,10 @@ static int s_preloadStep;
 static u32 s_preloadT0;
 static Stats s_stats;
 
-struct Vis { const Inst* inst; uint16_t slot; uint8_t bucket, pad; };
+// key = projected size (radius / distance), doubled for instances drawn last
+// frame: the polygon budget drops the smallest-looking ones and keeps the set
+// stable between frames
+struct Vis { const Inst* inst; uint16_t slot; uint8_t wasDrawn, pad; int32_t key; };
 static Vis* s_vis;
 static int s_numVis;
 
@@ -601,8 +605,31 @@ struct Cam {
 	int hour;
 };
 
-static constexpr int BUCKETS = 8;
-static const int32_t k_bucketEdge[BUCKETS - 1] = { 10 * 16, 20 * 16, 32 * 16, 48 * 16, 64 * 16, 88 * 16, 120 * 16 };
+// Instances drawn last frame (open addressing on the Inst pointer, rebuilt
+// every draw): budget hysteresis per instance, not per model.
+static constexpr int DRAWN_HASH = 1024;
+static_assert(DRAWN_HASH >= 2 * WORLD_VISIBLE_MAX);
+static const Inst* s_drawn[2][DRAWN_HASH];
+static int s_drawnCur;
+static constexpr int32_t NEW_MARGIN = 96;   // polys a newcomer needs on top of its estimate
+
+static inline uint32_t drawnHash(const Inst* p) { return ((uint32_t)p >> 5) * 2654435761u >> 22; }
+
+// scan() runs before draw() flips the tables: s_drawnCur still holds last frame
+static bool wasDrawn(const Inst* p) {
+	const Inst* const* t = s_drawn[s_drawnCur];
+	for (uint32_t h = drawnHash(p);; h = (h + 1) & (DRAWN_HASH - 1)) {
+		if (t[h] == p) return true;
+		if (!t[h]) return false;
+	}
+}
+
+static void markDrawn(const Inst* p) {
+	const Inst** t = s_drawn[s_drawnCur];
+	uint32_t h = drawnHash(p);
+	while (t[h] && t[h] != p) h = (h + 1) & (DRAWN_HASH - 1);
+	t[h] = p;
+}
 
 static void addWant(uint16_t model, int32_t key) {
 	for (int i = 0; i < s_numWant; i++)
@@ -684,9 +711,12 @@ static void scan(const Cam& c) {
 			Slot& s = s_slots[si];
 			s.lastUse = s_frame;
 			if (s.state != SLOT_READY || !c.frustum || s_numVis >= WORLD_VISIBLE_MAX) continue;
-			uint8_t b = 0;
-			while (b < BUCKETS - 1 && near > k_bucketEdge[b]) b++;
-			s_vis[s_numVis++] = { &in, si, b, 0 };
+			// CRenderer::SetupEntityVisibility-ish: how big it looks (near
+			// surface, floor 4 m so everything close ranks first)
+			const uint8_t was = wasDrawn(&in);
+			int32_t key = (rad << 10) / (near + 64);
+			if (was) key <<= 1;
+			s_vis[s_numVis++] = { &in, si, was, 0, key };
 		}
 	}
 	s_stats.candidates = candidates;
@@ -850,17 +880,10 @@ void draw(const DrawView& v) {
 	scan(makeCam(v.eyeX, v.eyeY, v.eyeZ, v.yaw, v.pitch, true));
 	s_stats.scanUs = (uint16_t)timing::usSince(t0);
 
-	// near -> far by bucket (the polygon budget drops the far ones)
-	int count[BUCKETS] = {}, start[BUCKETS];
-	for (int i = 0; i < s_numVis; i++) count[s_vis[i].bucket]++;
-	for (int b = 0, acc = 0; b < BUCKETS; b++) {
-		start[b] = acc;
-		acc += count[b];
-	}
-	mem::Scratch scratch;
-	const Vis** order = (const Vis**)scratch.alloc(sizeof(Vis*) * (s_numVis ? s_numVis : 1));
-	if (!order) return;
-	for (int i = 0; i < s_numVis; i++) order[start[s_vis[i].bucket]++] = &s_vis[i];
+	// biggest on screen first (the polygon budget drops what looks smallest)
+	std::sort(s_vis, s_vis + s_numVis, [](const Vis& a, const Vis& b) { return a.key > b.key; });
+	s_drawnCur ^= 1;
+	memset(s_drawn[s_drawnCur], 0, sizeof s_drawn[0]);
 
 	const int32_t ox = (int32_t)(v.originX * 4096.0f), oy = (int32_t)(v.originY * 4096.0f),
 	              oz = (int32_t)(v.originZ * 4096.0f);
@@ -871,11 +894,13 @@ void draw(const DrawView& v) {
 	uint16_t drawn = 0, dropped = 0;
 	glStoreMatrix(VIEW_SLOT);
 	for (int i = 0; i < s_numVis; i++) {
-		const Vis& vi = *order[i];
+		const Vis& vi = s_vis[i];
 		Slot& s = s_slots[vi.slot];
 		s.lastUse = s_frame;
-		// backface culling removes roughly half of a closed model
-		if (polys + s.tris / 2 > budget) {
+		// backface culling removes roughly half of a closed model; a model that
+		// was not on screen last frame only comes in with room to spare, so the
+		// set at the edge of the budget does not flip every frame
+		if (polys + s.tris / 2 + (vi.wasDrawn ? 0 : NEW_MARGIN) > budget) {
 			dropped++;
 			continue;
 		}
@@ -887,6 +912,7 @@ void draw(const DrawView& v) {
 		MATRIX_MULT4x3 = in.pos[2] - oz;
 		MATRIX_MULT4x3 = oy - in.pos[1];
 		gx::callList(s.list);
+		markDrawn(vi.inst);
 		drawn++;
 		glGetInt(GL_GET_POLYGON_RAM_COUNT, &polys);
 	}

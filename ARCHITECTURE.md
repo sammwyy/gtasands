@@ -238,8 +238,13 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   lighting trick: vertex colour (prelit * material colour) as AMBIENT + constant NORMAL with
   diffuse/specular/emission 0 -> GE outputs prelit * light0, light0 = world light per frame (no
   per-vertex CPU pass for the time of day). Emitted only when the colour changes. ~2.5 KB/model.
-- **Draw**: 8 distance buckets near -> far, stop when the hardware polygon count + tris/2 passes
-  `dbg::opts.worldPolys`. GE-bound: each `callList` waits for its DMA (~100 us per model).
+- **Draw**: visible instances sorted by projected size (`radius << 10 / (near surface + 4 m)`,
+  doubled for instances drawn last frame), a model is skipped when the hardware polygon count +
+  tris/2 passes `dbg::opts.worldPolys` (+ `NEW_MARGIN` 96 for instances not drawn last frame).
+  The budget drops what looks smallest and the drawn set has hysteresis: with near->far buckets
+  ~37 dropped models/frame flipped in and out (~300 pops per 2400 frames, now ~20, at the camera
+  turns). Drawn set = 2 x 1024-entry pointer hash, swapped per draw. GE-bound: each `callList`
+  waits for its DMA (~100 us per model).
 - **Eviction**: slots LRU (`WORLD_MODEL_SLOTS`, `WORLD_LIST_BYTES`), textures refcounted + LRU.
   `world::suspend()` drops all lists/textures when the pause menu opens (VRAM); they stream back.
 - **Preload** (loading job): sectors + every model in range around the player, no frustum, until
