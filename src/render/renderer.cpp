@@ -6,6 +6,8 @@
 #include "game/cj.h"
 #include "game/collision.h"
 #include "game/debugopts.h"
+#include "game/pedmodel.h"
+#include "game/peds.h"
 #include "game/player.h"
 #include "game/timecycle.h"
 #include "game/vehicle.h"
@@ -92,6 +94,7 @@ void draw() {
 	u8 lr = 255, lg = 255, lb = 255;
 	if (dbg::opts.pedLight) timecycle::pedLight(lr, lg, lb);
 	cj::setLight(lr, lg, lb);
+	pedmodel::setLight(lr, lg, lb);
 
 	glLoadIdentity();
 	glRotatef(pitch * 57.2958f, 1.0f, 0.0f, 0.0f);
@@ -108,6 +111,8 @@ void draw() {
 	else cj::draw(0.0f, 0.0f, player::g.z - vz, player::g.heading);
 	// vehicles right after CJ (their own light0: the sun), then the map's budget
 	veh::draw({ px, py, vz, px + elx, py + ely, vz + eyeH, yaw, pitch });
+	// peds after the vehicles (their own polygon budget, nearest first)
+	peds::draw({ px, py, vz, px + elx, py + ely, vz + eyeH, yaw, pitch });
 	// debug collision overlay before the map: the map's polygon budget yields to it
 	col::drawDebug(px, py, vz, px, py, player::g.z);
 

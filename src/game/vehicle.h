@@ -116,8 +116,14 @@ int findEnterable(float x, float y, float z, float range);
 // Door ratio (0 shut .. 1 open) driven by the enter/exit anims; plays the
 // open / close sounds on the edges.
 void setDoor(int id, int door, float ratio);
-// Ped vs vehicle (CJ on foot): pushes (x, y) out of the bodies. True if touched.
-bool pushPed(float& x, float& y, float z, float r);
+// Ped vs vehicle: pushes (x, y) out of the bodies (vehicle `skip` excluded:
+// the car CJ is walking to / sitting in). `hit` (optional) gets the fastest
+// moving vehicle touched (CPed::KillPedWithCar input; id -1 = none), speed
+// per 1/50 s step. True if touched.
+struct PedHit { int id; float vx, vy, speed; };
+bool pushPed(float& x, float& y, float z, float r, int skip = -1, PedHit* hit = nullptr);
+// AE_PED_HIT from vehicle `id` (the bump of a ped going under / over it)
+void pedHitSound(int id, float x, float y, float z);
 // CWeapon::DoBulletImpact on vehicles: segment a -> b (SA world). A tyre in
 // the way bursts (CAutomobile::BurstTyre), the body takes `damage`. True on a hit.
 bool bulletHit(const float a[3], const float b[3], float damage);

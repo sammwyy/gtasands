@@ -12,7 +12,7 @@ from fnmatch import fnmatchcase
 from multiprocessing import Pool
 from pathlib import Path
 
-from . import audio, ds_mesh, ds_misc, ds_radar, ds_texture, img, intro, vehicles, world
+from . import audio, ds_mesh, ds_misc, ds_radar, ds_texture, img, intro, peds, vehicles, world
 from .dsfmt import name as fname, write_pack
 
 HANDLERS = {
@@ -461,6 +461,17 @@ class Builder:
         st['out'] += self._emit(sec['out'], blob)
         st['files'] = 1
 
+    def do_peds(self, name, sec, st):
+        """peds.ide + pedstats + pedgrp + popcycle + animgrp + ped path nodes + main.scm zones -> one DPED file."""
+        try:
+            blob, stats = peds.build(self.cfg.game, sec, self.cfg.sections.get('world', {}).get('bounds'))
+        except FileNotFoundError as e:
+            st['errors'].append(str(e))
+            return
+        st['stats'] = stats
+        st['out'] += self._emit(sec['out'], blob)
+        st['files'] = 1
+
     def _prune(self):
         cfg = self.cfg
         old = set(json.loads(cfg.manifest.read_text())) if cfg.manifest.exists() else set()
@@ -495,6 +506,11 @@ def sync(cfg, dry=False):
         elif k == 'vehicles':
             want |= {p.relative_to(src) for p in src.glob('data/*', case_sensitive=False)
                      if p.is_file() and p.suffix.lower() in ('.dat', '.ide', '.cfg')}
+        elif k == 'peds':
+            want |= {p.relative_to(src) for p in src.glob('data/*', case_sensitive=False)
+                     if p.is_file() and p.suffix.lower() in ('.dat', '.ide', '.zon')}
+            want |= {p.relative_to(src) for p in src.glob('data/paths/nodes*.dat', case_sensitive=False)}
+            want |= {p.relative_to(src) for p in src.glob('data/script/main.scm', case_sensitive=False)}
         elif k in ('files', 'copy', 'intro'):
             rm = sec.get('remove', [])
             for pat in sec['src']:

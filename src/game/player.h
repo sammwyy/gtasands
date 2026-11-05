@@ -124,6 +124,15 @@ bool attachedMatrix(float ox, float oy, float oz, s32 out[12]);
 void vehicleExploded(int id);   // inside a car that blew up
 void explosionDamage(float x, float y, float z, float damage);
 void hitByVehicle(float vx, float vy, float damage);   // m/s of the car
+// CPed::InflictDamage on CJ from a ped's fist / bullet (armour first).
+void takeDamage(float damage);
+// CWanted::RegisterCrime -> ReportCrimeNow multipliers: chaos points, stars at
+// 50 / 180 / 550 / 1200 / 2400 / 4600 (UpdateWantedLevel), one point lost per
+// second without police within 18 m (CWanted::Update).
+enum Crime : uint8_t { CRIME_DAMAGED_PED, CRIME_DAMAGED_COP, CRIME_STAB_PED, CRIME_STAB_COP, CRIME_KILL_PED_WITH_CAR,
+                       CRIME_EXPLOSION, CRIME_AIM_GUN };
+void registerCrime(Crime c);
+void setWantedLevel(int level);   // CWanted::SetWantedLevel (chaos 0 / 70 / 200 / 570 / 1220 / 2420 / 4620)
 // Puts CJ on the floor under him (collision probe around g.z, else from
 // 60 m above). The loading screen calls it once the collision is in.
 void placeOnGround();

@@ -307,6 +307,78 @@ struct VehInfo {
 };
 struct VehSurface { uint8_t adhesionGroup; int8_t wetGrip; uint8_t skidmark, pad; };
 
+// ---------------------------------------------------------------- DPED (ped population, data/peds.dped)
+// tools/gtasa/peds.py: peds.ide (CFileLoader::LoadPedObject), pedstats.dat,
+// pedgrp.dat (57 ePopcyclePedGroup lines, members = PedModel indices),
+// popcycle.dat ([20 zone types][weekday, weekend][12 two-hour slots]), the
+// walkcycle groups of animgrp.dat the peds use (index 0 = "man"), the info.zon
+// zones touching the map bounds with main.scm's new-game population setup, and
+// the ped path nodes (nodes*.dat) inside the bounds bucketed in a cell grid.
+struct PedHeader {
+	uint32_t magic;          // 'DPED'
+	uint16_t version;        // 1
+	uint16_t numModels, numStats, numAnimGroups, numGroups, numZones;
+	uint32_t numNodes, numLinks;
+	int16_t gridX0, gridY0;  // SA coords of cell (0,0)'s south-west corner
+	uint16_t gridW, gridH, cellSize, pad;
+	uint32_t modelOffset;    // PedModel[numModels]
+	uint32_t nameOffset;     // PedName[numModels] (read on demand)
+	uint32_t statOffset;     // PedStat[numStats]
+	uint32_t animOffset;     // PedAnimGroup[numAnimGroups]
+	uint32_t groupOffset;    // PedGroup[numGroups], then uint16_t members[]
+	uint32_t popOffset;      // PopRow[20][2][12] (read on demand)
+	uint32_t zoneOffset;     // PedZone[numZones]
+	uint32_t cellOffset;     // PathCell[gridW * gridH] (row-major from the SW corner)
+	uint32_t nodeOffset;     // PathNode[numNodes], grouped by cell
+	uint32_t linkOffset;     // uint16_t[numLinks] node indices
+};
+struct PedModel {
+	uint16_t modelId;
+	uint8_t pedType;         // ePedType
+	uint8_t stat;            // PedStat index
+	uint8_t animGroup;       // PedAnimGroup index
+	uint8_t race;            // ePedRace (CPopulation::FindPedRaceFromName)
+	uint8_t flags, pad;
+	uint16_t carsMask, pad2;
+};
+struct PedName { char model[24], txd[24]; };   // gta3.dspk "<model>.dff" / "<txd>.txd"
+struct PedStat {
+	uint8_t fleeDistance;    // m
+	uint8_t headingChangeRate;   // x10
+	uint8_t fear, temper, lawfulness, sexiness;
+	uint8_t attackStrength, defendWeakness;   // x20
+	uint8_t shootingRate, decisionMaker;
+	uint8_t pad[2];
+};
+enum PedAnimClip : uint8_t { PEDANIM_WALK, PEDANIM_RUN, PEDANIM_SPRINT, PEDANIM_IDLE, PEDANIM_ROADCROSS, PEDANIM_WALKSTART, PEDANIM_COUNT };
+struct PedAnimGroup { char name[16]; char clip[PEDANIM_COUNT][24]; };
+struct PedGroup { uint16_t first, count; };
+struct PopRow {          // CPopCycle per zone type / week part / time slot
+	uint8_t maxPeds, maxCars;
+	uint8_t percDealers, percGang, percCops, percOther;
+	uint8_t group[18];       // ePopcycleGroupPerc percentages
+};
+struct PedZone {         // CZoneInfo of an info.zon zone
+	int16_t x1, y1, x2, y2;
+	uint8_t popType;         // eZonePopulationType
+	uint8_t races;           // bit (race - 1) allowed
+	uint8_t dealer, pad;
+	uint8_t gang[10];        // GangStrength per eGangID
+	uint8_t pad2[2];
+};
+struct PathCell { uint16_t first, count; };
+enum PathNodeFlags : uint8_t { PATHNODE_DONT_WANDER = 1, PATHNODE_SWITCHED_OFF = 2, PATHNODE_DEAD_END = 4 };
+struct PathNode {
+	int16_t x, y, z;         // 1/8 m (CompressedLargeVector)
+	uint16_t firstLink;
+	uint8_t numLinks;
+	uint8_t width;           // 1/16 m
+	uint8_t flags;           // PathNodeFlags | spawn probability << 4
+	uint8_t pad;
+};
+static_assert(sizeof(PedHeader) == 76 && sizeof(PedModel) == 12 && sizeof(PedStat) == 12 && sizeof(PedAnimGroup) == 160 &&
+              sizeof(PopRow) == 24 && sizeof(PedZone) == 24 && sizeof(PathNode) == 12);
+
 // ---------------------------------------------------------------- audio
 enum SoundFormat : uint8_t { SND_PCM8 = 0, SND_PCM16 = 1, SND_ADPCM = 2 };  // = DS SOUNDxCNT format bits
 struct SoundHeader {

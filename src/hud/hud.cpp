@@ -3,6 +3,7 @@
 #include <nds.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 
 #include "assets/texture.h"
@@ -19,6 +20,8 @@
 #include "game/timecycle.h"
 #include "game/weather.h"
 #include "game/debugopts.h"
+#include "game/pedmodel.h"
+#include "game/peds.h"
 #include "game/player.h"
 #include "game/world.h"
 #include "game/vehicle.h"
@@ -264,6 +267,69 @@ static void vehTest(int f) {
 }
 #endif
 
+#if defined(GTASADS_DEBUG) && defined(GTASADS_PEDTEST)
+// Headless ped test (after the screenshot sequence): a ped placed 1 m in
+// front of CJ takes a punch combo (hit / knock-down / response), then CJ gets
+// a pistol and shoots a second one (death, the others flee). One line per 20
+// frames to gtasads_pedtest.txt (the nearest peds' task / health), shot6..8.
+static void pedTest(int f) {
+	static FILE* out;
+	static int a = -1, b = -1;
+	auto log = [&](const char* what) {
+		if (!out) return;
+		const peds::Stats& ps = peds::stats();
+		fprintf(out, "%4d %-6s cj=%.2f,%.2f hp=%d $%d wanted=%d live=%u drawn=%u upd=%lu draw=%lu fps=%lu |", f, what,
+		        player::g.x, player::g.y, (int)player::g.health, player::g.money, player::g.wantedLevel, ps.live, ps.drawn,
+		        (unsigned long)ps.updateUs, (unsigned long)ps.drawUs, timing::fps());
+		for (int i = 0; i < peds::MAX; i++) {
+			peds::Info in;
+			if (!peds::info(i, in)) continue;
+			const float dx = in.x - player::g.x, dy = in.y - player::g.y;
+			fprintf(out, " #%d%s id%d %s hp%d %.1fm t%d", i, i == a ? "A" : i == b ? "B" : "", in.modelId,
+			        peds::taskName(in.task), (int)in.health, sqrtf(dx * dx + dy * dy), in.target);
+		}
+		fputc('\n', out);
+	};
+	if (f == 90) {   // shot0 (frame 120, before any capture borrows VRAM D) shows a ped up close
+		const int c = peds::spawnNear(player::g.x, player::g.y, player::g.z);
+		peds::debugPlace(c, player::g.x + 0.6f, player::g.y + 2.2f, player::g.z, 3.1416f);
+	}
+	if (f == 600) {
+		player::respawn();
+		player::debugSetView(0.0f, 0.3f);
+		out = fopen("fat:/gtasads_pedtest.txt", "w");
+		a = peds::spawnNear(player::g.x, player::g.y, player::g.z);
+		b = peds::spawnNear(player::g.x, player::g.y, player::g.z);
+		log("spawn");
+	}
+	if (f == 610) {
+		peds::debugPlace(a, player::g.x, player::g.y + 1.0f, player::g.z, 3.1416f);
+		peds::debugPlace(b, player::g.x + 2.0f, player::g.y + 7.0f, player::g.z, 3.1416f);
+	}
+	if (f > 600 && f < 1200 && f % 20 == 0) log(f < 760 ? "punch" : f < 900 ? "after" : "shoot");
+	if (f == 640) video::requestCapture("fat:/gtasads_shot6.dscr");
+	for (int k = 0; k < 3; k++) {
+		if (f == 650 + k * 22) input::debugHold(KEY_A);
+		if (f == 653 + k * 22) input::debugHold(0);
+	}
+	if (f == 700) video::requestCapture("fat:/gtasads_shot7.dscr");
+	if (f == 900) {
+		player::giveWeapon(player::WEAPON_PISTOL, 50);
+		peds::Info in;
+		if (peds::info(b, in)) player::debugSetView(atan2f(-(in.x - player::g.x), in.y - player::g.y), 0.3f);
+	}
+	if (f >= 930 && f < 1060 && f % 16 == 0) input::debugHold(KEY_R | KEY_A);
+	if (f >= 930 && f < 1060 && f % 16 == 4) input::debugHold(KEY_R);
+	if (f == 1060) input::debugHold(0);
+	if (f == 1000) video::requestCapture("fat:/gtasads_shot8.dscr");
+	if (f == 1200 && out) {
+		log("end");
+		fclose(out);
+		out = nullptr;
+	}
+}
+#endif
+
 void draw() {
 	if (s_screen == Screen::GAME) {
 		if (s_gameActive && chud::ready()) {
@@ -281,6 +347,9 @@ void draw() {
 #endif
 #ifdef GTASADS_VEHTEST
 			vehTest(s_gameFrames);
+#endif
+#ifdef GTASADS_PEDTEST
+			pedTest(s_gameFrames);
 #endif
 			// headless screenshots (tools/dsshot.py): one per compass direction
 			// (shot0 at the marker frame, then turn, give streaming 60 frames,
@@ -320,6 +389,15 @@ void draw() {
 				char ab[320];
 				audio::statsLine(ab, sizeof ab);
 				fprintf(f, "%s\n", ab);
+				const peds::Stats& ps = peds::stats();
+				const pedmodel::Stats& pm = pedmodel::stats();
+				fprintf(f, "peds: live=%u max=%u civ=%u gang=%u cops=%u drawn=%u posed=%u polys=%u spawned=%u removed=%u "
+				        "zone=%u slot=%u models=%u/%u lists=%luK texvram=%luK upd=%luus(task %lu phys %lu) draw=%luus(pose %lu peak %lu avg %lu) wanted=%u\n",
+				        ps.live, ps.maxPeds, ps.civ, ps.gang, ps.cops, ps.drawn, ps.posed, ps.polys, ps.spawned, ps.removed,
+				        ps.zoneType, ps.slot, pm.ready, pm.models, (unsigned long)(pm.listBytes >> 10),
+				        (unsigned long)(pm.texVram >> 10), (unsigned long)ps.updateUs, (unsigned long)ps.taskUs, (unsigned long)ps.physUs,
+				        (unsigned long)ps.drawUs, (unsigned long)ps.poseUs, (unsigned long)ps.posePeakUs,
+				        (unsigned long)(ps.poseCount ? ps.poseTotalUs / ps.poseCount : 0), ps.wanted);
 			};
 			if (s_gameFrames == 120 + 5 * 90 + 2) {
 				char mb[128];

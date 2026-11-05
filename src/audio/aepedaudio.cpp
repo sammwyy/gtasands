@@ -56,6 +56,7 @@ static uint16_t audioOf(uint8_t surface) { return surface < s_numSurfaces ? s_su
 void preload() {
 	aebank::requestBank(ae::BANK_FEET_GENERIC, true);
 	aebank::pin(ae::BANK_GENRL_WEAPONS, ae::SND_WEAPONS_WEAPON_SWIPE_FIST);
+	for (uint16_t i = 0; i < 4; i++) aebank::find(ae::BANK_GENRL_WEAPONS, ae::SND_WEAPONS_BODY_PUNCH1 + i);
 }
 
 static void play(uint16_t bank, uint16_t id, const Pos& p, float volume, float speed, int16_t event) {
@@ -171,6 +172,59 @@ void sayPain(Pain ctx, const Pos& p) {
 	s.x = p.x; s.y = p.y; s.z = p.z;
 	s.volume = c.volume;
 	s.owner = aesound::OWNER_SPEECH;
+	aesound::play(s);
+}
+
+// gPainSpeechLookup rows CTX_PAIN_PED_DEATH_HIGH / DEATH_LOW / GENRIC / PANIC,
+// columns MALE (PAIN_A_MALE, 101 sounds) and FEMALE (PAIN_A_FEMALE, 131)
+static const PainCtx k_pedPain[4][2] = {
+	{ { 25, 35, 2000, 0.0f }, { 7, 18, 2000, 0.0f } },
+	{ { 36, 45, 2000, 0.0f }, { 19, 35, 2000, 0.0f } },
+	{ { 46, 87, 2000, 0.0f }, { 36, 68, 2000, 0.0f } },
+	{ { 103, 119, 8000, 0.0f }, { 84, 94, 8000, 0.0f } },
+};
+
+void sayPedPain(bool female, PedPain ctx, const Pos& p) {
+	const PainCtx& c = k_pedPain[ctx][female ? 1 : 0];
+	const uint16_t bank = female ? ae::BANK_PAIN_A_FEMALE : ae::BANK_PAIN_A_MALE;
+	if (aesound::playing(ae::AE_UNDEFINED, aesound::OWNER_SPEECH) >= 2) return;
+	const uint16_t id = (uint16_t)ae::randInt(c.first, c.last);
+	if (aebank::find(bank, id) < 0) return;   // queued: the next line of this context will be in
+	Params s;
+	s.bank = bank;
+	s.id = id;
+	s.x = p.x; s.y = p.y; s.z = p.z;
+	s.volume = c.volume;
+	s.freqVariance = 0.04f;
+	s.owner = aesound::OWNER_SPEECH;
+	aesound::play(s);
+}
+
+void pedHit(const Pos& p) {
+	const uint16_t id = (uint16_t)(ae::SND_WEAPONS_BODY_PUNCH1 + ae::randInt(0, 3));
+	if (aebank::find(ae::BANK_GENRL_WEAPONS, id) < 0) return;
+	Params s;
+	s.bank = ae::BANK_GENRL_WEAPONS;
+	s.id = id;
+	s.x = p.x; s.y = p.y; s.z = p.z;
+	s.volume = ae::defaultVolume(ae::AE_PED_HIT_HIGH_UNARMED);
+	s.freqVariance = 0.06f;
+	s.owner = aesound::OWNER_PED;
+	s.event = ae::AE_PED_HIT_HIGH_UNARMED;
+	aesound::play(s);
+}
+
+void bulletHitPed(const Pos& p) {
+	const uint16_t id = (uint16_t)ae::randInt(7, 9);   // BULPED1L..3L
+	if (aebank::find(ae::BANK_GENRL_BULLET_HITS, id) < 0) return;
+	Params s;
+	s.bank = ae::BANK_GENRL_BULLET_HITS;
+	s.id = id;
+	s.x = p.x; s.y = p.y; s.z = p.z;
+	s.volume = ae::defaultVolume(ae::AE_BULLET_HIT);
+	s.freqVariance = 0.08f;
+	s.owner = aesound::OWNER_PED;
+	s.event = ae::AE_BULLET_HIT;
 	aesound::play(s);
 }
 

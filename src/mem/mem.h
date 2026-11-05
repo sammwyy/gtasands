@@ -22,6 +22,7 @@ enum Tag : uint8_t {
 	TAG_PACK,      // DSPK TOCs / page caches
 	TAG_WORLD,     // zones, IDE/IPL tables, pools
 	TAG_COL,       // map collision records + index (game/collision)
+	TAG_PED,       // ped population: peds.dped tables, ped pool, poses (game/peds)
 	TAG_TEMP,      // scratch overflow
 	TAG_COUNT
 };

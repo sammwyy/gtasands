@@ -151,7 +151,7 @@ uint32_t tagBytes(Tag t) { return s_stream.tagBytes(t) + s_permTag[t]; }
 
 const char* tagName(Tag t) {
 	static const char* const k[TAG_COUNT] = { "sys", "text", "model", "tex", "anim", "audio",
-	                                          "radar", "hud", "pack", "world", "col", "temp" };
+	                                          "radar", "hud", "pack", "world", "col", "ped", "temp" };
 	return t < TAG_COUNT ? k[t] : "?";
 }
 

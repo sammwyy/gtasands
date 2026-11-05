@@ -12,6 +12,7 @@
 #include "game/debugopts.h"
 #include "game/pad.h"
 #include "game/pedmove.h"
+#include "game/peds.h"
 #include "game/timecycle.h"
 #include "game/vehicle.h"
 #include "game/vehicledata.h"
@@ -202,6 +203,9 @@ static constexpr float CAM_MARGIN = 0.3f;      // camera kept this far in front 
 static uint8_t s_surface;        // m_nContactSurface: COL surface of the last floor under the feet
 static float s_footPhase = -1.0f; // lead cycle phase at the last step (CPed::PlayFootSteps)
 static bool s_swung;             // AE_PED_SWING raised for the current punch
+static bool s_struck;            // CTaskSimpleFight::FightHitPed done for the current punch
+static uint32_t s_chaos;         // CWanted::m_ChaosLevel
+static uint32_t s_wantedMs;      // vblanks toward the next chaos decrease
 static bool s_saidFall;          // CTX_GLOBAL_PAIN_CJ_HIGH_FALL said during this fall
 static float s_viewZ = SPAWN_Z;  // smoothed feet z: render / camera reference
 static float s_camDist = 3.6f;   // chase distance after the camera collision
@@ -570,9 +574,15 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 			aeped::swing(s_slots[s_slot].type, pedPos());
 			aeped::sayPain(aeped::PAIN_CJ_BOXING, pedPos());
 		}
+		// the fist / weapon arrives: whoever stands in front takes it, the
+		// third move of the combo knocks down
+		if (!s_struck && ph >= 0.3f) {
+			s_struck = true;
+			peds::meleeHit(g.x, g.y, g.z, g.heading, 1.3f, s_slots[s_slot].type, s_combo == 2);
+		}
 		if (attackDown && melee && ph >= 0.45f && s_combo < 2) {
 			s_combo++;
-			s_swung = false;
+			s_swung = s_struck = false;
 			// Fight clips carry the authored lunge on the root (FIGHT_* are
 			// CAN_EXTRACT_VELOCITY). Extracting it moves the ped for real.
 			poseOne(k_punch[s_combo], false, true, true);
@@ -676,7 +686,7 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 	if (attackDown && melee) {
 		s_action = ACT_PUNCH;
 		s_combo = 0;
-		s_swung = false;
+		s_swung = s_struck = false;
 		poseOne(k_punch[0], false, true, true);
 	}
 }
@@ -770,7 +780,9 @@ static void updateMove() {
 			col::Hit h;
 			if (col::castSegment(a, b, h))
 				for (int k = 0; k < 3; k++) b[k] = a[k] + (b[k] - a[k]) * h.t;
+			peds::bulletHit(a, b, wep.type);   // a ped in the way stops it
 			veh::bulletHit(a, b, 25.0f);
+			peds::gunShot(g.x, g.y, g.z);      // CEventGunShot
 		}
 	}
 
@@ -870,7 +882,16 @@ static void startFall() {
 static void collide() {
 	if (physics())
 		for (const float hz : col::PED_SPHERE_Z) col::pushSphere(g.x, g.y, g.z + hz, col::PED_RADIUS);
-	veh::pushPed(g.x, g.y, g.z + 1.0f, col::PED_RADIUS);
+	// hit by a moving vehicle: knocked back and hurt (CPed::KillPedWithCar, reduced)
+	veh::PedHit hit;
+	veh::pushPed(g.x, g.y, g.z + 1.0f, col::PED_RADIUS, vehicleId(), &hit);
+	static uint32_t s_lastHit;
+	if (hit.id >= 0 && hit.speed > 0.08f && timing::vblanks() - s_lastHit > 30) {
+		s_lastHit = timing::vblanks();
+		hitByVehicle(hit.vx * 60.0f, hit.vy * 60.0f, hit.speed * 120.0f);
+		veh::pedHitSound(hit.id, g.x, g.y, g.z);
+	}
+	peds::pushPlayer(g.x, g.y, g.z, col::PED_RADIUS);
 	if (s_action == ACT_GLIDE) return;
 	float z;
 	if (floorAt(g.z + STEP_UP, g.z - SNAP_DOWN, z)) {
@@ -1275,6 +1296,35 @@ void hitByVehicle(float vx, float vy, float damage) {
 	poseOne(s_glideClip, true, false, true);
 }
 
+void takeDamage(float damage) {
+	if (damage <= 0.0f || g.health <= 0.0f) return;
+	const float a = g.armour < damage ? g.armour : damage;
+	g.armour -= a;
+	g.health -= damage - a;
+	if (g.health < 0.0f) g.health = 0.0f;
+}
+
+// CWanted::UpdateWantedLevel
+static void updateWanted() {
+	if (s_chaos > 4600) s_chaos = 4600;   // MaximumChaosLevel
+	static const uint32_t k_stars[6] = { 50, 180, 550, 1200, 2400, 4600 };
+	int w = 0;
+	while (w < 6 && s_chaos >= k_stars[w]) w++;
+	g.wantedLevel = w;
+}
+
+void registerCrime(Crime c) {
+	static const uint8_t k_mult[] = { 5, 45, 35, 100, 18, 25, 2 };   // ReportCrimeNow, m_Multiplier 1
+	s_chaos += k_mult[c];
+	updateWanted();
+}
+
+void setWantedLevel(int level) {
+	static const uint32_t k_chaos[7] = { 0, 70, 200, 570, 1220, 2420, 4620 };
+	s_chaos = k_chaos[level < 0 ? 0 : level > 6 ? 6 : level];
+	updateWanted();
+}
+
 // CCam::Process_FollowCar_SA, reduced: behind the vehicle (its velocity
 // heading once it moves), distance and height from the model's size;
 // aircraft sit further back and look along their pitch a little
@@ -1307,6 +1357,7 @@ void init() {
 	g.breath = g.maxBreath;              // on land the breath bar stays hidden
 	g.money = 0;
 	g.wantedLevel = 0;
+	s_chaos = s_wantedMs = 0;
 	g.fat = 0.0f;
 	g.muscle = 0.0f;
 	g_clockH = 12; g_clockM = 0;
@@ -1402,6 +1453,7 @@ void update() {
 			s_wastedT = 0.0f;
 			respawn();
 			g.health = g.maxHealth;
+			setWantedLevel(0);
 		}
 	} else {
 		s_wastedT = 0.0f;
@@ -1414,6 +1466,15 @@ void update() {
 		s_lookH += (CAM_LOOK_H - s_lookH) * 0.2f;
 	}
 	updateCamera();
+
+	// CWanted::Update: a chaos point goes every second nobody from the police is near
+	if (s_chaos && (s_wantedMs += dv) >= 60) {
+		s_wantedMs = 0;
+		if (!peds::copNear(g.x, g.y, 18.0f)) {
+			s_chaos--;
+			updateWanted();
+		}
+	}
 
 	const bool running = pedmove::isRunning(s_move) && !g.aiming;
 	const bool sprinting = pedmove::isSprinting(s_move);

@@ -52,6 +52,7 @@ min_tris = 64             # never decimate below this
 max_tris = 0              # hard cap per geometry (0 = none). DS limit: 2048 polys per FRAME
 decimate = "cluster"      # cluster (fast vertex clustering) | qem (quadric half-edge collapses: open/UV-seam
                           # verts locked, same-bone collapses only; slower, much better, crack-free seams)
+                          # | wedge (quadric collapses on the welded mesh, seams only wedge-to-wedge: UVs stay exact)
 uvs = true
 normals = false           # map geometry is prelit, normals only cost space
 vertex_colors = true      # prelit colors (RGB15)
@@ -91,9 +92,10 @@ match_ide = "data/vehicles.ide"   # the runtime swaps ok -> dam per panel (CDama
 model = { ratio = 0.25, min_tris = 24, max_tris = 320, normals = true, drop_damage = false }
 texture = { max_size = 64 }
 
-[[gta3_img.rule]]         # peds: skinned, lit
-match_ide = "data/peds.ide"
-model = { ratio = 0.5, max_tris = 600, normals = true }
+[[gta3_img.rule]]         # peds: one skinned mesh each, tinted by the ped light like CJ (no normals); ~270 tris
+match_ide = "data/peds.ide"     # (~135 drawn): src/game/pedmodel.cpp, a crowd has to fit next to the map
+# wedge: clustering averaged UVs across islands (flat-coloured peds), qem stalls at ~700 (seams locked)
+model = { ratio = 0.25, max_tris = 300, normals = false, decimate = "wedge" }
 texture = { max_size = 64 }
 
 [[gta3_img.rule]]         # weapons / pickups
@@ -147,6 +149,12 @@ bounds = [2150, -1950, 2850, -1400]   # Grove Street / Ganton / Idlewood for now
 [vehicles]
 kind = "vehicles"
 out = "data/vehicles.dveh"
+
+# Ped population: peds.ide / pedstats / pedgrp / popcycle / animgrp tables, the ped path
+# nodes inside [world] bounds and main.scm's new-game zone setup (src/game/peddata.cpp).
+[peds]
+kind = "peds"
+out = "data/peds.dped"
 
 # -----------------------------------------------------------------------------
 [gta_int_img]             # interiors

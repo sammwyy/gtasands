@@ -17,6 +17,8 @@
 #include "game/debugopts.h"
 #include "game/hud/chud.h"
 #include "game/hud/radar.h"
+#include "game/pedmodel.h"
+#include "game/peds.h"
 #include "game/player.h"
 #include "game/timecycle.h"
 #include "game/vehicle.h"
@@ -193,14 +195,15 @@ static void pageMem() {
 	line(6, "blocks %lu  total %uK", (unsigned long)mem::stats(mem::REGION_STREAM).blocks,
 	     (unsigned)(mem::totalBytes() >> 10));
 	for (int t = 0, row = 7; t < mem::TAG_COUNT; t += 2, row++) {
-		char a[16], b[16] = "";
+		char a[16], b[20] = "";
 		snprintf(a, sizeof a, "%-6s%5uK", mem::tagName((mem::Tag)t), (unsigned)(mem::tagBytes((mem::Tag)t) >> 10));
 		if (t + 1 < mem::TAG_COUNT)
 			snprintf(b, sizeof b, "%-6s%5uK", mem::tagName((mem::Tag)(t + 1)),
 			         (unsigned)(mem::tagBytes((mem::Tag)(t + 1)) >> 10));
+		else   // odd tag count: VRAM shares the last row
+			snprintf(b, sizeof b, "vram%4uK/%3d", (unsigned)(tex::vramBytes() >> 10), tex::loadedCount());
 		line(row, "%s   %s", a, b);
 	}
-	line(13, "vram %3uK in %d textures", (unsigned)(tex::vramBytes() >> 10), tex::loadedCount());
 	line(14, "anim %2d clips %3uK (budget %uK)", animstore::residentClips(),
 	     (unsigned)(animstore::residentBytes() >> 10), (unsigned)(mem::budget::ANIM_CACHE_BYTES >> 10));
 	line(15, "heap check: %s", s_heapCheck < 0 ? "-" : s_heapCheck ? "\x1b[32mOK\x1b[39m" : "\x1b[31mCORRUPT\x1b[39m");
@@ -359,9 +362,9 @@ static void pageGame(bool inGame) {
 	int c;
 	line(1, "wanted %d", p.wantedLevel);
 	c = 14;
-	if (button(1, c, "-")) p.wantedLevel = p.wantedLevel > 0 ? p.wantedLevel - 1 : 0;
-	if (button(1, c, "+")) p.wantedLevel = p.wantedLevel < 6 ? p.wantedLevel + 1 : 6;
-	if (button(1, c, "0")) p.wantedLevel = 0;
+	if (button(1, c, "-")) player::setWantedLevel(p.wantedLevel - 1);
+	if (button(1, c, "+")) player::setWantedLevel(p.wantedLevel + 1);
+	if (button(1, c, "0")) player::setWantedLevel(0);
 
 	line(2, "health %3d", (int)p.health);
 	c = 14;
@@ -442,6 +445,45 @@ static void toggleRow(int row, const char* name, bool& v) {
 	if (button(row, c, v ? "ON " : "OFF")) v = !v;
 }
 
+// REND tab rows 15..23: the ped population (game/peds)
+static void pagePeds() {
+	dbg::Options& o = dbg::opts;
+	const peds::Stats& ps = peds::stats();
+	line(15, "\x1b[33mpeds\x1b[39m %2u/%-2u c%u g%u p%u d%u", ps.live, ps.maxPeds, ps.civ, ps.gang, ps.cops, ps.dealers);
+	int c = 24;
+	if (button(15, c, o.peds ? "ON " : "OFF")) o.peds = !o.peds;
+	line(16, "density %3d%%  polys %3d", o.pedDensity, o.pedPolys);
+	put(17, 0, "");
+	c = 0;
+	if (button(17, c, "d-") && o.pedDensity > 0) o.pedDensity -= 25;
+	if (button(17, c, "d+") && o.pedDensity < 200) o.pedDensity += 25;
+	if (button(17, c, "p-") && o.pedPolys > 100) o.pedPolys -= 100;
+	if (button(17, c, "p+") && o.pedPolys < 1200) o.pedPolys += 100;
+	put(18, 0, "");
+	c = 0;
+	if (button(18, c, "spawn")) peds::spawnNear(player::g.x, player::g.y, player::g.z);
+	if (button(18, c, "kill all")) peds::removeAll();
+	const pedmodel::Stats& ms = pedmodel::stats();
+	line(19, "zone t%u %s slot%u mdl %u/%u %luK", ps.zoneType, ps.weekend ? "wkend" : "wkday", ps.slot, ms.ready,
+	     ms.models, (unsigned long)(ms.listBytes >> 10));
+	line(20, "drawn %u posed %u polys %u", ps.drawn, ps.posed, ps.polys);
+	line(21, "upd %luus draw %luus +%u -%u", (unsigned long)ps.updateUs, (unsigned long)ps.drawUs, ps.spawned, ps.removed);
+	// nearest ped
+	int best = -1;
+	float bestD = 1e9f;
+	peds::Info in;
+	for (int i = 0; i < peds::MAX; i++)
+		if (peds::info(i, in)) {
+			const float dx = in.x - player::g.x, dy = in.y - player::g.y;
+			if (dx * dx + dy * dy < bestD) { bestD = dx * dx + dy * dy; best = i; }
+		}
+	if (best >= 0 && peds::info(best, in))
+		line(22, "#%d id%d %-7s hp%3d %.0fm t%d", best, in.modelId, peds::taskName(in.task), (int)in.health, sqrtf(bestD), in.target);
+	else
+		line(22, "(no peds)");
+	blank(23, 23);
+}
+
 static void pageRend() {
 	dbg::Options& o = dbg::opts;
 	toggleRow(1, "CJ mesh", o.drawCj);
@@ -478,7 +520,7 @@ static void pageRend() {
 	if (button(13, c, "p-") && o.colPolys > 100) o.colPolys -= 100;
 	if (button(13, c, "p+") && o.colPolys < 1800) o.colPolys += 100;
 	toggleRow(14, "physics (col)", o.physics);
-	blank(15, 23);
+	pagePeds();
 }
 
 // Two toggles on one row: name at col 0 / 13, buttons at col 7 / 24.

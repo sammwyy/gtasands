@@ -96,9 +96,19 @@ static void matToQuat(const s32* m, s32* q) {
 	q[3] = qmul(w, inv);
 }
 
+// Lerped / blended keys stay close to unit length: two Newton steps of
+// 1/sqrt(d2) from 1 (x' = x (3 - d2 x^2) / 2) are exact to ~0.1% there and
+// skip the divider + square root unit waits (32 bones x every pose). Far
+// from 1 (opposed blends) the exact path.
 static void normalize(s32* q) {
 	const s32 d2 = qmul(q[0], q[0]) + qmul(q[1], q[1]) + qmul(q[2], q[2]) + qmul(q[3], q[3]);
-	const s32 inv = divf32(1 << 12, sqrtf32(d2 > 0 ? d2 : 1 << 12));
+	s32 inv;
+	if (d2 > 3277 && d2 < 5120) {   // 0.8 .. 1.25
+		inv = ((3 << 12) - d2) >> 1;
+		inv = qmul(inv, ((3 << 12) - qmul(d2, qmul(inv, inv))) >> 1);
+	} else {
+		inv = divf32(1 << 12, sqrtf32(d2 > 0 ? d2 : 1 << 12));
+	}
 	for (int c = 0; c < 4; c++) q[c] = qmul(q[c], inv);
 }
 
@@ -291,6 +301,20 @@ void blendWorld(const mdl::Model* m, const Local* const* locals, const s32* w409
 	for (int i = 0; i < n; i++) wsum += w4096[i] > 0 ? w4096[i] : 0;
 	if (wsum <= 0) {
 		evalBind(m, world);
+		return;
+	}
+	if (n == 1) {   // one association: no weights, no sign tests
+		for (int b = 0; b < m->numBones; b++) {
+			const Local& L = locals[0][b];
+			s32 q[4] = { L.q[0], L.q[1], L.q[2], L.q[3] };
+			s32* lm = mats + b * 12;
+			normalize(q);
+			quatToMat(q, lm);
+			lm[9] = L.t[0];
+			lm[10] = L.t[1];
+			lm[11] = L.t[2];
+		}
+		compose(m, mats, world);
 		return;
 	}
 	const s64 invW = ((s64)1 << 36) / wsum;     // 2^36 / wsum, applied as >> 36 after * w

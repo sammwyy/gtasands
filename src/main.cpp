@@ -5,6 +5,7 @@
 #include "game/collision.h"
 #include "game/intro.h"
 #include "game/loadscreen.h"
+#include "game/peds.h"
 #include "game/player.h"
 #include "game/sfx.h"
 #include "game/timecycle.h"
@@ -139,6 +140,10 @@ int main() {
 			timecycle::update(player::g.x, player::g.y, player::g.z);   // CTimeCycle::Update
 			world::update(player::g.x, player::g.y);                    // sectors + model streaming
 			veh::update();                                              // vehicle models, timers, audio
+			static u32 s_pedVbl;
+			const u32 vb = timing::vblanks();
+			peds::update(s_pedVbl ? (int)(vb - s_pedVbl) : 1);          // CPopulation + ped tasks
+			s_pedVbl = vb;
 		}
 		audio::service();   // CAudioEngine::Service: entities, bank reads, channels, ambience stream
 		timing::setSection(timing::SEC_SIM, timing::usSince(t));
@@ -151,6 +156,7 @@ int main() {
 		video::endFrame();
 		world::vblank();      // texture uploads while the 3D engine is idle
 		vehmdl::vblank();
+		peds::vblank();       // ped model textures
 		hud::present();
 	}
 	return 0;

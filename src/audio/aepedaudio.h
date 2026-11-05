@@ -27,4 +27,14 @@ void swing(int weaponType, const Pos& p);
 enum Pain : uint8_t { PAIN_CJ_BOXING, PAIN_CJ_HIGH_FALL };
 void sayPain(Pain ctx, const Pos& p);
 
+// The generic ped voices of PAIN_A_MALE / PAIN_A_FEMALE (gPainSpeechLookup
+// CTX_PAIN_PED_*): AI peds hit, dying, panicking. One voice at a time per
+// speech slot, `volume` dB on top (distant peds quieter).
+enum PedPain : uint8_t { PAIN_PED_DEATH_HIGH, PAIN_PED_DEATH_LOW, PAIN_PED_GENERIC, PAIN_PED_PANIC };
+void sayPedPain(bool female, PedPain ctx, const Pos& p);
+// HandlePedHit (AE_PED_HIT_HIGH_UNARMED): a fist / melee weapon lands on a ped
+void pedHit(const Pos& p);
+// AE_BULLET_HIT on a ped (GENRL_BULLET_HITS BULPED1..3)
+void bulletHitPed(const Pos& p);
+
 }

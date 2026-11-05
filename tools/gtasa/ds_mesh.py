@@ -415,7 +415,7 @@ def convert_geometry(g, p):
         bone = [sk.indices[i * 4 + max(range(4), key=lambda k: sk.weights[i * 4 + k])] for i in range(nv)]
     if p['decimate'] == 'qem':
         rep, tris = decimate_qem(g.verts, tris, target, bone)
-    elif p['ground_qem'] and is_flat(g.verts, tris):
+    elif p['decimate'] == 'wedge' or (p['ground_qem'] and is_flat(g.verts, tris)):
         # ground pieces: a hole in the ground shows the sky, a lost wall detail
         # does not matter much -> crack/hole-free collapses there
         rep, tris = decimate_wedge(g.verts, tris, target)

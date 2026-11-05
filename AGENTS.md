@@ -17,7 +17,9 @@ ground, walls stop him, falls off ledges, the camera is pulled in front of walls
 overlays: skeleton + collision wireframe on top with an outline), vehicles (ARCHITECTURE 6d: every IDE type - cars, bikes/BMX/quads,
 boats on water.dat, helis, planes, trains on tracks.dat, trailers, RC - spawned by type or model id from the debug
 GAME tab, enter/exit per type, fixed-point physics, damage panels, burst tyres, fire, explosion, skidmarks, head /
-tail lights, engine / horn / skid / door / crash sounds). 30 fps at the spawn (~15-25 while driving).
+tail lights, engine / horn / skid / door / crash sounds), random peds (ARCHITECTURE 6e: popcycle/zone driven
+population on the ped paths, streamed skinned models, wander / flee / fight / shoot / hit / knock-down / die / dive,
+gangs + cops, CWanted chaos, money drops). ~28 fps at the spawn (~15-25 while driving).
 
 ## Toolchain
 - devkitPro at `~/devkitpro` (`source ~/devkitpro/devkitarm.sh`).
@@ -81,6 +83,10 @@ tail lights, engine / horn / skid / door / crash sounds). 30 fps at the spawn (~
   Greenwood, presses Y (walk to door, open, getin, close), drives west into a second car, brakes, gets out,
   sets the health under 250 (fire -> explosion). `gtasads_vehtest.txt` (car/CJ state per 20 frames, crash damage
   lines), shot6..shot10. Needs `timeout -s INT 200`.
+- Ped test (DEBUG): `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DGTASADS_PEDTEST"` places a ped in
+  front of CJ (shot0), punches it (its gang mate joins), gives a pistol and shoots the other; `gtasads_pedtest.txt` =
+  CJ + every ped's task / health / distance per 20 frames. Needs `timeout -s INT 110`. Peds look flat in captures
+  (their textures are in VRAM D, borrowed by the capture).
 - What stopped CJ there? `python3 tools/colnear.py X Y Z [R]` lists the baked collision
   (faces with world n.z, boxes) around a point.
 
@@ -141,7 +147,11 @@ while tuning. Current total ~413 MB of the 448 MB budget.
    - [ ] Enter/exit: passenger side + passengers, CAR anims for helis / planes with doors, jacking, bike get-off
      while moving, exit point checks against walls.
    - [ ] AI traffic on paths (nodes*.dat), vehicle LODs (`*_vlo` kept), number plates, carmods / paintjobs.
-4. Audio: engine done (ARCHITECTURE 8b: footsteps, weapons, weather bed, thunder, ambience
+4. Peds (ARCHITECTURE 6e) TODO: ped speech (SPC_* paks are removed), peds driving / traffic, cops arresting
+   (busted) and cop cars, carjacking, weapon models in hands, ped vs ped / CJ collision response with ragdoll-ish
+   falls, attractors (benches, ATMs), chat pairs, pose cost (0.9 ms per 32-bone pose: compose on the GE or skip
+   unused leaf bones), LODs for far peds.
+5. Audio: engine done (ARCHITECTURE 8b: footsteps, weapons, weather bed, thunder, ambience
    stream). Next: collision sounds (CAECollisionAudioEntity), ped speech, radio on the stream channel.
-5. Scripts: SCM VM (`data/script/main.scm`), start with mission-less free roam.
+6. Scripts: SCM VM (`data/script/main.scm`), start with mission-less free roam.
 Profile constantly (PERF tab, hudok marker) and tune resources.toml to fit.

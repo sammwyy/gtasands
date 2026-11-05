@@ -48,6 +48,7 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `game/streaming.*` | open packs (`g_models` gta3, `g_player`, `g_anim`) |
 | `game/world.*` | streamed map: DWLD sector window, map model/texture streaming, GX list compile, culling + draw (section 6b) |
 | `game/vehicledata.*`, `game/vehiclemodel.*`, `game/vehicle.*`, `game/vehphys.cpp`, `game/vehicleint.h`, `game/fx.*` | vehicles (section 6d): DVEH tables, model streaming + per-atomic lit GX lists (animated parts), fixed-point physics for every type, damage / fire / explosion / debris / lights / draw |
+| `game/peddata.*`, `game/pedmodel.*`, `game/pedanim.*`, `game/peds.*` | random peds (section 6e): DPED tables + ped path graph, skinned ped model streaming (bone segments), per-ped anim slots, CPopulation / CPopCycle / ped tasks / interactions |
 | `game/waterlevel.*`, `game/skidmarks.*` | CWaterLevel (water.dat polygons, level query, flat surfaces), CSkidmarks |
 | `game/collision.*` | map collision: per-model COL records streamed from world.dwld, near list, segment cast / ground probe / sphere push, debug overlay (section 6c) |
 | `game/loadscreen.*` | CLoadingScreen + resumable init jobs |
@@ -374,6 +375,53 @@ CDamageManager / CAEVehicleAudioEntity, reduced; every IDE type spawns, pool of 
   roadmap in AGENTS.md.
 - Not done: see AGENTS.md roadmap (vehicles).
 
+## 6e. Peds (`game/peddata.*`, `game/pedmodel.*`, `game/pedanim.*`, `game/peds.*`)
+
+CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, reduced; pool of `budget::MAX_PEDS` 12.
+- **Data** (offline, `tools/gtasa/peds.py`, section `[peds]` -> `data/peds.dped` v1, `ds::Ped*`): peds.ide (12 B
+  resident record per model, names read on demand), pedstats, pedgrp.dat (57 ePopcyclePedGroup lines), popcycle.dat
+  rows (read on demand), the walkcycle groups of animgrp.dat (index 0 = man; missing clips fall back to it at
+  runtime), info.zon zones touching `[world] bounds` with main.scm's new-game zone setup (SET_ZONE_POPULATION_TYPE /
+  GANG_STRENGTH / DEALER_STRENGTH / POPULATION_RACE found by scanning the script for the opcodes with an inline label,
+  first dense run only = the start-up thread; Ganton = GANGLAND + Grove 25), the ped path nodes of nodes*.dat in the
+  bounds + 60 m (1602 nodes, 3340 links, 50 m cell grid). ~35 KB resident (tag `ped`).
+- **Models** (`pedmodel`, 6 slots, refcounted, LRU reuse): DMDL (wedge decimation to ~270 tris: clustering averaged
+  UVs across islands, qem stalls at ~700) + TXD staged, uploaded in `peds::vblank` (map textures evicted when VRAM is
+  full), compiled into lists of <= 24 dominant bones each (`SEG_BONES`, usually 1 segment); per draw a segment stores
+  entity * world * invBone per bone in slots 30-k (entity 6, view 5) and DMAs its list. Texture registers in the list
+  (+ repeat: RW UVs pass 1.0), COLOR words tinted by the ped light (patched on change). Only a compact skeleton stays.
+  The feet lift is the lowest skinned vertex in IDLE_stance: a ped DFF's bind pose is neither upright nor
+  pelvis-relative like CJ's parts (raw vertices gave 0.46 m instead of 0.97 and sank the legs).
+- **Anim** (`pedanim`): cj.cpp's association rules per ped (4 slots keyed by name hash, blend-out, root extraction),
+  driven by `pedmove::setRealMoveAnim` through a bound PoseApi. Poses are evaluated only for drawn peds (every frame
+  < 10 m, every 2nd/3rd/4th further), cached per ped (40 bones). `anim::blendWorld` has a one-slot path and a Newton
+  normalise (~0.9 ms per 32-bone pose in DEBUG; CJ got faster too).
+- **Population** (`peds.cpp`): CPopCycle::Update every second (zone from `peddata::zoneAt`, weekday/weekend, 2 h slot,
+  UpdatePercentages -> civ / gang / cop / dealer counts, `dbg::opts.pedDensity`), CStreaming::StreamZoneModels every
+  1.5 s (the zone's two strongest gangs, a cop while one may spawn, civilians via PickPedMIToStreamInForCurrentZone,
+  one civ swapped every 20 s), FindNewPedType + AddToPopulation every 6 frames (random point on a path link: on screen
+  27.5..33 m, off screen 10..16.5 m = PC distances x0.65; gangs spawn 2-3 with followers), ManagePed (off screen past
+  35.5 m, anything past 48 m, not needed 4 s outside 16 m and off screen, dead after 30 s). Loading job `jobPeds`: tables,
+  the first models, GeneratePedsAtStartOfGame.
+- **Tasks**: wander (path graph, lane offset, pauses, side-steps peds / CJ), follow (gang formation), flee (panic sprint,
+  walls near CJ), attack (melee FightA_1..3 combo + FIGHTIDLE, or gang / cop guns: Gun_stand, aim chance by distance,
+  map line of sight), HIT_* reactions, KO_* knock-downs + getup / getup_front, death (KO_shot_* / KO_skid_* / KO_spin_*),
+  EV_dive / EV_step out of a car's way, DUCK_cower, handsup. Events: CJ's gunshots (civilians flee / cower, hostile gangs
+  attack, a cop nearby gives a star), aimed at (hands up / flee / attack), acquaintances (Ballas + Vagos hate CJ, Grove
+  respect him, gangs fight each other within 10 m, cops chase while wanted), damage response by ped type + temper/fear,
+  gang mates join, witnesses of a death flee. AI LOD: peds off screen and away from CJ think every 2nd / 4th frame.
+- **Interactions**: `player.cpp` calls `peds::meleeHit` at phase 0.3 of each punch (3rd move knocks down),
+  `peds::bulletHit` before `veh::bulletHit` (headshots x3), `peds::gunShot`, `peds::pushPlayer` in collide();
+  `veh::pushPed(.., skip, &hit)` per ped (CPed::KillPedWithCar by speed), `peds::explosion` from BlowUpCar. CJ takes ped
+  damage through `player::takeDamage` (armour first); CWanted chaos (`player::registerCrime`, ReportCrimeNow multipliers,
+  stars at 50/180/550/1200/2400/4600, -1/s without a cop within 18 m, cleared on WASTED). Dead peds drop their money
+  (walk over the body). Ped voices PAIN_A_MALE / FEMALE (generic, death, panic), punch / bullet impact sounds, footsteps
+  for peds within 13 m.
+- **Debug**: REND rows 15-22 (on/off, density, ped poly budget `dbg::opts.pedPolys` 500, spawn, kill all, zone/models,
+  drawn/posed, nearest ped task), `peds:` line in hudok, `GTASADS_PEDTEST` (AGENTS.md). Screenshots show peds flat:
+  their textures land in VRAM D, which the capture borrows during that very frame.
+- **Cost** (DEBUG -Og, Ganton noon, 8-9 peds): update ~1.6-2 ms, draw ~0.8 ms + ~0.9 ms per pose; 27-29 fps at the spawn.
+
 ## 7. Bottom screen
 
 - `game/hud/subfb.*`: 96 KB RAM backbuffer DMA'd to sub BG3 (B16 bitmap, VRAM C) in vblank.
@@ -453,7 +501,7 @@ CDamageManager / CAEVehicleAudioEntity, reduced; every IDE type spawns, pool of 
 - Regions carved once from the heap (`budget.h`): SYS (TLSF for libc malloc/new), SCRATCH (LIFO
   `mem::Scratch` RAII, spills to STREAM), PERM (bump, never freed), STREAM (TLSF, everything else).
 - Every allocation is tagged (`mem::alloc(n, TAG_x)`): sys text model tex anim audio radar hud
-  pack world col temp. `mem::summary/stats/check`. `mem::Pool<T>` (CPool port) for fixed-count objects.
+  pack world col ped temp. `mem::summary/stats/check`. `mem::Pool<T>` (CPool port) for fixed-count objects.
 - Temp file reads go to scratch. Static BSS ~130 KB; STREAM ~2.9 MB. Typical in-game:
   STREAM ~600 KB used, PERM 231/320 KB.
 - PERM is never freed: allocate there only once per boot (guard with a pointer, e.g. timecycle).
@@ -539,4 +587,5 @@ Audio/Entities/AEVehicleAudioEntity.cpp (section 6d). Ported so far: Clock (in p
 TimeCycle, Weather, Clouds (sky polys + Render), Coronas (sun only), Hud, Radar, MenuManager,
 LoadingScreen, Text/Font, ClothesBuilder (CJ), parts of Ped/PlayerPed control, FileLoader
 (LoadObjectTypes/LoadObjectInstance/LoadCollisionFile, offline in world.py), a CStreaming/CRenderer
-subset (world.cpp), CCollision line/sphere tests + CTempColModels ped spheres (collision.cpp).
+subset (world.cpp), CCollision line/sphere tests + CTempColModels ped spheres (collision.cpp), CPopulation /
+CPopCycle / ped tasks / CWanted chaos (section 6e: Population.cpp, PopCycle.cpp, PathFind.cpp, Tasks/TaskTypes/*, Wanted.cpp).

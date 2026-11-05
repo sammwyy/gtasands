@@ -11,6 +11,7 @@
 #include "audio/aevehicleaudio.h"
 #include "game/collision.h"
 #include "game/debugopts.h"
+#include "game/peds.h"
 #include "game/player.h"
 #include "game/skidmarks.h"
 #include "game/timecycle.h"
@@ -369,6 +370,7 @@ void blowUp(int id) {
 	const float d = sqrtf(dx * dx + dy * dy + dz * dz);
 	if (driven) player::vehicleExploded(id);
 	else if (d < 7.0f) player::explosionDamage(v.pos[0], v.pos[1], v.pos[2], (1.0f - d / 7.0f) * 80.0f);
+	peds::explosion(v.pos[0], v.pos[1], v.pos[2], 7.0f, 120.0f);
 	// wake every vehicle in the blast
 	for (Car& o : g_cars) {
 		if (o.v.status == STATUS_FREE || &o == &c) continue;
@@ -616,13 +618,14 @@ void update() {
 	s_stats.skids = (uint16_t)skid::active();
 }
 
-// Ped vs the vehicle bodies (CJ on foot): box in vehicle space, horizontal push.
-bool pushPed(float& x, float& y, float z, float r) {
+// Ped vs the vehicle bodies: box in vehicle space, horizontal push.
+bool pushPed(float& x, float& y, float z, float r, int skip, PedHit* hit) {
 	bool touched = false;
+	if (hit) hit->id = -1;
 	for (int i = 0; i < MAX; i++) {
 		Car& c = g_cars[i];
 		Vehicle& v = c.v;
-		if (v.status == STATUS_FREE || !c.placed || player::vehicleId() == i) continue;
+		if (v.status == STATUS_FREE || !c.placed || i == skip) continue;
 		const Model* m = vehmdl::get(v.model);
 		if (!m) continue;
 		const float w[3] = { x, y, z };
@@ -641,18 +644,14 @@ bool pushPed(float& x, float& y, float z, float r) {
 		x += dw[0];
 		y += dw[1];
 		touched = true;
-		// hit by a moving vehicle: knocked back and hurt (CPed::KillPedWithCar, reduced)
 		const float spd = len(v.moveSpeed);
-		if (spd > 0.08f) {
-			static uint32_t s_lastHit;
-			if (timing::vblanks() - s_lastHit > 30) {
-				s_lastHit = timing::vblanks();
-				player::hitByVehicle(v.moveSpeed[0] * 60.0f, v.moveSpeed[1] * 60.0f, spd * 120.0f);
-				aeveh::event(v.audio, aeveh::EV_PED_HIT, x, y, z);
-			}
-		}
+		if (hit && spd > (hit->id < 0 ? 0.0f : hit->speed)) *hit = { i, v.moveSpeed[0], v.moveSpeed[1], spd };
 	}
 	return touched;
+}
+
+void pedHitSound(int id, float x, float y, float z) {
+	if (const Vehicle* v = get(id)) aeveh::event(v->audio, aeveh::EV_PED_HIT, x, y, z);
 }
 
 // ---- drawing ------------------------------------------------------------------------
