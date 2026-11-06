@@ -8,9 +8,15 @@
 // from models/hud.txd.
 namespace radar {
 
+constexpr int MAP_TYPE_COUNT = 14;
 bool init();
 void prefetch();      // load every tile around the player now (loading screen)
 void draw();          // reads player::g each frame, streams tiles within a byte budget
+void drawPauseMap(float centerX, float centerY);
+void drawFullPoints(int left, int top, int size);
+int legendTypes(float centerX, float centerY, bool full, u8* out, int capacity);
+const char* typeIcon(int type);
+const char* typeLabelKey(int type);
 
 // Blips (CRadar::SetCoordBlip-lite). sprite = texture name in hud.txd
 // ("" = plain colored square). id 0..15.

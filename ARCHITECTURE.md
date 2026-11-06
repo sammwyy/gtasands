@@ -55,12 +55,12 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `game/zones.*` | info.zon -> zone GXT names |
 | `game/sfx.*`, `game/intro.*` | frontend audio entity (menu beeps, whoosh, loading tune) on `src/audio`; DVID movie player |
 | `audio/` | audio engine (section 8b): hardware channels, bank/sound cache, sound manager, stream channel, ped / weapon / weather / vehicle entities, ambience tracks, audio zones |
-| `game/menu/` | CMenuManager port (screens table verbatim) |
+| `game/menu/` | CMenuManager port (PC screens table minus Quit in title/pause) |
 | `game/text/` | CText (GXT), CFont |
 | `game/hud/` | CHud/CRadar ports on a CPU framebuffer (`subfb`), `hudtex`, `hudfont` |
 | `game/debugopts.*` | `dbg::opts` runtime switches edited from the debug UI |
 | `hud/hud.*` | bottom-screen owner: GAME (chud) vs DEBUG (console), log ring, DEBUG hudok marker |
-| `hud/debugui.*` | touch tabs LOG / PERF / MEM / GAME / REND / SKY |
+| `hud/debugui.*` | touch tabs LOG / PERF / MEM / GAME / REND / SKY / CHTS |
 
 Other dirs: `tools/` (pipeline, `hosthud/` host HUD harness, `dldi/`, `dsshot.py` DEBUG screenshot -> PNG), `game/` (gitignored PC
 files), `nitrofs/` (gitignored output), `build/` (objects, `assets_cache/`, reports, previews).
@@ -502,14 +502,37 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
 - `chud::initStep()` is a loading job; `hud::setGameActive()` gates drawing to INGAME;
   `chud::invalidate()` forces a full repaint. `hud::log` keeps a 32-line ring (14 replayed when
   the console is re-initialised on switching back to DEBUG).
-- `hud/debugui.*`: tabs (5 chars each, `>` marks the active one): LOG, PERF (fps/cpu/sections/
+- `hud/debugui.*`: tabs (4 chars each, active in yellow): LOG, PERF (fps/cpu/sections/
   polys/loco), MEM (regions, tags, VRAM, anim cache), GAME (wanted/health/money/weapons/body/
   clock/outfit/respawn), REND (`dbg::opts` render/sim switches), SKY (section 5).
+- CHTS: bottom category selector PLAYER / VEH / PEDS / TIME / WORLD / WARP, per-category page arrows
+  and touch actions (vehicle picker by type/model, wanted 0..5, money, movement speed, weather,
+  clock, population, simulation switches). WARP lists 14 direct-tap exterior locations across
+  Los Santos, San Fierro, Las Venturas, countryside and desert; coordinates were checked against
+  the baked world collision. `player::teleport` detaches CJ from vehicles, resets motion and camera
+  position, then holds simulation until the destination sector/collision has streamed and the ground
+  can be probed (300-frame fallback). The seven top tabs use four console columns each;
+  active tabs are yellow. `dbg::opts.playerSpeedQ` scales CJ's on-foot root displacement
+  in quarters (default 4 = x1), without changing vehicle or ped motion.
 
 ## 8. Frontend, loading, intro, audio
 
-- Frontend = CMenuManager port (`game/menu/`), `aScreens` verbatim, virtual 640x480 through
+- Frontend = CMenuManager port (`game/menu/`), PC `aScreens` minus Quit in title/pause, virtual 640x480 through
   sprite2d. Menu textures are GROUP_FRONTEND, freed on Start Game, reloaded on pause.
+- DS frontend draws large, scrollable options on the top screen; the bottom software framebuffer
+  shows the panorama/title/control hints on black at boot and a north-up regional map around CJ
+  (4 m/pixel, using the existing streamed radar.dsrt tile pool, no global-map allocation) with a small control strip
+  while paused. The map submenu supports D-pad/touch panning, L/R legend pages with radar icon sprites
+  on the top screen, and X for a full overview read in 4 KB slices into a temporary ~66 KB paletted image.
+  `map_points` extracts exterior service entrances from the source IPL `enex` sections to
+  `data/map_points.dpoi` v1 (s16 x/y + icon type); radar loads these during HUD init and draws
+  them on both map views. The legend lists only types present in the current view, with labels
+  resolved from the active GXT (`LG_*` keys from CRadar::GetBlipName), never fixed translations.
+  The overview is freed on exiting the map; resuming invalidates the dirty-region HUD before it draws again.
+  The top screen has no background art or control footer. Spaces in both font
+  renderers advance the cursor without drawing the atlas's nonblank space cell. Menu art is
+  decoded from fronten2.txd only at boot and released on game start; pause forces
+  the bottom screen to GAME mode (SELECT is disabled until the menu closes).
 - Loading screen (`loadscreen.cpp`): resumable jobs with a 10 ms/frame budget, order:
   free frontend, splash, loading tune, open gta3 + sparse TOC index, player/anim packs, ped anim
   block, CJ (part per slice), player init, weather init, timecyc (weather per slice), sky

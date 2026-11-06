@@ -10,6 +10,12 @@
 #include "assets/txdfile.h"
 #include "game/text/font.h"
 #include "game/text/gxt.h"
+#include "game/hud/hudfont.h"
+#include "game/hud/hudtex.h"
+#include "game/hud/radar.h"
+#include "game/hud/subfb.h"
+#include "game/player.h"
+#include "mem/mem.h"
 #include "platform/fs.h"
 #include "platform/input.h"
 #include "game/sfx.h"
@@ -56,6 +62,60 @@ static inline float ScreenR(float x) { return 640.0f - x; }
 static const tex::Texture* s_sprites[FRONTEND_SPRITE_COUNT];
 static const tex::Texture* s_font2 = nullptr;
 static const tex::Texture* s_font1 = nullptr;
+static constexpr int LEGEND_ROWS = 6;
+static const tex::Texture* s_legendTex[radar::MAP_TYPE_COUNT];
+static int s_legendNext;
+static FILE* s_globalFile;
+static u8* s_globalMap;
+static u32 s_globalSize, s_globalRead;
+
+static void closeGlobalMap() {
+	if (s_globalFile) fclose(s_globalFile);
+	s_globalFile = nullptr;
+	mem::free(s_globalMap);
+	s_globalMap = nullptr;
+	s_globalSize = s_globalRead = 0;
+}
+
+static bool openGlobalMap() {
+	closeGlobalMap();
+	FILE* f = fopen("nitro:/models/fronten2.txd", "rb");
+	ds::TxdHeader h;
+	if (!f || fread(&h, sizeof h, 1, f) != 1 || h.magic != DS_FOURCC('D', 'T', 'X', 'D') ||
+	    h.count > 128) {
+		if (f) fclose(f);
+		return false;
+	}
+	for (int i = 0; i < h.count; i++) {
+		ds::TxdEntry e;
+		if (fread(&e, sizeof e, 1, f) != 1) break;
+		if (strcmp(e.name, "map")) continue;
+		if (e.size > 128 * 1024 || e.size < sizeof(ds::TexHeader)) break;
+		u8* data = (u8*)mem::alloc(e.size, mem::TAG_HUD);
+		if (!data) break;
+		if (fseek(f, e.offset, SEEK_SET) != 0) { mem::free(data); break; }
+		s_globalFile = f;
+		s_globalMap = data;
+		s_globalSize = e.size;
+		return true;
+	}
+	fclose(f);
+	return false;
+}
+
+static void streamGlobalMap() {
+	if (!s_globalFile) return;
+	const u32 n = std::min<u32>(4096, s_globalSize - s_globalRead);
+	if (fread(s_globalMap + s_globalRead, 1, n, s_globalFile) != n) {
+		closeGlobalMap();
+		return;
+	}
+	s_globalRead += n;
+	if (s_globalRead == s_globalSize) {
+		fclose(s_globalFile);
+		s_globalFile = nullptr;
+	}
+}
 
 static bool openTxd(TxdFile& txd, const char* name) {
 	char path[96];
@@ -88,6 +148,14 @@ static const tex::Texture* loadSpriteFile(const char* file, int first, int last)
 	return firstTex;
 }
 
+static void loadLegendStep() {
+	if (s_legendNext >= radar::MAP_TYPE_COUNT) return;
+	TxdFile txd;
+	if (openTxd(txd, "hud"))
+		s_legendTex[s_legendNext] = loadTxdEntry(txd, radar::typeIcon(s_legendNext));
+	s_legendNext++;
+}
+
 void CMenuManager::initialise() {
 	m_nCurrentScreen = SCREEN_INITIAL;
 	m_nCurrentScreenItem = 0;
@@ -98,6 +166,8 @@ void CMenuManager::initialise() {
 	loadAllTextures();
 	font::init();
 	font::attachFontTextures(s_font2, s_font1);
+	hudfont::init();
+	loadBottomArt();
 	sfx::start(); // whoosh when the title menu comes up
 }
 
@@ -120,7 +190,14 @@ void CMenuManager::loadAllTextures() {
 	         s_sprites[FRONTEND_SPRITE_BACK8] ? (int)s_sprites[FRONTEND_SPRITE_BACK8]->id : -1);
 }
 
-void CMenuManager::unloadTextures() { tex::clear(tex::GROUP_FRONTEND); }
+void CMenuManager::unloadTextures() {
+	closeGlobalMap();
+	tex::clear(tex::GROUP_FRONTEND);
+	mem::free(m_bottomArt);
+	m_bottomArt = nullptr;
+	for (auto& icon : s_legendTex) icon = nullptr;
+	s_legendNext = 0;
+}
 
 // Frontend art is freed while in-game (VRAM budget); reload it lazily the
 // first time the pause menu is opened again.
@@ -128,10 +205,17 @@ void CMenuManager::ensureTextures() {
 	if (m_bTexturesLoaded) return;
 	loadAllTextures();
 	font::attachFontTextures(s_font2, s_font1);
+	loadBottomArt();
 }
 
 void CMenuManager::process() {
-	if (m_bMenuActive) userInput();
+	if (!m_bMenuActive) return;
+	userInput();
+	if (m_nCurrentScreen == SCREEN_MAP) {
+		streamGlobalMap();
+		if (m_mapFull && !s_globalFile && !s_globalMap) m_mapFull = false;
+		loadLegendStep();
+	}
 }
 
 uint32_t CMenuManager::getNumberOfMenuOptions() {
@@ -145,6 +229,7 @@ uint32_t CMenuManager::getNumberOfMenuOptions() {
 }
 
 void CMenuManager::switchToNewScreen(eMenuScreen screen) {
+	const bool leavingMap = m_nCurrentScreen == SCREEN_MAP;
 	m_nPrevScreen = m_nCurrentScreen;
 	if (screen == SCREEN_GO_BACK) {
 		if (m_bMainMenuSwitch) {
@@ -178,6 +263,15 @@ void CMenuManager::switchToNewScreen(eMenuScreen screen) {
 		default: break;
 		}
 	}
+	if (m_nCurrentScreen == SCREEN_MAP && !leavingMap) {
+		m_mapX = player::g.x;
+		m_mapY = player::g.y;
+		m_legendPage = 0;
+		m_mapFull = m_mapTouch = false;
+	} else if (leavingMap && m_nCurrentScreen != SCREEN_MAP) {
+		closeGlobalMap();
+		m_mapFull = m_mapTouch = false;
+	}
 }
 
 void CMenuManager::scrollRadioStations(int8_t n) {
@@ -204,6 +298,50 @@ void CMenuManager::startNewGame() {
 
 void CMenuManager::userInput() {
 	const input::State& in = input::get();
+	if (m_nCurrentScreen == SCREEN_MAP) {
+		if (in.down & KEY_B) {
+			sfx::back();
+			switchToNewScreen(SCREEN_GO_BACK);
+			return;
+		}
+		if (in.down & KEY_X) {
+			if (m_mapFull) {
+				closeGlobalMap();
+				m_mapFull = false;
+			} else if (openGlobalMap()) {
+				m_mapFull = true;
+			} else {
+				sfx::error();
+			}
+		}
+		u8 types[radar::MAP_TYPE_COUNT];
+		const int count = radar::legendTypes(m_mapX, m_mapY, m_mapFull, types, radar::MAP_TYPE_COUNT);
+		const int pages = std::max(1, (count + LEGEND_ROWS - 1) / LEGEND_ROWS);
+		if (in.down & KEY_L) m_legendPage = (m_legendPage + pages - 1) % pages;
+		if (in.down & KEY_R) m_legendPage = (m_legendPage + 1) % pages;
+		const float step = m_mapFull ? 50.0f : 12.0f;
+		if (in.held & KEY_LEFT) m_mapX -= step;
+		if (in.held & KEY_RIGHT) m_mapX += step;
+		if (in.held & KEY_UP) m_mapY += step;
+		if (in.held & KEY_DOWN) m_mapY -= step;
+		if (in.touching) {
+			if (m_mapFull) {
+				if (in.touchX >= 44 && in.touchX < 212 && in.touchY < 168) {
+					m_mapX = -3000.0f + (in.touchX - 44) * (6000.0f / 168.0f);
+					m_mapY = 3000.0f - in.touchY * (6000.0f / 168.0f);
+				}
+			} else if (m_mapTouch) {
+				m_mapX -= (in.touchX - m_touchX) * 4.0f;
+				m_mapY += (in.touchY - m_touchY) * 4.0f;
+			}
+			m_touchX = in.touchX;
+			m_touchY = in.touchY;
+		}
+		m_mapTouch = in.touching;
+		m_mapX = std::clamp(m_mapX, -2488.0f, 2488.0f);
+		m_mapY = std::clamp(m_mapY, -2616.0f, 2616.0f);
+		return;
+	}
 	bool bEnter = false, bExit = false, bUp = false, bDown = false;
 	int8_t sliderMove = 0;
 
@@ -211,10 +349,8 @@ void CMenuManager::userInput() {
 		if (in.down & KEY_DOWN) bDown = true;
 		else if (in.down & KEY_UP) bUp = true;
 	}
-	if (in.down & (KEY_A | KEY_START)) bEnter = true;
-	// a stylus tap is "back", except while the bottom screen is the debug UI
-	const u32 backKeys = hud::screen() == hud::Screen::DEBUG ? KEY_B : (KEY_B | KEY_TOUCH);
-	if ((in.down & backKeys) && !contains(mainMenu, (eMenuScreen)m_nCurrentScreen)) bExit = true;
+	if (in.down & KEY_A) bEnter = true;
+	if ((in.down & KEY_B) && !contains(mainMenu, (eMenuScreen)m_nCurrentScreen)) bExit = true;
 	if (bDown || bUp || bEnter) bExit = false;
 
 	static uint32_t lastMove;
@@ -394,60 +530,282 @@ void CMenuManager::drawFrontEnd() {
 	sprite::endFrame();
 }
 
+void CMenuManager::loadBottomArt() {
+	if (!m_bMainMenuSwitch || m_bottomArt) return;
+	TxdFile txd;
+	if (!openTxd(txd, "fronten2")) return;
+	mem::Scratch scratch;
+	const ds::TexHeader* h = txd.load("back8", scratch);
+	if (!h || !h->width || !h->height) return;
+	const int n = h->width * h->height;
+	u16* src = (u16*)mem::alloc(n * sizeof(u16), mem::TAG_HUD);
+	if (!src) return;
+	m_bottomArt = (u16*)mem::alloc(subfb::W * subfb::H * sizeof(u16), mem::TAG_HUD);
+	if (m_bottomArt && hudtex::decodeInto(h, src, nullptr)) {
+		const int height = 128;
+		memset(m_bottomArt, 0, subfb::W * subfb::H * sizeof(u16));
+		for (int y = 0; y < height; y++)
+			for (int x = 0; x < subfb::W; x++)
+				m_bottomArt[y * subfb::W + x] = src[(y * h->height / height) * h->width + x * h->width / subfb::W];
+	} else {
+		mem::free(m_bottomArt);
+		m_bottomArt = nullptr;
+	}
+	mem::free(src);
+}
+
+void CMenuManager::drawBottom() {
+	loadBottomArt();
+	subfb::clear(subfb::rgb(0, 0, 0));
+	if (m_bMainMenuSwitch) {
+		if (m_bottomArt) memcpy(subfb::frame(), m_bottomArt, subfb::W * subfb::H * sizeof(u16));
+	} else if (m_nCurrentScreen == SCREEN_MAP && m_mapFull && s_globalMap && !s_globalFile) {
+		drawGlobalMap();
+	} else {
+		radar::drawPauseMap(m_nCurrentScreen == SCREEN_MAP ? m_mapX : player::g.x,
+		                    m_nCurrentScreen == SCREEN_MAP ? m_mapY : player::g.y);
+	}
+	const u16 black = subfb::rgb(0, 0, 0);
+	const auto& scr = aScreens[m_nCurrentScreen == SCREEN_INITIAL ? (int)SCREEN_MAIN_MENU : m_nCurrentScreen];
+	const u16 ink = subfb::rgb(224, 236, 255);
+	if (m_bMainMenuSwitch) {
+		subfb::rect(0, 124, 256, 68, black);
+		hudfont::print(hudfont::STYLE_GOTHIC, 128, 127, TheText.get(scr.m_szTitleName),
+		               0.75f, 1.35f, ink, hudfont::CENTER, 1, black);
+		hudfont::print(hudfont::STYLE_GOTHIC, 128, 163, (const GxtChar*)"PAD  A OK  B Back",
+		               0.55f, 1.0f, ink, hudfont::CENTER, 1, black);
+	} else {
+		if (m_nCurrentScreen == SCREEN_MAP) {
+			if (m_mapFull && s_globalMap && !s_globalFile) {
+				subfb::rect(0, 169, 256, 23, black);
+				hudfont::print(hudfont::STYLE_GOTHIC, 128, 171,
+				               (const GxtChar*)"X Region  L/R Page  B Back",
+				               0.5f, 0.9f, ink, hudfont::CENTER, 1, black);
+			} else {
+				subfb::rect(0, 149, 256, 43, black);
+				hudfont::print(hudfont::STYLE_GOTHIC, 128, 151,
+				               (const GxtChar*)(m_mapFull ? "Loading map" : "PAD Pan  X Full"),
+				               0.5f, 0.9f, ink, hudfont::CENTER, 1, black);
+				hudfont::print(hudfont::STYLE_GOTHIC, 128, 172, (const GxtChar*)"L/R Page  B Back  START",
+				               0.5f, 0.9f, ink, hudfont::CENTER, 1, black);
+			}
+		} else {
+			subfb::rect(0, 169, 256, 23, black);
+			hudfont::print(hudfont::STYLE_GOTHIC, 128, 171, (const GxtChar*)"A OK  B Back  START Resume",
+			               0.5f, 0.9f, ink, hudfont::CENTER, 1, black);
+		}
+	}
+}
+
+void CMenuManager::drawGlobalMap() {
+	const ds::TexHeader* h = (const ds::TexHeader*)s_globalMap;
+	const u32 paletteOff = sizeof(*h) + ((h->texelBytes + 3) & ~3u);
+	if (h->magic != DS_FOURCC('D', 'T', 'E', 'X') || h->format != 4 ||
+	    h->texelBytes < (u32)h->width * h->height || h->numColors == 0 ||
+	    paletteOff + (u32)h->numColors * 2 > s_globalSize) return;
+	const u8* texels = s_globalMap + sizeof(*h);
+	const u16* palette = (const u16*)(s_globalMap + paletteOff);
+	constexpr int size = 168, left = (subfb::W - size) / 2;
+	u16* dst = subfb::frame();
+	for (int y = 0; y < size; y++) {
+		const u8* src = texels + (y * h->height / size) * h->width;
+		for (int x = 0; x < size; x++) {
+			const u8 c = src[x * h->width / size];
+			dst[y * subfb::STRIDE + left + x] = c < h->numColors ? palette[c] | BIT(15) : subfb::rgb(0, 0, 0);
+		}
+	}
+	radar::drawFullPoints(left, 0, size);
+	const int px = left + std::clamp((int)((player::g.x + 3000.0f) * size / 6000.0f), 0, size - 1);
+	const int py = std::clamp((int)((3000.0f - player::g.y) * size / 6000.0f), 0, size - 1);
+	const int mx = left + std::clamp((int)((m_mapX + 3000.0f) * size / 6000.0f), 0, size - 1);
+	const int my = std::clamp((int)((3000.0f - m_mapY) * size / 6000.0f), 0, size - 1);
+	subfb::circle(px, py, 4, subfb::rgb(0, 0, 0));
+	subfb::circle(px, py, 2, subfb::rgb(255, 255, 255));
+	subfb::circle(mx, my, 5, subfb::rgb(0, 0, 0));
+	subfb::circle(mx, my, 3, subfb::rgb(255, 202, 80));
+}
+
 void CMenuManager::drawBackground() {
 	if (!m_bTexturesLoaded) return;
-
-	int8_t bg;
-	switch (m_nCurrentScreen) {
-	case SCREEN_STATS:
-	case SCREEN_LANGUAGE:
-	case SCREEN_QUIT_GAME_ASK: bg = FRONTEND_SPRITE_BACK4; break;
-	case SCREEN_START_GAME:
-	case SCREEN_USER_TRACKS_OPTIONS:
-	case SCREEN_OPTIONS: bg = FRONTEND_SPRITE_BACK3; break;
-	case SCREEN_BRIEF:
-	case SCREEN_LOAD_GAME:
-	case SCREEN_DELETE_GAME:
-	case SCREEN_GAME_SAVE: bg = FRONTEND_SPRITE_BACK2; break;
-	case SCREEN_AUDIO_SETTINGS: bg = FRONTEND_SPRITE_BACK5; break;
-	case SCREEN_DISPLAY_SETTINGS:
-	case SCREEN_DISPLAY_ADVANCED: bg = FRONTEND_SPRITE_BACK7; break;
-	case SCREEN_MAP:
-	case SCREEN_CONTROLS_DEFINITION: bg = FRONTEND_SPRITE_ARROW; break;
-	case SCREEN_CONTROLLER_SETUP:
-	case SCREEN_MOUSE_SETTINGS: bg = FRONTEND_SPRITE_BACK6; break;
-	default: bg = FRONTEND_SPRITE_BACK8; break;
-	}
-
 	sprite::rect({ 0, 0, 640, 480 }, MENU_BG);
-	// on PC the back sprites only show on save dialogs; keep it faithful but
-	// also draw the panorama strip on the title screen (console-style)
-	if (m_nCurrentScreen == SCREEN_MAIN_MENU && spriteTex(FRONTEND_SPRITE_BACK8)) {
-		sprite::draw(spriteTex(FRONTEND_SPRITE_BACK8), { 0, 300, 640, 480 }, { 255, 255, 255, 255 });
-		if (spriteTex(FRONTEND_SPRITE_BACK8_TOP))
-			sprite::draw(spriteTex(FRONTEND_SPRITE_BACK8_TOP), { 0, 268, 640, 300 }, { 255, 255, 255, 255 });
-	}
 	if (m_nCurrentScreen == SCREEN_MAP) {
-		drawMap();
+		drawLegend();
 		return;
 	}
-	switch (m_nCurrentScreen) {
-	case SCREEN_LOAD_FIRST_SAVE:
-	case SCREEN_SAVE_DONE_1:
-	case SCREEN_DELETE_FINISHED:
-	case SCREEN_DELETE_SUCCESSFUL:
-	case SCREEN_SAVE_WRITE_ASK:
-		if (spriteTex((eFrontend)bg))
-			sprite::draw(spriteTex((eFrontend)bg), { 384, 0, 640, 256 }, { 255, 255, 255, 255 });
-		break;
-	case SCREEN_GAME_SAVE:
-		if (spriteTex((eFrontend)bg))
-			sprite::draw(spriteTex((eFrontend)bg), { 192, 0, 448, 256 }, { 255, 255, 255, 255 });
-		break;
-	default: break;
-	}
+	drawDsMenus();
+}
 
-	drawStandardMenus(true);
+void CMenuManager::drawLegend() {
+	u8 types[radar::MAP_TYPE_COUNT];
+	const int count = radar::legendTypes(m_mapX, m_mapY, m_mapFull, types, radar::MAP_TYPE_COUNT);
+	const int pages = std::max(1, (count + LEGEND_ROWS - 1) / LEGEND_ROWS);
+	m_legendPage = std::min<int>(m_legendPage, pages - 1);
+	font::setProportional(true);
+	font::setOrientation(ALIGN_CENTER);
+	font::setDropColor(0, 0, 0);
+	font::setEdge(1);
+	font::setFontStyle(FONT_GOTHIC);
+	font::setScale(1.4f, 2.2f);
+	font::setColor(TITLE_COLOR.r, TITLE_COLOR.g, TITLE_COLOR.b);
+	font::printString(320, 14, TheText.get("MAP_LEG"));
+	for (int row = 0; row < LEGEND_ROWS; row++) {
+		const int i = m_legendPage * LEGEND_ROWS + row;
+		if (i >= count) break;
+		const int type = types[i];
+		const float y = 85.0f + row * 58.0f;
+		if (s_legendTex[type])
+			sprite::draw(s_legendTex[type], { 68, y, 108, y + 40 }, { 255, 255, 255, 255 });
+		font::setFontStyle(FONT_SUBTITLES);
+		font::setOrientation(ALIGN_LEFT);
+		font::setScale(1.15f, 1.8f);
+		font::setColor(220, 233, 249);
+		font::printString(132, y + 2, TheText.get(radar::typeLabelKey(type)));
+	}
+	char page[24];
+	snprintf(page, sizeof page, "%d / %d", (int)m_legendPage + 1, pages);
+	font::setFontStyle(FONT_SUBTITLES);
+	font::setOrientation(ALIGN_CENTER);
+	font::setScale(1.05f, 1.6f);
+	font::setColor(TITLE_COLOR.r, TITLE_COLOR.g, TITLE_COLOR.b);
+	font::printString(320, 423, (const GxtChar*)page);
+}
+
+void CMenuManager::drawDsMenus() {
+	const auto& scr = aScreens[m_nCurrentScreen];
+	int rows[12], count = 0, selected = 0;
+	for (int i = 0; i < 12 && scr.m_aItems[i].m_nActionType; i++) {
+		const auto action = scr.m_aItems[i].m_nActionType;
+		if (action == MENU_ACTION_TEXT || action == MENU_ACTION_SKIP || !scr.m_aItems[i].m_szName[0]) continue;
+		if (i == m_nCurrentScreenItem) selected = count;
+		rows[count++] = i;
+	}
+	const bool hasLabel = scr.m_aItems[0].m_nActionType == MENU_ACTION_TEXT;
+	const float top = (m_bMainMenuSwitch ? 112.0f : 95.0f) + (hasLabel ? 48.0f : 0.0f);
+	constexpr float pitch = 57, bottom = 410;
+	const float maxScroll = std::max(0.0f, top + (count - 1) * pitch - bottom);
+	float target = 0;
+	if (maxScroll > 0) {
+		target = std::clamp(top + (selected + (selected < count - 1 ? 1 : 0)) * pitch - bottom,
+		                    0.0f, maxScroll);
+	}
+	if (m_scrollScreen != m_nCurrentScreen) {
+		m_scrollScreen = m_nCurrentScreen;
+		m_scroll = 0;
+	}
+	m_scroll += (target - m_scroll) * 0.27f;
+	if (target > m_scroll && target - m_scroll < 0.5f) m_scroll = target;
+	if (target < m_scroll && m_scroll - target < 0.5f) m_scroll = target;
+
+	font::setProportional(true);
+	font::setWrapx(620);
+	font::setRightJustifyWrap(20);
+	font::setCentreSize(600);
+	font::setDropColor(0, 0, 0, 255);
+	font::setEdge(0);
+	font::setFontStyle(FONT_GOTHIC);
+	font::setOrientation(ALIGN_CENTER);
+	font::setScale(1.55f, 2.5f);
+	font::setColor(TITLE_COLOR.r, TITLE_COLOR.g, TITLE_COLOR.b);
+	for (int r = 0; r < count; r++) {
+		const int i = rows[r];
+		const auto& item = scr.m_aItems[i];
+		const float y = top + r * pitch - m_scroll;
+		if (y < 65 || y > 427) continue;
+		const bool chosen = i == m_nCurrentScreenItem && m_bMapLoaded;
+		const sprite::RGBA color = chosen ? MENU_TEXT_SELECTED : sprite::RGBA{ 182, 195, 210, 255 };
+		if (chosen) sprite::rect({ 18, y - 6, 622, y + 47 }, { 19, 36, 54, 255 });
+		font::setFontStyle(FONT_SUBTITLES);
+		font::setScale(1.15f, 1.9f);
+		font::setColor(color.r, color.g, color.b);
+		font::setOrientation(ALIGN_LEFT);
+		const bool slot = item.m_nType >= FIRST_SAVE_SLOT && item.m_nType <= MAX_SAVE_SLOT;
+		const GxtChar* label = item.m_nType == TI_MOUSEJOYPAD
+			? TheText.get(m_ControlMethod == eController::JOYPAD ? "FEJ_TIT" : "FEC_MOU")
+			: TheText.get(item.m_szName);
+		font::printString(58, y, label);
+		const GxtChar* value = nullptr;
+		char number[24];
+		const auto onOff = [](bool v) { return TheText.get(v ? "FEM_ON" : "FEM_OFF"); };
+		switch (item.m_nActionType) {
+		case MENU_ACTION_FRAME_LIMITER: value = onOff(m_bPrefsFrameLimiter); break;
+		case MENU_ACTION_SUBTITLES: value = onOff(m_bShowSubtitles); break;
+		case MENU_ACTION_WIDESCREEN: value = onOff(m_bWidescreenOn); break;
+		case MENU_ACTION_RADIO_EQ: value = onOff(m_bRadioEq); break;
+		case MENU_ACTION_RADIO_RETUNE: value = onOff(m_bRadioAutoSelect); break;
+		case MENU_ACTION_SHOW_LEGEND: value = onOff(m_bMapLegend); break;
+		case MENU_ACTION_HUD_MODE: value = onOff(m_bHudOn); break;
+		case MENU_ACTION_MIP_MAPPING: value = onOff(m_bPrefsMipMapping); break;
+		case MENU_ACTION_CONTROLS_JOY_INVERT_X: value = onOff(m_bInvertPadX1); break;
+		case MENU_ACTION_CONTROLS_JOY_INVERT_Y: value = onOff(m_bInvertPadY1); break;
+		case MENU_ACTION_CONTROLS_JOY_INVERT_X2: value = onOff(m_bInvertPadX2); break;
+		case MENU_ACTION_CONTROLS_JOY_INVERT_Y2: value = onOff(m_bInvertPadY2); break;
+		case MENU_ACTION_CONTROLS_JOY_SWAP_AXIS1: value = onOff(m_bSwapPadAxis1); break;
+		case MENU_ACTION_CONTROLS_JOY_SWAP_AXIS2: value = onOff(m_bSwapPadAxis2); break;
+		case MENU_ACTION_CONTROLS_MOUSE_INVERT_Y: value = onOff(!m_bInvertMouseY); break;
+		case MENU_ACTION_MOUSE_STEERING: value = onOff(m_bEnableMouseSteering); break;
+		case MENU_ACTION_MOUSE_FLY: value = onOff(m_bEnableMouseFlying); break;
+		case MENU_ACTION_USER_TRACKS_AUTO_SCAN: value = onOff(m_bTracksAutoScan); break;
+		case MENU_ACTION_STORE_PHOTOS: value = onOff(m_bSavePhotos); break;
+		case MENU_ACTION_RADAR_MODE: value = TheText.get(m_nRadarMode == eRadarMode::RADAR_MODE_MAPS_AND_BLIPS ? "FED_RDM"
+			: m_nRadarMode == eRadarMode::RADAR_MODE_BLIPS_ONLY ? "FED_RDB" : "FEM_OFF"); break;
+		case MENU_ACTION_SFX_VOL:
+			snprintf(number, sizeof number, "< %d >", (int)m_nSfxVolume * 100 / 64);
+			value = (const GxtChar*)number; break;
+		case MENU_ACTION_RADIO_VOL:
+			snprintf(number, sizeof number, "< %d >", (int)m_nRadioVolume * 100 / 64);
+			value = (const GxtChar*)number; break;
+		case MENU_ACTION_BRIGHTNESS:
+			snprintf(number, sizeof number, "< %ld >", (long)m_PrefsBrightness * 100 / 384);
+			value = (const GxtChar*)number; break;
+		case MENU_ACTION_DRAW_DIST:
+			snprintf(number, sizeof number, "< %d >", (int)(m_fDrawDistance * 100));
+			value = (const GxtChar*)number; break;
+		case MENU_ACTION_MOUSE_SENS:
+			snprintf(number, sizeof number, "< %d >", (int)(m_fMouseSens * 100000));
+			value = (const GxtChar*)number; break;
+		case MENU_ACTION_FX_QUALITY: value = TheText.get(m_nPrefsFxQuality == 0 ? "FED_FXL" :
+			m_nPrefsFxQuality == 1 ? "FED_FXM" : m_nPrefsFxQuality == 2 ? "FED_FXH" : "FED_FXV"); break;
+		case MENU_ACTION_RESOLUTION: value = (const GxtChar*)"256x192"; break;
+		case MENU_ACTION_CONTROL_TYPE: value = TheText.get(m_ControlMethod == eController::JOYPAD ? "FET_CCN" : "FET_SCN"); break;
+		case MENU_ACTION_RADIO_STATION: value = getRadioStationName(); break;
+		case MENU_ACTION_ANTIALIASING:
+			snprintf(number, sizeof number, "%d", (int)m_nDisplayAntialiasing - 1);
+			value = m_nDisplayAntialiasing <= 1 ? TheText.get("FEM_OFF") : (const GxtChar*)number;
+			break;
+		case MENU_ACTION_USER_TRACKS_PLAY_MODE: {
+			char key[16];
+			snprintf(key, sizeof key, "FEA_PR%d", m_RadioMode + 1);
+			value = TheText.get(key);
+			break;
+		}
+		default: break;
+		}
+		if (slot && m_Slots[i - 1] == eSlotState::SLOT_FREE) value = (const GxtChar*)"-";
+		if (value) {
+			font::setFontStyle(FONT_SUBTITLES);
+			font::setScale(1.05f, 1.75f);
+			font::setOrientation(ALIGN_RIGHT);
+			font::printString(605, y + 2, value);
+		}
+	}
+	{
+		sprite::rect({ 0, 0, 640, m_bMainMenuSwitch ? 82.0f : 72.0f }, MENU_BG);
+		font::setFontStyle(FONT_GOTHIC);
+		font::setEdge(1);
+		font::setOrientation(ALIGN_CENTER);
+		font::setScale(1.5f, 2.3f);
+		font::setColor(TITLE_COLOR.r, TITLE_COLOR.g, TITLE_COLOR.b);
+		font::printString(320, m_bMainMenuSwitch ? 24 : 12, TheText.get(scr.m_szTitleName));
+		if (hasLabel) {
+			font::setFontStyle(FONT_SUBTITLES);
+			font::setScale(1.0f, 1.55f);
+			font::setOrientation(ALIGN_CENTER);
+			font::printString(320, m_bMainMenuSwitch ? 83 : 74, TheText.get(scr.m_aItems[0].m_szName));
+		}
+		sprite::rect({ 0, 445, 640, 480 }, MENU_BG);
+		if (maxScroll > 0 && m_scroll < maxScroll - 2)
+			sprite::rect({ 302, 442, 338, 447 }, MENU_TEXT_SELECTED);
+	}
 }
 
 void CMenuManager::drawMap() {

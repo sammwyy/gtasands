@@ -176,6 +176,16 @@ struct RadarHeader {
 	// uint8_t present[numTiles] (padded to 4)
 };
 
+struct PointHeader {
+	uint32_t magic;          // 'DPOI'
+	uint16_t version, count; // 1
+};
+struct MapPoint {
+	int16_t x, y;
+	uint8_t icon, pad;
+};
+static_assert(sizeof(PointHeader) == 8 && sizeof(MapPoint) == 6);
+
 // ---------------------------------------------------------------- DWLD (map placement, data/world.dwld)
 // tools/gtasa/world.py runs CFileLoader (gta.dat -> IDE objs/tobj/anim/txdp,
 // IPL inst + binary stream IPLs) offline. Instances are bucketed into a

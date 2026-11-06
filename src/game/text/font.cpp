@@ -156,7 +156,7 @@ static void printLine(float x, float y, const GxtChar* s) {
 			if (*p == '~' && p[2] == '~') { p += 2; continue; }
 			uint8_t letter = *p - 32;
 			uint8_t id = rs.style != eFontTextureStyle::SUBTITLES_AND_GOTHIC ? findSubFontChar(letter, rs.style) : letter;
-			printChar(px + ox, y + oy, id);
+			if (*p != ' ') printChar(px + ox, y + oy, id);
 			px += propValue(id);
 		}
 		rs.r = sr; rs.g = sg; rs.b = sb;
@@ -172,7 +172,7 @@ static void printLine(float x, float y, const GxtChar* s) {
 		uint8_t id = rs.style != eFontTextureStyle::SUBTITLES_AND_GOTHIC ? findSubFontChar(letter, rs.style) : letter;
 		uint8_t sr = rs.r, sg = rs.g, sb = rs.b;
 		rs.r = r; rs.g = g; rs.b = b;
-		printChar(px, y, id);
+		if (*p != ' ') printChar(px, y, id);
 		rs.r = sr; rs.g = sg; rs.b = sb;
 		px += propValue(id);
 	}

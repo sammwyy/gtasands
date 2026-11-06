@@ -17,6 +17,7 @@ struct Options {
 	int worldPolys = 1800;   // stop drawing map objects past this hardware polygon count (2048 max)
 	bool fixedStep = true;   // 60 Hz fixed-step sim (off = one step per frame, old behaviour)
 	int simSpeedQ = 4;       // simulation speed in quarters: 0 = paused, 4 = x1, 8 = x2
+	int playerSpeedQ = 4;
 	float camDist = 3.6f;    // chase camera distance
 	// sky / time cycle / weather (SKY tab)
 	int clockRate = 1;       // game minutes per real second: 0 = frozen, 1 = CClock default

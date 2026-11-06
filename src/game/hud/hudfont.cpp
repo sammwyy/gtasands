@@ -225,7 +225,7 @@ static float pass(Style st, int x, int y, const GxtChar* s, float sw, float sh,
 		}
 		u8 letter = *p - 32;
 		u8 id = remap(st, letter);
-		if (px >= -32.0f && px < 288.0f)
+		if (*p != ' ' && px >= -32.0f && px < 288.0f)
 			glyph(fi, id, (int)px, y, sw, sh, c, drop, alpha, edge);
 		px += prop(st, id, sw);
 	}

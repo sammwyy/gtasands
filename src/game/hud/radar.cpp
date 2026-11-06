@@ -32,8 +32,21 @@ struct Blip {
 	s16 x, y;            // world units
 	u8 r, g, b;          // square color (sprite == nullptr)
 	subfb::Sprite spr;   // decoded sprite, empty = square
+	char spriteName[24];
 };
 static Blip s_blips[16];
+static ds::MapPoint* s_points;
+static int s_pointCount;
+static const struct { const char* icon, *key; } s_types[MAP_TYPE_COUNT] = {
+	{ "radar_ammugun", "LG_03" }, { "radar_barbers", "LG_04" },
+	{ "radar_burgerShot", "LG_07" }, { "radar_chicken", "LG_11" },
+	{ "radar_pizza", "LG_26" }, { "radar_diner", "LG_67" },
+	{ "radar_gym", "LG_53" }, { "radar_tshirt", "LG_42" },
+	{ "radar_police", "LG_27" }, { "radar_tattoo", "LG_36" },
+	{ "radar_saveGame", "LG_32" }, { "radar_modGarage", "LG_24" },
+	{ "radar_centre", "LG_01" }, { "radar_waypoint", "LG_64" },
+};
+static subfb::Sprite s_pointSprites[MAP_TYPE_COUNT - 2];
 
 static TxdFile s_hudTxd;              // hud.txd directory: blip sprites decode on demand
 static subfb::Sprite s_arrow, s_north;
@@ -81,8 +94,28 @@ bool init() {
 	memset(s_present, 0, sizeof s_present);
 	if (s_hudTxd.open("nitro:/models/hud.txd")) {
 		mem::Scratch scratch;
-		hudtex::decodeSprite(s_hudTxd.load("radar_centre", scratch), s_arrow);
-		hudtex::decodeSprite(s_hudTxd.load("radar_north", scratch), s_north);
+		if (!s_arrow.col) hudtex::decodeSprite(s_hudTxd.load("radar_centre", scratch), s_arrow);
+		if (!s_north.col) hudtex::decodeSprite(s_hudTxd.load("radar_north", scratch), s_north);
+		for (int i = 0; i < MAP_TYPE_COUNT - 2; i++) {
+			mem::Scratch iconScratch;
+			if (!s_pointSprites[i].col)
+				hudtex::decodeSprite(s_hudTxd.load(s_types[i].icon, iconScratch), s_pointSprites[i]);
+		}
+	}
+	if (!s_points) {
+		FILE* f = fopen("nitro:/data/map_points.dpoi", "rb");
+		ds::PointHeader h;
+		if (f && fread(&h, sizeof h, 1, f) == 1 && h.magic == DS_FOURCC('D', 'P', 'O', 'I') &&
+		    h.version == 1 && h.count <= 1024) {
+			s_points = (ds::MapPoint*)mem::alloc(h.count * sizeof(ds::MapPoint), mem::TAG_RADAR);
+			if (s_points && fread(s_points, sizeof(ds::MapPoint), h.count, f) == h.count)
+				s_pointCount = h.count;
+			else {
+				mem::free(s_points);
+				s_points = nullptr;
+			}
+		}
+		if (f) fclose(f);
 	}
 	if (!s_fullPool.capacity()) {
 		s_fullPool.init(mem::budget::RADAR_TILE_SLOTS, mem::TAG_RADAR);
@@ -100,6 +133,36 @@ bool init() {
 	}
 	s_range = RMIN;
 	return s_file != nullptr;
+}
+
+const char* typeIcon(int type) {
+	return (unsigned)type < MAP_TYPE_COUNT ? s_types[type].icon : nullptr;
+}
+
+const char* typeLabelKey(int type) {
+	return (unsigned)type < MAP_TYPE_COUNT ? s_types[type].key : nullptr;
+}
+
+int legendTypes(float centerX, float centerY, bool full, u8* out, int capacity) {
+	bool seen[MAP_TYPE_COUNT] = {};
+	for (int i = 0; i < s_pointCount; i++) {
+		const ds::MapPoint& p = s_points[i];
+		if (p.icon < MAP_TYPE_COUNT - 2 &&
+		    (full || (fabsf(p.x - centerX) < 512 && fabsf(p.y - centerY) < 384)))
+			seen[p.icon] = true;
+	}
+	if (full || (fabsf(player::g.x - centerX) < 512 && fabsf(player::g.y - centerY) < 384))
+		seen[MAP_TYPE_COUNT - 2] = true;
+	for (const Blip& b : s_blips) {
+		if (b.on && (full || (fabsf(b.x - centerX) < 512 && fabsf(b.y - centerY) < 384))) {
+			for (int i = 0; i < MAP_TYPE_COUNT; i++)
+				if (b.spr.col && !strcmp(b.spriteName, s_types[i].icon)) seen[i] = true;
+		}
+	}
+	int count = 0;
+	for (int i = 0; i < MAP_TYPE_COUNT; i++)
+		if (seen[i] && count < capacity) out[count++] = (u8)i;
+	return count;
 }
 
 // Least recently used tile that this frame does not need.
@@ -136,8 +199,7 @@ static bool loadTile(int key, mem::Pool<T>& pool, T** map, u32 base, u32& budget
 
 // Ensures the tiles under the disc (plus a prefetch margin) are resident,
 // nearest first, within the frame's I/O budget.
-static void stream(float px, float py, bool wantFull, bool wantMip, u32& budget) {
-	const float reach = s_range + 150.0f;   // the disc is a world circle of radius range + look-ahead
+static void stream(float px, float py, float reach, bool wantFull, bool wantMip, u32& budget) {
 	const int x0 = (int)((px - reach + 3000.0f) / 500.0f), x1 = (int)((px + reach + 3000.0f) / 500.0f);
 	const int y0 = (int)((3000.0f - py - reach) / 500.0f), y1 = (int)((3000.0f - py + reach) / 500.0f);
 	const int ptx = (int)((px + 3000.0f) / 500.0f), pty = (int)((3000.0f - py) / 500.0f);
@@ -157,7 +219,7 @@ static void stream(float px, float py, bool wantFull, bool wantMip, u32& budget)
 void prefetch() {
 	u32 budget = 0xFFFFFFFFu;
 	s_frame++;
-	stream(player::g.x, player::g.y, true, true, budget);
+	stream(player::g.x, player::g.y, s_range + 150.0f, true, true, budget);
 }
 
 // Tile data for a grid cell, or nullptr when it isn't resident (yet).
@@ -183,7 +245,7 @@ static void drawMap() {
 	const bool mip = s_range > (float)MIP_RANGE;
 	s_frame++;
 	u32 budget = IO_BUDGET;
-	stream(p.x, p.y, !mip || s_range < MIP_RANGE + MIP_HYST, mip || s_range > MIP_RANGE - MIP_HYST, budget);
+	stream(p.x, p.y, s_range + 150.0f, !mip || s_range < MIP_RANGE + MIP_HYST, mip || s_range > MIP_RANGE - MIP_HYST, budget);
 
 	const int tileShift = mip ? 5 : 6;
 	const int tileMask = (1 << tileShift) - 1;
@@ -238,6 +300,69 @@ static void drawMap() {
 	// rim: dark outline + inner shadow, like the PC radardisc border
 	subfb::circle(CX, CY, R + 1, rgb(0, 0, 0));
 	subfb::circle(CX, CY, R, rgb(40, 40, 40));
+}
+
+void drawPauseMap(float centerX, float centerY) {
+	constexpr int step = 4 << 12;
+	const s64 texPerUnit = ((s64)64 << 16) / 500;
+	const int texelShift = 18;
+	const int dU = (int)(((s64)step * texPerUnit) >> 16);
+	const int pxQ = (int)(centerX * 4096.0f);
+	const int pyQ = (int)(centerY * 4096.0f);
+	const int left = pxQ - (subfb::W / 2) * step;
+	int north = pyQ + (subfb::H / 2) * step;
+	const int U0 = (int)((((s64)left + (3000 << 12)) * texPerUnit) >> 16);
+	s_frame++;
+	u32 budget = IO_BUDGET;
+	stream(centerX, centerY, 550.0f, true, false, budget);
+	u16* fb = subfb::frame();
+	for (int y = 0; y < subfb::H; y++, north -= step) {
+		int U = U0;
+		const int V = (int)((((s64)(3000 << 12) - north) * texPerUnit) >> 16);
+		const int ty = V >> texelShift, row = ((V >> 12) & 63) << 6;
+		const u16* t = nullptr;
+		int lastTx = -1;
+		u16* dst = fb + y * subfb::STRIDE;
+		for (int x = 0; x < subfb::W; x++, U += dU) {
+			const int tx = U >> texelShift;
+			if (tx != lastTx) { t = tile(tx, ty, false); lastTx = tx; }
+			dst[x] = t ? t[row | ((U >> 12) & 63)] : s_sea;
+		}
+	}
+	for (int i = 0; i < s_pointCount; i++) {
+		const ds::MapPoint& p = s_points[i];
+		if (p.icon >= MAP_TYPE_COUNT - 2) continue;
+		const int x = subfb::W / 2 + (int)((p.x - centerX) / 4.0f);
+		const int y = subfb::H / 2 - (int)((p.y - centerY) / 4.0f);
+		if ((unsigned)x >= subfb::W || (unsigned)y >= subfb::H) continue;
+		const subfb::Sprite& icon = s_pointSprites[p.icon];
+		if (icon.col) subfb::blit(icon, x - icon.w / 2, y - icon.h / 2);
+	}
+	for (const Blip& b : s_blips) {
+		if (!b.on) continue;
+		const int x = subfb::W / 2 + (b.x - (int)centerX) / 4;
+		const int y = subfb::H / 2 - (b.y - (int)centerY) / 4;
+		if ((unsigned)x >= subfb::W || (unsigned)y >= subfb::H) continue;
+		subfb::rect(x - 3, y - 3, 7, 7, rgb(0, 0, 0));
+		subfb::rect(x - 2, y - 2, 5, 5, rgb(b.r, b.g, b.b));
+	}
+	const int playerX = subfb::W / 2 + (int)((player::g.x - centerX) / 4.0f);
+	const int playerY = subfb::H / 2 - (int)((player::g.y - centerY) / 4.0f);
+	if ((unsigned)playerX < subfb::W && (unsigned)playerY < subfb::H) {
+		subfb::circle(playerX, playerY, 5, rgb(0, 0, 0));
+		subfb::circle(playerX, playerY, 3, rgb(255, 255, 255));
+	}
+}
+
+void drawFullPoints(int left, int top, int size) {
+	for (int i = 0; i < s_pointCount; i++) {
+		const ds::MapPoint& p = s_points[i];
+		if (p.icon >= MAP_TYPE_COUNT - 2) continue;
+		const int x = left + (p.x + 3000) * size / 6000;
+		const int y = top + (3000 - p.y) * size / 6000;
+		const subfb::Sprite& icon = s_pointSprites[p.icon];
+		if (icon.col) subfb::blitScaled(icon, x - 4, y - 4, 8, 8);
+	}
 }
 
 // world -> radar space (TransformRealWorldPointToRadarSpace):
@@ -300,6 +425,7 @@ void setBlip(int id, float x, float y, const char* sprite, u8 r, u8 g, u8 b) {
 	bl.x = (s16)x; bl.y = (s16)y;
 	bl.r = r; bl.g = g; bl.b = b;
 	if (sprite && *sprite && s_hudTxd.isOpen()) {
+		snprintf(bl.spriteName, sizeof bl.spriteName, "%s", sprite);
 		mem::Scratch scratch;
 		hudtex::decodeSprite(s_hudTxd.load(sprite, scratch), bl.spr);
 	}

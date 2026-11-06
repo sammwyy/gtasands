@@ -33,9 +33,9 @@
 
 namespace dbgui {
 
-enum Tab { TAB_LOG, TAB_PERF, TAB_MEM, TAB_GAME, TAB_REND, TAB_SKY, TAB_COUNT };
-static const char* const k_tabs[TAB_COUNT] = { "LOG", "PERF", "MEM", "GAME", "REND", "SKY" };
-static constexpr int TAB_W = 5;          // characters per tab (">" marker + 4-char label)
+enum Tab { TAB_LOG, TAB_PERF, TAB_MEM, TAB_GAME, TAB_REND, TAB_SKY, TAB_CHTS, TAB_COUNT };
+static const char* const k_tabs[TAB_COUNT] = { "LOG", "PERF", "MEM", "GAME", "REND", "SKY", "CHTS" };
+static constexpr int TAB_W = 4;
 static constexpr int COLS = 31;          // last column left empty: writing it wraps (and row 23 would scroll)
 static constexpr int ROWS = 24;
 
@@ -47,6 +47,7 @@ static int s_heapCheck = -1;
 static u16 s_cpuHist[COLS];
 static int s_histPos;
 static int s_weaponIdx = 1;
+static int s_cheatCat, s_cheatPage[6], s_cheatWeather = weather::EXTRASUNNY_LA;
 
 // ---- text helpers -------------------------------------------------------------
 
@@ -605,6 +606,253 @@ static void pageSky(bool inGame) {
 	blank(19, 23);
 }
 
+static void pageCheats(bool inGame) {
+	static const char* const cats[] = { "PLAYER", "VEH", "PEDS", "TIME", "WORLD", "WARP" };
+	static const int cols[] = { 0, 6, 11, 16, 21, 26, 31 };
+	for (int i = 0; i < 6; i++) {
+		const int col = cols[i];
+		printf("\x1b[23;%dH%s%-*.*s\x1b[39m", col, i == s_cheatCat ? "\x1b[33m" : "\x1b[37m",
+		       cols[i + 1] - col, cols[i + 1] - col, cats[i]);
+		if (s_tapRow == 23 && s_tapCol >= col && s_tapCol < cols[i + 1]) {
+			s_cheatCat = i;
+			s_tapRow = -1;
+		}
+	}
+	const int page = s_cheatPage[s_cheatCat];
+	const int pages = s_cheatCat == 0 || s_cheatCat == 1 || s_cheatCat == 3 ? 2 : 1;
+	line(22, "%s %d/%d", cats[s_cheatCat], page + 1, pages);
+	int c = 19;
+	if (button(22, c, "<") && page > 0) s_cheatPage[s_cheatCat]--;
+	if (button(22, c, ">") && page + 1 < pages) s_cheatPage[s_cheatCat]++;
+	blank(1, 21);
+	if (!inGame) {
+		line(2, "\x1b[33m(start a game first)\x1b[39m");
+		return;
+	}
+	player::State& p = player::g;
+	if (s_cheatCat == 0 && page == 0) {
+		line(3, "Money $%d", p.money);
+		c = 16;
+		if (button(3, c, "+1k")) p.money += 1000;
+		if (button(3, c, "+100k")) p.money += 100000;
+		line(10, "Clear money");
+		c = 20;
+		if (button(10, c, "0")) p.money = 0;
+		line(4, "Health %d/%d", (int)p.health, (int)p.maxHealth);
+		c = 14;
+		if (button(4, c, "-25")) p.health = clampf(p.health - 25, 0, p.maxHealth);
+		if (button(4, c, "max")) p.health = p.maxHealth;
+		line(5, "Armour %d/%d", (int)p.armour, (int)p.maxArmour);
+		c = 14;
+		if (button(5, c, "-25")) p.armour = clampf(p.armour - 25, 0, p.maxArmour);
+		if (button(5, c, "max")) p.armour = p.maxArmour;
+		line(6, "Wanted");
+		for (int i = 0; i <= 5; i++) {
+			c = 10 + i * 3;
+			printf("\x1b[6;%dH%s[%d]\x1b[39m", c, p.wantedLevel == i ? "\x1b[33m" : "\x1b[36m", i);
+			if (s_tapRow == 6 && s_tapCol >= c && s_tapCol < c + 3) player::setWantedLevel(i);
+		}
+		line(7, "CJ speed      x%d.%02d", dbg::opts.playerSpeedQ / 4, dbg::opts.playerSpeedQ % 4 * 25);
+		c = 23;
+		if (button(7, c, "<") && dbg::opts.playerSpeedQ > 1) dbg::opts.playerSpeedQ--;
+		if (button(7, c, ">") && dbg::opts.playerSpeedQ < 16) dbg::opts.playerSpeedQ++;
+		line(8, "Sprint        %d%%", (int)p.sprint);
+		c = 20;
+		if (button(8, c, "fill")) player::refillSprint();
+		line(9, "Full heal");
+		c = 20;
+		if (button(9, c, "do")) { p.health = p.maxHealth; p.armour = p.maxArmour; player::refillSprint(); }
+	} else if (s_cheatCat == 0) {
+		line(2, "Weapon        %d", player::weaponTypeAt(s_weaponIdx));
+		c = 17;
+		if (button(2, c, "<") && --s_weaponIdx < 1) {
+			s_weaponIdx = 1;
+			while (player::weaponTypeAt(s_weaponIdx + 1) >= 0) s_weaponIdx++;
+		}
+		if (button(2, c, ">") && player::weaponTypeAt(++s_weaponIdx) < 0) s_weaponIdx = 1;
+		if (button(2, c, "give")) player::giveWeapon(player::weaponTypeAt(s_weaponIdx), 200);
+		line(3, "All weapons");
+		c = 17;
+		if (button(3, c, "give")) player::giveAllWeapons();
+		if (button(3, c, "clear")) player::clearWeapons();
+		line(4, "Fat           %d", (int)p.fat);
+		c = 18;
+		if (button(4, c, "0")) player::setBodyStats(0, p.muscle);
+		if (button(4, c, "+")) player::setBodyStats(p.fat + 250, p.muscle);
+		if (button(4, c, "max")) player::setBodyStats(1000, p.muscle);
+		line(5, "Muscle        %d", (int)p.muscle);
+		c = 18;
+		if (button(5, c, "0")) player::setBodyStats(p.fat, 0);
+		if (button(5, c, "+")) player::setBodyStats(p.fat, p.muscle + 250);
+		if (button(5, c, "max")) player::setBodyStats(p.fat, 1000);
+		line(6, "Outfit        %.10s", cj::outfitName(cj::outfit()));
+		c = 26;
+		const int n = cj::outfitCount();
+		if (n && button(6, c, "<")) cj::setOutfit((cj::outfit() + n - 1) % n);
+		if (n && button(6, c, ">")) cj::setOutfit((cj::outfit() + 1) % n);
+		line(7, "Respawn");
+		c = 18;
+		if (button(7, c, "do")) player::respawn();
+	} else if (s_cheatCat == 1 && page == 0) {
+		if (vehdata::ready()) {
+			if (s_vehPick < 0) s_vehPick = vehdata::findModel(492) >= 0 ? vehdata::findModel(492) : nextOfCat(0, 1, VC_CAR);
+			line(2, "Type          %s", k_vcat[s_vcat]);
+			c = 23;
+			if (button(2, c, "<")) s_vcat = (s_vcat + VC_COUNT - 1) % VC_COUNT;
+			if (button(2, c, ">")) s_vcat = (s_vcat + 1) % VC_COUNT;
+			if (s_vehPick < 0 || catOf(s_vehPick) != s_vcat) s_vehPick = nextOfCat(-1, 1, s_vcat);
+			ds::VehInfo info;
+			if (vehdata::read(s_vehPick, info)) {
+				line(3, "Spawn car");
+				c = 10;
+				if (button(3, c, "<")) s_vehPick = nextOfCat(s_vehPick, -1, s_vcat);
+				char label[14];
+				snprintf(label, sizeof label, "%d %.7s", info.modelId, info.model);
+				if (button(3, c, label)) spawnHere(s_vehPick);
+				if (button(3, c, ">")) s_vehPick = nextOfCat(s_vehPick, 1, s_vcat);
+			}
+			line(4, "Model id      %d", s_spawnId);
+			c = 18;
+			if (button(4, c, "-10")) s_spawnId -= 10;
+			if (button(4, c, "+10")) s_spawnId += 10;
+			if (s_spawnId < 400) s_spawnId = 611;
+			if (s_spawnId > 611) s_spawnId = 400;
+			line(5, "Spawn by id");
+			c = 17;
+			if (button(5, c, "spawn")) {
+				const int i = vehdata::findModel(s_spawnId);
+				if (i >= 0 && vehdata::spawnable(i)) { s_vehPick = i; s_vcat = catOf(i); spawnHere(i); }
+				else hud::log("no vehicle %d", s_spawnId);
+			}
+		} else line(2, "vehicles.dveh not ready");
+	} else if (s_cheatCat == 1) {
+		const int id = player::vehicleId() >= 0 ? player::vehicleId() : s_lastCar;
+		line(2, "Vehicle       #%d", veh::get(id) ? id : -1);
+		line(3, "Enter car");
+		c = 17;
+		if (button(3, c, "enter") && veh::get(id)) player::enterVehicleNow(id);
+		line(4, "Repair car");
+		c = 17;
+		if (button(4, c, "repair")) veh::repair(id);
+		line(5, "Flip car");
+		c = 17;
+		if (button(5, c, "flip")) veh::flip(id);
+		line(6, "Blow up car");
+		c = 17;
+		if (button(6, c, "boom")) veh::blowUp(id);
+		line(7, "Remove cars");
+		c = 17;
+		if (button(7, c, "clear")) { veh::removeAll(); s_lastCar = -1; }
+		line(8, "Vehicle lights");
+		c = 17;
+		if (button(8, c, dbg::opts.vehLights ? "ON" : "OFF")) dbg::opts.vehLights = !dbg::opts.vehLights;
+	} else if (s_cheatCat == 2) {
+		line(2, "Peds          %d", peds::count());
+		c = 20;
+		if (button(2, c, dbg::opts.peds ? "ON" : "OFF")) dbg::opts.peds = !dbg::opts.peds;
+		line(3, "Spawn ped");
+		c = 17;
+		if (button(3, c, "spawn")) peds::spawnNear(p.x, p.y, p.z);
+		line(4, "Remove peds");
+		c = 17;
+		if (button(4, c, "clear")) peds::removeAll();
+		line(5, "Density       %d%%", dbg::opts.pedDensity);
+		c = 22;
+		if (button(5, c, "<") && dbg::opts.pedDensity > 0) dbg::opts.pedDensity -= 25;
+		if (button(5, c, ">") && dbg::opts.pedDensity < 200) dbg::opts.pedDensity += 25;
+	} else if (s_cheatCat == 3 && page == 0) {
+		line(2, "Clock         %02u:%02u", player::g_clockH, player::g_clockM);
+		c = 20;
+		if (button(2, c, "-1h")) player::setClock(player::g_clockH + 23, player::g_clockM);
+		if (button(2, c, "+1h")) player::setClock(player::g_clockH + 1, player::g_clockM);
+		line(3, "Set hour");
+		c = 12;
+		for (int h = 0; h < 24; h += 6) {
+			char label[3];
+			snprintf(label, sizeof label, "%02d", h);
+			if (button(3, c, label)) player::setClock(h, 0);
+		}
+		line(4, "Clock rate    x%d", dbg::opts.clockRate);
+		c = 17;
+		if (button(4, c, "0")) dbg::opts.clockRate = 0;
+		if (button(4, c, "1")) dbg::opts.clockRate = 1;
+		if (button(4, c, "10")) dbg::opts.clockRate = 10;
+		if (button(4, c, "60")) dbg::opts.clockRate = 60;
+		line(5, "Weather       %.9s", weather::name((weather::Type)s_cheatWeather));
+		c = 23;
+		if (button(5, c, "<")) s_cheatWeather = (s_cheatWeather + weather::NUM_PLAYABLE - 1) % weather::NUM_PLAYABLE;
+		if (button(5, c, ">")) s_cheatWeather = (s_cheatWeather + 1) % weather::NUM_PLAYABLE;
+		line(6, "Force weather");
+		c = 17;
+		if (button(6, c, "now")) weather::forceWeatherNow((weather::Type)s_cheatWeather);
+		if (button(6, c, "auto")) weather::releaseWeather();
+		line(7, "Current       %.12s", weather::name(weather::g.newType));
+	} else if (s_cheatCat == 3) {
+		line(2, "Rain");
+		c = 17;
+		if (button(2, c, "force")) weather::forceWeatherNow(weather::RAINY_SF);
+		line(3, "Fog");
+		c = 17;
+		if (button(3, c, "force")) weather::forceWeatherNow(weather::FOGGY_SF);
+		line(4, "Sandstorm");
+		c = 17;
+		if (button(4, c, "force")) weather::forceWeatherNow(weather::SANDSTORM_DESERT);
+		line(5, "Sun");
+		c = 17;
+		if (button(5, c, "force")) weather::forceWeatherNow(weather::EXTRASUNNY_LA);
+		line(6, "Weather FX");
+		c = 17;
+		if (button(6, c, dbg::opts.weatherFx ? "ON" : "OFF")) dbg::opts.weatherFx = !dbg::opts.weatherFx;
+		line(7, "Lightning");
+		c = 17;
+		if (button(7, c, "flash")) weather::debugFlash();
+	} else if (s_cheatCat == 4) {
+		line(2, "Map");
+		c = 17;
+		if (button(2, c, dbg::opts.world ? "ON" : "OFF")) dbg::opts.world = !dbg::opts.world;
+		line(3, "Collision");
+		c = 17;
+		if (button(3, c, dbg::opts.collision ? "ON" : "OFF")) dbg::opts.collision = !dbg::opts.collision;
+		line(4, "Physics");
+		c = 17;
+		if (button(4, c, dbg::opts.physics ? "ON" : "OFF")) dbg::opts.physics = !dbg::opts.physics;
+		line(5, "Water");
+		c = 17;
+		if (button(5, c, dbg::opts.water ? "ON" : "OFF")) dbg::opts.water = !dbg::opts.water;
+		line(6, "Sim speed     x%d.%02d", dbg::opts.simSpeedQ / 4, dbg::opts.simSpeedQ % 4 * 25);
+		c = 23;
+		if (button(6, c, "<") && dbg::opts.simSpeedQ > 0) dbg::opts.simSpeedQ--;
+		if (button(6, c, ">") && dbg::opts.simSpeedQ < 8) dbg::opts.simSpeedQ++;
+	} else {
+		struct Warp { int row; const char* name; float x, y, z; };
+		static const Warp warps[] = {
+			{ 3, "Grove Street", 2495.0f, -1664.0f, 13.5f },
+			{ 4, "Downtown LS", 1481.0f, -1731.0f, 13.4f },
+			{ 5, "LS Airport", 1684.0f, -2334.0f, 13.5f },
+			{ 6, "Santa Maria", 342.0f, -1800.0f, 4.7f },
+			{ 8, "Downtown SF", -2150.0f, 550.0f, 35.0f },
+			{ 9, "SF Garage", -2030.0f, 160.0f, 28.8f },
+			{ 11, "The Strip", 2027.0f, 1343.0f, 10.8f },
+			{ 12, "North LV", 2515.0f, 1975.0f, 10.8f },
+			{ 13, "South LV", 1942.0f, 1073.0f, 10.8f },
+			{ 15, "Desert Airstrip", 400.0f, 2500.0f, 16.5f },
+			{ 16, "Bone County", -68.5f, 1020.75f, 19.7f },
+			{ 17, "Mt. Chiliad", -2326.0f, -1625.0f, 483.7f },
+			{ 18, "Dillimore", 655.0f, -575.0f, 16.3f },
+			{ 19, "Palomino Creek", 2230.0f, -112.0f, 26.5f },
+		};
+		line(1, "Tap a place to teleport");
+		line(2, "\x1b[33mLOS SANTOS\x1b[39m");
+		line(7, "\x1b[33mSAN FIERRO\x1b[39m");
+		line(10, "\x1b[33mLAS VENTURAS\x1b[39m");
+		line(14, "\x1b[33mCOUNTRYSIDE / DESERT\x1b[39m");
+		for (const Warp& w : warps) {
+			c = 2;
+			if (button(w.row, c, w.name)) player::teleport(w.x, w.y, w.z, 0.0f);
+		}
+	}
+}
+
 // ---- frame --------------------------------------------------------------------
 
 void enter() {
@@ -627,18 +875,18 @@ void frame(const input::State& in, bool inGame) {
 	// tab bar
 	printf("\x1b[0;0H");
 	// tab bar: the console has no background colours, so the active tab is
-	// marked with '>' and yellow
+	// marked in yellow; four columns per tab leave room for CHTS
 	for (int t = 0; t < TAB_COUNT; t++) {
-		char lbl[8];
-		snprintf(lbl, sizeof lbl, t == s_tab ? ">%s" : " %s", k_tabs[t]);
-		printf(t == s_tab ? "\x1b[33m%-*s\x1b[39m" : "\x1b[37m%-*s\x1b[39m", TAB_W, lbl);
+		printf(t == s_tab ? "\x1b[33m%-4.4s\x1b[39m" : "\x1b[37m%-4.4s\x1b[39m", k_tabs[t]);
 	}
+	printf("   ");
 	switch (s_tab) {
 	case TAB_LOG: pageLog(); break;
 	case TAB_PERF: pagePerf(); break;
 	case TAB_MEM: pageMem(); break;
 	case TAB_GAME: pageGame(inGame); break;
 	case TAB_SKY: pageSky(inGame); break;
+	case TAB_CHTS: pageCheats(inGame); break;
 	default: pageRend(); break;
 	}
 	s_repaint = false;

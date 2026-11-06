@@ -1,7 +1,7 @@
 #include "game/menu/screens.h"
 
-// aScreens table (From 0x8CE008) - verbatim port of MenuManager_Internal.h
-// with unused controls-definition rows kept.
+// aScreens table (From 0x8CE008) - MenuManager_Internal.h layout,
+// without Quit in the title/pause menus; unused controls-definition rows kept.
 tMenuScreen aScreens[SCREEN_COUNT] = {
 	// [0]: SCREEN_STATS
 	{ "FEP_STA", SCREEN_INITIAL, 3, {
@@ -241,7 +241,6 @@ tMenuScreen aScreens[SCREEN_COUNT] = {
 	{ "FEM_MM", SCREEN_NONE, 0, {
 		{ MENU_ACTION_MENU, "FEP_STG", TI_ENTER, SCREEN_START_GAME, 320, 170, MENU_ALIGN_CENTER },
 		{ MENU_ACTION_MENU, "FEP_OPT", TI_ENTER, SCREEN_OPTIONS, 0, 0, MENU_ALIGN_CENTER },
-		{ MENU_ACTION_MENU, "FEP_QUI", TI_ENTER, SCREEN_QUIT_GAME_ASK, 0, 0, MENU_ALIGN_CENTER },
 	}},
 	// [35]: SCREEN_QUIT_GAME_ASK
 	{ "FET_QG", SCREEN_INITIAL, 6, {
@@ -291,7 +290,6 @@ tMenuScreen aScreens[SCREEN_COUNT] = {
 		{ MENU_ACTION_MENU, "FEP_STA", TI_ENTER, SCREEN_STATS, 0, 0, MENU_ALIGN_CENTER },
 		{ MENU_ACTION_MENU, "FEH_BRI", TI_ENTER, SCREEN_BRIEF, 0, 0, MENU_ALIGN_CENTER },
 		{ MENU_ACTION_MENU, "FEP_OPT", TI_ENTER, SCREEN_OPTIONS, 0, 0, MENU_ALIGN_CENTER },
-		{ MENU_ACTION_MENU, "FEP_QUI", TI_ENTER, SCREEN_QUIT_GAME_ASK, 0, 0, MENU_ALIGN_CENTER },
 	}},
 	// [42]: SCREEN_INITIAL
 	{ "", SCREEN_STATS, 0, {} },

@@ -8,6 +8,7 @@
 
 #include "assets/texture.h"
 #include "game/hud/chud.h"
+#include "game/menu/menu.h"
 #include "game/hud/subfb.h"
 #include "hud/debugui.h"
 #include "mem/mem.h"
@@ -417,6 +418,10 @@ static void pedTest(int f) {
 
 void draw() {
 	if (s_screen == Screen::GAME) {
+		if (FrontEndMenuManager.m_bMenuActive) {
+			FrontEndMenuManager.drawBottom();
+			return;
+		}
 		if (s_gameActive && chud::ready()) {
 			chud::draw();
 #ifdef GTASADS_DEBUG

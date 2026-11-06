@@ -145,6 +145,7 @@ static float s_camPitch;
 static float s_betaSpeed;
 static int s_betaSign;
 static int s_zoneTimer;
+static int s_teleportWait;
 static bool s_camDrag;
 static int s_lastTx, s_lastTy;
 
@@ -354,6 +355,7 @@ void refillSprint() {
 
 void respawn() {
 	if (s_carTask != CT_NONE) endCarTask(false);
+	s_teleportWait = 0;
 	g.x = SPAWN_X; g.y = SPAWN_Y; g.z = SPAWN_Z;
 	g.heading = 0.0f;
 	s_camYaw = 0.0f;
@@ -361,6 +363,25 @@ void respawn() {
 	s_jumpVX = s_jumpVY = s_jumpVZ = 0.0f;
 	pedmove::reset(s_move);
 	placeOnGround();
+}
+
+static void poseOne(const char* name, bool loop, bool extract, bool restart);
+
+void teleport(float x, float y, float z, float heading) {
+	if (s_carTask != CT_NONE) endCarTask(false);
+	g.x = x; g.y = y; g.z = z;
+	g.heading = s_camYaw = wrap(heading);
+	s_action = ACT_NONE;
+	s_jumpVX = s_jumpVY = s_jumpVZ = 0.0f;
+	s_stepVX = s_stepVY = 0.0f;
+	g.speed = 0.0f;
+	s_viewZ = z;
+	s_lookH = CAM_LOOK_H;
+	s_zoneTimer = 0;
+	s_camDrag = false;
+	pedmove::reset(s_move);
+	poseOne(cj::motion().idle, true, false, true);
+	s_teleportWait = 300;
 }
 
 void locoDebug(char* buf, int n) {
@@ -890,6 +911,8 @@ static void updateMove() {
 		mx *= sprintR;
 		my *= sprintR;
 	}
+	mx *= dbg::opts.playerSpeedQ * 0.25f;
+	my *= dbg::opts.playerSpeedQ * 0.25f;
 	const float c = cosf(g.heading), s = sinf(g.heading);
 	const float wx = mx * c - my * s;
 	const float wy = mx * s + my * c;
@@ -1461,6 +1484,7 @@ void init() {
 	s_betaSpeed = 0;
 	s_betaSign = 0;
 	s_zoneTimer = 0;
+	s_teleportWait = 0;
 	s_camDrag = false;
 	pedmove::reset(s_move);
 	s_spent = false;
@@ -1503,6 +1527,22 @@ void update() {
 	s_lastVbl = v;
 	if (dv > 6) dv = 6; // a stall shouldn't skip the clock or the exercise timers
 	tickClock(dv);
+
+	if (s_teleportWait) {
+		col::Hit hit;
+		if (s_teleportWait == 300 || (col::available() && (col::pending() ||
+		    !col::groundAt(g.x, g.y, g.z + 4.0f, g.z - 30.0f, hit)))) {
+			if (--s_teleportWait) {
+				input::consumeEdges();
+				pad::consumeEdges();
+				return;
+			}
+		} else {
+			if (col::available()) g.z = hit.z;
+			s_teleportWait = 0;
+		}
+		s_viewZ = g.z;
+	}
 
 	// Fixed 60 Hz simulation: one step per elapsed vblank, so a 30 fps frame
 	// runs two. Every constant below (CAM_TIMESTEP, DT, sprint rates, clip

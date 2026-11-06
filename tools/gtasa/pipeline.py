@@ -12,7 +12,7 @@ from fnmatch import fnmatchcase
 from multiprocessing import Pool
 from pathlib import Path
 
-from . import audio, ds_mesh, ds_misc, ds_radar, ds_texture, img, intro, peds, vehicles, world
+from . import audio, ds_mesh, ds_misc, ds_radar, ds_texture, img, intro, map_points, peds, vehicles, world
 from .dsfmt import name as fname, write_pack
 
 HANDLERS = {
@@ -450,6 +450,16 @@ class Builder:
         st['out'] += self._emit(sec['out'], blob)
         st['files'] = 1
 
+    def do_points(self, name, sec, st):
+        try:
+            blob, stats = map_points.build(self.cfg.game, sec)
+        except FileNotFoundError as e:
+            st['errors'].append(str(e))
+            return
+        st['stats'] = stats
+        st['out'] += self._emit(sec['out'], blob)
+        st['files'] = 1
+
     def do_vehicles(self, name, sec, st):
         """vehicles.ide + handling.cfg + carcols.dat + surface tables -> one DVEH file."""
         try:
@@ -503,6 +513,9 @@ def sync(cfg, dry=False):
             want.add(Path(sec.get('img', 'models/gta3.img')))
             want |= {p.relative_to(src) for p in src.glob('data/**/*', case_sensitive=False)
                      if p.is_file() and p.suffix.lower() in ('.dat', '.ide', '.ipl')}
+        elif k == 'points':
+            want |= {p.relative_to(src) for p in src.glob('data/maps/**/*.ipl', case_sensitive=False)
+                     if p.is_file()}
         elif k == 'vehicles':
             want |= {p.relative_to(src) for p in src.glob('data/*', case_sensitive=False)
                      if p.is_file() and p.suffix.lower() in ('.dat', '.ide', '.cfg')}

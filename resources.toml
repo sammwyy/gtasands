@@ -179,6 +179,10 @@ src = "models/gta3.img"
 out = "models/radar.dsrt"
 grid = 12
 
+[map_points]
+kind = "points"
+out = "data/map_points.dpoi"
+
 [anim_img]                # streamed anim blocks (DANM v2: per-clip directory, streamed per clip)
 kind = "img"
 src = "anim/anim.img"

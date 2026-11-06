@@ -34,6 +34,7 @@ static void closePauseMenu() {
 	FrontEndMenuManager.m_bMenuActive = false;
 	FrontEndMenuManager.unloadTextures();
 	FrontEndMenuManager.m_bTexturesLoaded = false;
+	hud::setGameActive(true);
 }
 
 static void boot() {
@@ -99,7 +100,7 @@ int main() {
 			s_state = AppState::INGAME;
 		}
 		// SELECT toggles the bottom screen: debug UI <-> real game HUD (any state)
-		if (in.down & KEY_SELECT) hud::toggleScreen();
+		if ((in.down & KEY_SELECT) && !FrontEndMenuManager.m_bMenuActive) hud::toggleScreen();
 		if (s_state == AppState::INGAME) {
 			if (in.down & KEY_START) {
 				sfx::start(); // AE_FRONTEND_START: whoosh on menu open/close
@@ -108,9 +109,10 @@ int main() {
 				} else {
 					world::suspend();   // the menu art needs the VRAM; the map streams back in after
 					FrontEndMenuManager.m_bMenuActive = true;
+					hud::setScreen(hud::Screen::GAME);
+					FrontEndMenuManager.m_bMainMenuSwitch = false;
 					FrontEndMenuManager.ensureTextures();
 					FrontEndMenuManager.m_bDontDrawFrontEnd = false;
-					FrontEndMenuManager.m_bMainMenuSwitch = false;
 					FrontEndMenuManager.m_nCurrentScreen = SCREEN_INITIAL;
 					FrontEndMenuManager.m_nCurrentScreenItem = 0;
 				}
@@ -122,6 +124,8 @@ int main() {
 			}
 		}
 		if (FrontEndMenuManager.m_bMenuActive) FrontEndMenuManager.process();
+		if (s_state == AppState::INGAME && !FrontEndMenuManager.m_bMenuActive &&
+		    FrontEndMenuManager.m_bTexturesLoaded) closePauseMenu();
 
 		video::beginFrame();
 		u32 t = timing::ticks();

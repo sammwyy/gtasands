@@ -157,6 +157,7 @@ int weaponTypeAt(int index);       // weapon.dat table walk (-1 past the end)
 void setBodyStats(float fat, float muscle);  // STAT_FAT / STAT_MUSCLE (0..1000)
 void refillSprint();
 void respawn();                    // back to the Grove Street spawn
+void teleport(float x, float y, float z, float heading);
 // One-line locomotion state for the debug UI (blend, move state, phase, walk key).
 void locoDebug(char* buf, int n);
 

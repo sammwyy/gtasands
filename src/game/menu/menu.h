@@ -52,6 +52,7 @@ public:
 	void ensureTextures();
 	void process();
 	void drawFrontEnd();
+	void drawBottom();
 
 	uint32_t getNumberOfMenuOptions();
 	void switchToNewScreen(eMenuScreen screen);
@@ -64,8 +65,19 @@ public:
 
 private:
 	void drawBackground();
+	void drawDsMenus();
+	void drawLegend();
+	void drawGlobalMap();
 	void drawStandardMenus(bool drawTitle);
 	void drawMap();
+	void loadBottomArt();
+	float m_scroll = 0;
+	int8_t m_scrollScreen = SCREEN_NONE;
+	uint16_t* m_bottomArt = nullptr;
+	float m_mapX = 0, m_mapY = 0;
+	int8_t m_legendPage = 0;
+	bool m_mapFull = false, m_mapTouch = false;
+	int16_t m_touchX = 0, m_touchY = 0;
 	int32_t displaySlider(float x, float y, float h1, float h2, float len, float value, int32_t spacing);
 	const GxtChar* getRadioStationName() const;
 	void setLanguage(eLanguage l);
