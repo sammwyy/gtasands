@@ -144,6 +144,10 @@ sector = 50               # sector size in metres
 lods = true               # Stream distant LODs; switch from HD at 100 m when both models are ready
 # bounds = [2150, -1950, 2850, -1400]   # Optional local map crop; no bounds streams all of San Andreas
 
+[entry_exits]
+kind = "entry_exits"
+out = "data/entry_exits.denx"
+
 # Vehicle definitions: vehicles.ide + handling.cfg (game units) + carcols.dat +
 # surface adhesion (surface.dat / surfinfo.dat) in one table (src/game/vehicledata.cpp).
 [vehicles]

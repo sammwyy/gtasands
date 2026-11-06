@@ -5,6 +5,7 @@
 
 #include "game/cj.h"
 #include "game/collision.h"
+#include "game/entryexits.h"
 #include "game/debugopts.h"
 #include "game/pedmodel.h"
 #include "game/peds.h"
@@ -110,9 +111,9 @@ void draw() {
 	else if (player::attachedMatrix(px, py, vz, attached)) cj::drawBasis(attached);
 	else cj::draw(0.0f, 0.0f, player::g.z - vz, player::g.heading);
 	// vehicles right after CJ (their own light0: the sun), then the map's budget
-	veh::draw({ px, py, vz, px + elx, py + ely, vz + eyeH, yaw, pitch });
+	if (world::area() == 0) veh::draw({ px, py, vz, px + elx, py + ely, vz + eyeH, yaw, pitch });
 	// peds after the vehicles (their own polygon budget, nearest first)
-	peds::draw({ px, py, vz, px + elx, py + ely, vz + eyeH, yaw, pitch });
+	if (world::area() == 0) peds::draw({ px, py, vz, px + elx, py + ely, vz + eyeH, yaw, pitch });
 	// debug collision overlay before the map: the map's polygon budget yields to it
 	col::drawDebug(px, py, vz, px, py, player::g.z);
 
@@ -120,6 +121,7 @@ void draw() {
 	// light0 = world light (see world.cpp compile(): ambient * light colour)
 	glLight(0, RGB15(s_lr >> 3, s_lg >> 3, s_lb >> 3), 0, floattov10(-0.99f), 0);
 	world::draw({ px + elx, py + ely, vz + eyeH, yaw, pitch, px, py, vz });
+	entryexits::drawMarker(px, py, vz);
 
 	if (dbg::opts.ground || !world::ready()) {
 		glPushMatrix();
@@ -141,7 +143,7 @@ void draw() {
 		glPopMatrix(1);
 	}
 
-	sky::drawWeatherFx(view);
+	if (world::area() == 0) sky::drawWeatherFx(view);
 }
 
 int polyCount() { int n = 0; glGetInt(GL_GET_POLYGON_RAM_COUNT, &n); return n; }

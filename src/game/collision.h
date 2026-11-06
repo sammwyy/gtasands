@@ -42,6 +42,8 @@ bool initStep();
 bool available();
 // Once per in-game frame, before the player moves.
 void update(float x, float y, float z);
+void resetScene();
+bool preloadAreaStep(float x, float y, float z);
 // True while a collision record needed near the player is still streaming:
 // the player must not start falling through it.
 bool pending();

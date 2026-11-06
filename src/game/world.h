@@ -29,6 +29,8 @@ struct Instance {
 	int16_t m[9];             // GL basis rows right/forward/up, 4.12
 	uint16_t model;
 	uint16_t lodSwitch, linkedModel;
+	uint16_t area;
+	uint16_t pad;
 };
 
 // Loaded sector window, for game/collision (instances stay valid until the
@@ -63,6 +65,11 @@ bool initStep();
 bool ready();
 // Sector window + model streaming (time-boxed). Once per in-game frame.
 void update(float x, float y);
+void setArea(int area);
+int area();
+bool preloadAreaStep(float x, float y, float z);
+bool animateDoorNear(float x, float y, float z, float angle);
+void clearDoorAnimation();
 // Texture uploads; call right after the vblank (VRAM is free for ~20 lines).
 void vblank();
 // Inside renderer::draw with the view matrix loaded (player-local space).

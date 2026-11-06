@@ -9,6 +9,7 @@
 namespace streaming {
 
 extern Pack g_models;   // models/gta3.dspk (paged TOC)
+extern Pack g_interiors;
 extern Pack g_player;   // models/player.dspk
 extern Pack g_anim;     // anim/anim.dspk
 

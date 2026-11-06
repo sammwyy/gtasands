@@ -1,6 +1,7 @@
 """Exterior map markers from GTA SA IPL entrance/exit (enex) records."""
 import struct
-from pathlib import Path
+
+from . import entry_exits
 
 
 TYPES = (
@@ -12,38 +13,18 @@ TYPES = (
 
 
 def build(game, _sec):
-    root = Path(game) / "data/maps"
-    if not root.is_dir():
-        raise FileNotFoundError(f"missing {root}")
+    blob, _ = entry_exits.build(game, {})
     points = set()
-    for path in sorted(root.rglob("*")):
-        if path.suffix.lower() != ".ipl" or "interior" in path.parts:
+    for offset in range(entry_exits.HEADER.size, len(blob), entry_exits.RECORD.size):
+        fields = entry_exits.RECORD.unpack_from(blob, offset)
+        if fields[18] != 0:
             continue
-        section = ""
-        for raw in path.read_text(errors="replace").splitlines():
-            line = raw.split("#", 1)[0].strip()
-            if line.lower() == "enex":
-                section = "enex"
-                continue
-            if line.lower() == "end":
-                section = ""
-                continue
-            if section != "enex" or not line:
-                continue
-            fields = [x.strip().strip('"') for x in line.split(",")]
-            if len(fields) < 14:
-                continue
-            name = fields[13].upper()
-            kind = next((index for prefix, index in TYPES if name.startswith(prefix)), None)
-            if kind is None:
-                continue
-            try:
-                x, y = round(float(fields[0])), round(float(fields[1]))
-            except ValueError:
-                continue
-            if -3000 <= x < 3000 and -3000 <= y < 3000:
-                points.add((x, y, kind))
-    out = bytearray(struct.pack("<4sHH", b"DPOI", 1, len(points)))
+        name = fields[13].decode("ascii").rstrip("\0").upper()
+        kind = next((index for prefix, index in TYPES if name.startswith(prefix)), 12)
+        x, y = round(fields[0]), round(fields[1])
+        if -3000 <= x < 3000 and -3000 <= y < 3000:
+            points.add((x, y, kind))
+    out = bytearray(struct.pack("<4sHH", b"DPOI", 2, len(points)))
     for x, y, kind in sorted(points):
         out += struct.pack("<hhBB", x, y, kind, 0)
     return bytes(out), {"entrances": len(points)}

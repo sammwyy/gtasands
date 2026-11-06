@@ -11,7 +11,7 @@ ARCHITECTURE.md when a system changes or a new one lands.
 
 Current state: frontend + loading screen + intro, audio engine (SFX + ambience), CJ (clothes, anims, locomotion, jump/fight/aim),
 bottom-screen GTA HUD with radar, debug UI, time cycle + weather + sky/fog/rain, the streamed
-exterior San Andreas map (sector/model/texture streaming, linked HD/LOD switching, culling,
+San Andreas map including IPL interiors (area-aware sector/model/texture streaming, linked HD/LOD switching, culling,
 poly budget) and map collision (COL baked into world.dwld: CJ walks on the real
 ground, walls stop him, falls off ledges, the camera is pulled in front of walls; REND tab
 overlays: skeleton + collision wireframe on top with an outline), vehicles (ARCHITECTURE 6d: every IDE type - cars, bikes/BMX/quads,
@@ -107,7 +107,7 @@ python3 tools/assets.py info models/gta3.img:infernus.dff   # inspect img/txd/df
 python3 tools/assets.py preview models/gta3.img:infernus.txd [TEX] --section gta3_img
 ```
 Full cold build ~6 min (16 cores); `models_loose` alone ~20 s. Use single sections / `--limit N`
-while tuning. Current total ~381 MB of the 448 MB budget.
+while tuning. Current total ~387 MB of the 448 MB budget.
 
 ## Hardware budget (keep in mind for every decision)
 - ARM9 67 MHz, no FPU -> fixed point at runtime (20.12 / 4.12, libnds `f32`/`v16`/`t16`).
@@ -127,10 +127,10 @@ while tuning. Current total ~381 MB of the 448 MB budget.
 - Source basenames must be unique (objects are flattened into `build/`).
 
 ## Roadmap (suggested order)
-1. World data + streaming: all exterior IPLs with HD/LOD links (ARCHITECTURE 6b), collision (6c),
-   ped and road graph cells paged on demand (6e). Next: triangle strips in compile() (lists are
-   GE/DMA bound, ~8 ms for ~70 models), performance and extended travel tests; interiors and
-   mission-specific content are not included in the exterior map.
+1. World data + streaming: exterior and interior IPLs with HD/LOD links (ARCHITECTURE 6b),
+   area-aware collision (6c), ped and road graph cells paged on demand (6e). Next: triangle
+   strips in compile() (lists are GE/DMA bound, ~8 ms for ~70 models), performance and extended
+   travel tests; SCM-created and mission-specific content are not included yet.
 2. Performance: the HUD costs ~8 ms/frame and the map draw ~8 ms -> 30 fps; strips + chaining
    the list DMAs from the DMA IRQ (CPU free while the GE works) would bring back 60.
 3. Physics: ped vs world collision and all vehicle types are done (ARCHITECTURE 6c / 6d). Vehicle TODO:

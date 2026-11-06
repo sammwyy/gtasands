@@ -15,6 +15,7 @@
 #include "game/cj.h"
 #include "game/collision.h"
 #include "game/debugopts.h"
+#include "game/entryexits.h"
 #include "game/hud/chud.h"
 #include "game/hud/radar.h"
 #include "game/pedmodel.h"
@@ -823,6 +824,13 @@ static void pageCheats(bool inGame) {
 		c = 23;
 		if (button(6, c, "<") && dbg::opts.simSpeedQ > 0) dbg::opts.simSpeedQ--;
 		if (button(6, c, ">") && dbg::opts.simSpeedQ < 8) dbg::opts.simSpeedQ++;
+		line(8, "IPL exits: %d outside / %d", entryexits::exteriorCount(), entryexits::count());
+		line(9, "Unlock all interiors");
+		c = 22;
+		if (button(9, c, entryexits::unlocked() ? "ON" : "unlock") && !entryexits::unlocked()) {
+			if (!entryexits::unlockAll()) hud::log("entry_exits.denx missing");
+			else chud::invalidate();
+		}
 	} else {
 		struct Warp { int row; const char* name; float x, y, z; };
 		static const Warp warps[] = {

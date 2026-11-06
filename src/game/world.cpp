@@ -113,6 +113,9 @@ static bool s_windowDirty = true;
 static int s_preloadStep;
 static u32 s_preloadT0;
 static Stats s_stats;
+static int s_area;
+static const Inst* s_door;
+static float s_doorAngle;
 
 // key = projected size (radius / distance), doubled for instances drawn last
 // frame: the polygon budget drops the smallest-looking ones and keeps the set
@@ -213,12 +216,13 @@ static const TxdDir* txdDir(int txd) {
 	snprintf(name, sizeof name, "%s.txd", s_txds[txd].name);
 	ds::PackEntry pe;
 	ds::TxdHeader th;
-	if (!streaming::g_models.find(name, pe) || !streaming::g_models.read(pe.offset, &th, sizeof th) ||
+	Pack& pack = s_txds[txd].pad ? streaming::g_interiors : streaming::g_models;
+	if (!pack.find(name, pe) || !pack.read(pe.offset, &th, sizeof th) ||
 	    th.magic != DS_FOURCC('D', 'T', 'X', 'D'))
 		return nullptr;
 	ds::TxdEntry* e = (ds::TxdEntry*)mem::alloc(sizeof(ds::TxdEntry) * (th.count ? th.count : 1), mem::TAG_WORLD);
 	if (!e) return nullptr;
-	if (!streaming::g_models.read(pe.offset + sizeof th, e, sizeof(ds::TxdEntry) * th.count)) {
+	if (!pack.read(pe.offset + sizeof th, e, sizeof(ds::TxdEntry) * th.count)) {
 		mem::free(e);
 		return nullptr;
 	}
@@ -351,11 +355,12 @@ static bool startLoad(uint16_t model, int32_t priority) {
 	char name[32];
 	snprintf(name, sizeof name, "%.24s.dff", wm.name);
 	ds::PackEntry pe;
-	if (!streaming::g_models.find(name, pe)) {
+	Pack& pack = wm.flags & 0x80000000u ? streaming::g_interiors : streaming::g_models;
+	if (!pack.find(name, pe)) {
 		hud::log("\x1b[33mworld: %s missing\x1b[39m", name);
 		return true;
 	}
-	s.blob = streaming::g_models.load(pe, mem::TAG_MODEL);
+	s.blob = pack.load(pe, mem::TAG_MODEL);
 	if (!s.blob) {
 		freeSlot(s);
 		return false;
@@ -592,34 +597,41 @@ static bool loadSector(int sx, int sy) {
 	const long off = (long)(s_hdr.sectorsOffset + (sy * s_hdr.gridW + sx) * sizeof ws);
 	if (fseek(s_file, off, SEEK_SET) || fread(&ws, sizeof ws, 1, s_file) != 1) return false;
 	Inst* inst = nullptr;
+	uint16_t count = 0;
 	if (ws.count) {
-		inst = (Inst*)mem::alloc(sizeof(Inst) * ws.count, mem::TAG_WORLD);
-		if (!inst) return false;
+		mem::Scratch scratch;
+		Inst* source = (Inst*)scratch.alloc(sizeof(Inst) * ws.count);
+		if (!source) return false;
 		if (fseek(s_file, (long)(s_hdr.instancesOffset + ws.first * sizeof(Inst)), SEEK_SET) ||
-		    fread(inst, sizeof(Inst), ws.count, s_file) != ws.count) {
-			mem::free(inst);
-			return false;
-		}
+		    fread(source, sizeof(Inst), ws.count, s_file) != ws.count) return false;
+		for (int i = 0; i < ws.count; i++)
+			if (source[i].area == s_area || source[i].area == 13) count++;
+		if (count) inst = (Inst*)mem::alloc(sizeof(Inst) * count, mem::TAG_WORLD);
+		if (count && !inst) return false;
+		int n = 0;
 		for (int i = 0; i < ws.count; i++) {
-			int16_t* r = inst[i].m;
+			if (source[i].area != s_area && source[i].area != 13) continue;
+			inst[n] = source[i];
+			int16_t* r = inst[n].m;
 			for (int row = 0; row < 3; row++) {      // SA (x,y,z) -> GL (x,z,-y)
 				const int16_t y = r[row * 3 + 1], z = r[row * 3 + 2];
 				r[row * 3 + 1] = z;
 				r[row * 3 + 2] = (int16_t)-y;
 			}
-			if (inst[i].model >= s_hdr.numModels) inst[i].model = 0;
+			if (inst[n].model >= s_hdr.numModels) inst[n].model = 0;
+			n++;
 		}
 	}
-	*sc = { (int16_t)sx, (int16_t)sy, ws.count, 1, 0, inst, { 0, 0, 0 }, 0 };
+	*sc = { (int16_t)sx, (int16_t)sy, count, 1, 0, inst, { 0, 0, 0 }, 0 };
 	// sector sphere for the scan's early-out: centre = sector middle at the
 	// mean height, reach = farthest instance surface
 	const int size = s_hdr.sectorSize;
 	int32_t zs = 0;
-	for (int i = 0; i < ws.count; i++) zs += inst[i].pos[2] >> 8;
+	for (int i = 0; i < count; i++) zs += inst[i].pos[2] >> 8;
 	sc->c[0] = (s_hdr.originX + sx * size + size / 2) * 16;
 	sc->c[1] = (s_hdr.originY + sy * size + size / 2) * 16;
-	sc->c[2] = ws.count ? zs / ws.count : 0;
-	for (int i = 0; i < ws.count; i++) {
+	sc->c[2] = count ? zs / count : 0;
+	for (int i = 0; i < count; i++) {
 		const int32_t dx = (inst[i].pos[0] >> 8) - sc->c[0], dy = (inst[i].pos[1] >> 8) - sc->c[1],
 		              dz = (inst[i].pos[2] >> 8) - sc->c[2];
 		const int32_t r = (int32_t)sqrt32(dx * dx + dy * dy + dz * dz) + s_models[inst[i].model].radius * 16;
@@ -902,7 +914,8 @@ static void stream(u32 budgetUs, int maxStarts) {
 		TexEntry& t = s_tex[best];
 		void* buf = mem::alloc(t.size, mem::TAG_TEXTURE);
 		if (!buf) break;
-		if (streaming::g_models.read(t.offset, buf, t.size) &&
+		Pack& pack = s_txds[t.txd].pad ? streaming::g_interiors : streaming::g_models;
+		if (pack.read(t.offset, buf, t.size) &&
 		    t.size >= sizeof(ds::TexHeader) && ((const ds::TexHeader*)buf)->magic == DS_FOURCC('D', 'T', 'E', 'X')) {
 			t.staging = buf;
 			t.state = TEX_STAGED;
@@ -955,6 +968,69 @@ void update(float x, float y) {
 	s_stats.updateUs = (uint16_t)timing::usSince(t0);
 }
 
+int area() { return s_area; }
+void setArea(int area) {
+	if (area == s_area || area < 0 || area > 18) return;
+	s_door = nullptr;
+	suspend();
+	for (Sector& sc : s_sectors)
+		if (sc.used) freeSector(sc);
+	s_area = area;
+	s_centerX = s_centerY = -9999;
+	s_windowDirty = true;
+	s_stats.drawn = s_stats.modelsReady = s_stats.modelsLoading = 0;
+	memset(s_drawn, 0, sizeof s_drawn);
+}
+
+bool animateDoorNear(float x, float y, float z, float angle) {
+	s_doorAngle = angle;
+	if (s_door) return true;
+	float best = 64.0f;
+	for (const Sector& sc : s_sectors)
+		for (int i = 0; sc.used && i < sc.count; i++) {
+			const Inst& in = sc.inst[i];
+			const float dx = in.pos[0] * (1.0f / 4096.0f) - x;
+			const float dy = in.pos[1] * (1.0f / 4096.0f) - y;
+			const float dz = in.pos[2] * (1.0f / 4096.0f) - z;
+			const float d = dx * dx + dy * dy + dz * dz;
+			if (d >= best) continue;
+			ds::WorldModel m;
+			if (!readAt(s_hdr.modelsOffset + in.model * sizeof m, &m, sizeof m)) continue;
+			bool door = false;
+			for (int k = 0; k < 20 && m.name[k + 3]; k++)
+				if ((m.name[k] | 32) == 'd' && (m.name[k + 1] | 32) == 'o' &&
+				    (m.name[k + 2] | 32) == 'o' && (m.name[k + 3] | 32) == 'r') door = true;
+			if (door) { best = d; s_door = &in; }
+		}
+	return s_door != nullptr;
+}
+
+void clearDoorAnimation() { s_door = nullptr; s_doorAngle = 0.0f; }
+
+bool preloadAreaStep(float x, float y, float z) {
+	if (!ready()) return false;
+	s_frame++;
+	updateSectors(x, y, 8);
+	scan(makeCam(x, y, z + 1.5f, 0.0f, 0.0f, false));
+	stream(PRELOAD_US, 4);
+	int near = 0, loaded = 0;
+	for (const Sector& sc : s_sectors)
+		for (int i = 0; sc.used && i < sc.count; i++) {
+			const Inst& in = sc.inst[i];
+			const int32_t dx = (in.pos[0] >> 12) - (int)x;
+			const int32_t dy = (in.pos[1] >> 12) - (int)y;
+			const int32_t dz = (in.pos[2] >> 12) - (int)z;
+			const int reach = 60 + (s_models[in.model].radius / 16 > 120 ? 120 : s_models[in.model].radius / 16);
+			if (dx * dx + dy * dy + dz * dz > reach * reach) continue;
+			near++;
+			const int slot = s_slotOf[in.model];
+			if (slot != NONE && s_slots[slot].state == SLOT_READY) loaded++;
+		}
+	const int required = near < 4 ? near : near * 3 / 4 > 20 ? 20 : near * 3 / 4 > 4 ? near * 3 / 4 : 4;
+	return !s_windowDirty && ((near > 0 && loaded >= required) ||
+	                         (s_stats.modelsReady >= 8 && s_stats.drawn > 0));
+}
+
 // ----------------------------------------------------------------------------
 // Init / preload
 // ----------------------------------------------------------------------------
@@ -962,7 +1038,7 @@ static bool open() {
 	s_file = fopen("nitro:/data/world.dwld", "rb");
 	if (!s_file) return false;
 	if (fread(&s_hdr, sizeof s_hdr, 1, s_file) != 1 || s_hdr.magic != DS_FOURCC('D', 'W', 'L', 'D') ||
-	    s_hdr.version != 5 || !s_hdr.numModels) {
+	    s_hdr.version != 6 || !s_hdr.numModels) {
 		fclose(s_file);
 		s_file = nullptr;
 		return false;
@@ -1080,6 +1156,7 @@ void draw(const DrawView& v) {
 		MATRIX_MULT4x3 = in.pos[0] - ox;
 		MATRIX_MULT4x3 = in.pos[2] - oz;
 		MATRIX_MULT4x3 = oy - in.pos[1];
+		if (&in == s_door && s_doorAngle != 0.0f) glRotatef(s_doorAngle, 0.0f, 1.0f, 0.0f);
 		gx::callList(s.list);
 		markDrawn(vi.inst);
 		drawn++;

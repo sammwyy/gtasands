@@ -47,6 +47,7 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `game/weather.*` | CWeather port |
 | `game/streaming.*` | open packs (`g_models` gta3, `g_player`, `g_anim`) |
 | `game/world.*` | streamed map: DWLD sector window, map model/texture streaming, GX list compile, culling + draw (section 6b) |
+| `game/entryexits.*` | IPL entry/exit table (DENX v3), marker, session-only unlock bit and area transitions with fade/preload |
 | `game/vehicledata.*`, `game/vehiclemodel.*`, `game/vehicle.*`, `game/vehphys.cpp`, `game/vehicleint.h`, `game/fx.*` | vehicles (section 6d): DVEH tables, model streaming + per-atomic lit GX lists (animated parts), fixed-point physics for every type, damage / fire / explosion / debris / lights / draw |
 | `game/peddata.*`, `game/pedmodel.*`, `game/pedanim.*`, `game/peds.*` | random peds (section 6e): DPED tables + ped path graph, skinned ped model streaming (bone segments), per-ped anim slots, CPopulation / CPopCycle / ped tasks / interactions |
 | `game/waterlevel.*`, `game/skidmarks.*` | CWaterLevel (water.dat polygons, level query, flat surfaces), CSkidmarks |
@@ -221,7 +222,7 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   (name + txdp parent), `slotOf[model]`. Model names are read (36 B) when a model loads.
 - **Sector window**: 50 m sectors within `fogView + 40` m of the current sector's centre
   (re-evaluated only when the player crosses a sector edge, <= 2 sector reads/frame, innermost
-  rings first). Instances are 36 B (DWLD v5), rotation rows pre-converted to GL axes on load;
+  rings first). Instances are 40 B (DWLD v6: per-instance area), rotation rows pre-converted to GL axes on load;
   each sector keeps a bounding sphere. Only a genuine jump by more than a window radius
   discards the obsolete model/texture cache. Crossing a sector while STREAM memory is tight
   never clears the whole world: old slots are evicted gradually, and smaller DMDLs can still
@@ -285,7 +286,7 @@ CCollision / CColStore / CWorld::ProcessLineOfSight reduced to an on-foot player
   (`(c-a)x(b-a)` in COL), unit normal 4.12 per face, degenerate ones dropped, then a BVH (median
   split, <= 6 faces per leaf, 16 B nodes); boxes + spheres kept as they are; per-model radius in
   the index. Full exterior: 6,026 COL models, ~1 million faces, ~28 MB on disk.
-  Layout `ds::WorldCol*` (DWLD v5).
+  Layout `ds::WorldCol*` (DWLD v6).
 - **Runtime**: index resident (12 B/model). `col::update` (before `player::update`) rebuilds a
   near list every 8 frames / 2 m moved / cache change: instances within `GATHER_M` 14 m, their
   transform copied (sectors may be freed by world::update) + a world AABB of the record bbox.
@@ -528,6 +529,20 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   `data/map_points.dpoi` v1 (s16 x/y + icon type); radar loads these during HUD init and draws
   them on both map views. The legend lists only types present in the current view, with labels
   resolved from the active GXT (`LG_*` keys from CRadar::GetBlipName), never fixed translations.
+  IPL service and generic property icons are hidden until the CHTS WORLD unlock-all-interiors switch.
+  `data/entry_exits.denx` v3 contains 376 IPL `enex` records (`tools/gtasa/entry_exits.py`,
+  64 B per record); the loading job reads it into STREAM once per boot. The current
+  area is separate from the `enex` destination area, with reciprocal named links and
+  an origin record for returning from reused interior layouts. Unpaired area-changing
+  or distant warps get a session-only reverse marker at the destination. The entry/exit marker
+  uses the original oriented rectangle and height; CJ plays the partial-door clip
+  (and nearby standalone door models rotate when available), then the scene fades
+  to black while the area, sectors, display lists, textures and COL records are switched
+  and preloaded before fading back in. If destination streaming/collision/ground cannot
+  become ready, the transition returns CJ to the source under black instead of
+  dropping him into an unloaded scene. `world::setArea` filters instances to the active
+  area plus area 13, and map models/TXDs/COL come from both gta3 and gta_int packs.
+  No SCM-created enex or save state yet (`TODO.md`).
   The overview is freed on exiting the map; resuming invalidates the dirty-region HUD before it draws again.
   The top screen has no background art or control footer. Spaces in both font
   renderers advance the cursor without drawing the atlas's nonblank space cell. Menu art is
@@ -632,11 +647,11 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   16 B/entry in RAM (gta3 = 256 KB, hence the sparse index). DSND = DS IMA-ADPCM (4-byte header,
   nibbles low first) or PCM8/16. `banks.dsbl` maps global bank id -> pak/index.
 - World (`kind = "world"`, `tools/gtasa/world.py`): gta.dat -> IDE objs/tobj/anim/txdp, IPL inst
-  + binary `<ipl>_stream<N>.ipl` from gta3.img (lod indices point into the text IPL), area 0/13
-  only, LODs retained (`lods = true`, 100 m linked HD/LOD switching), no `bounds` crop
-  (all exterior San Andreas); only sectors around the player are resident. Ped/traffic
+  + binary `<ipl>_stream<N>.ipl` from gta3.img and gta_int.img (lod indices point into the text IPL),
+  all IPL areas retained, LODs retained (`lods = true`, 100 m linked HD/LOD switching), no `bounds` crop
+  (all exterior San Andreas + IPL interiors); only sectors around the player are resident. Ped/traffic
   paths also cover the exterior through a separate streamed DPED v5 graph (section 6e).
-  ~45,050 instances (6,150 LODs), ~11,264 models, ~14,280 sectors and ~30 MB DWLD v5; quaternion
+  ~50,769 instances, ~12,796 models, ~14,280 sectors and ~34 MB DWLD v6; quaternion
   negated + CMatrix::SetRotate like LoadObjectInstance; model radius from the dff spheres; the
   models' COL records (section 6c) appended after the instances. Render radii include
   each atomic's transformed geometry sphere, including its parent frame chain.

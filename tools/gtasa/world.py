@@ -12,7 +12,7 @@ from pathlib import Path
 from . import col, dff, img
 from .dsfmt import fx, fx16, name as fname, pad4
 
-VERSION = 5
+VERSION = 6
 COL_UNIT = 128        # collision coordinates: s16 at 1/128 m (as COL2+ vertices)
 COL_LEAF = 6          # faces per BVH leaf
 NO_TIME = 24          # timeOn/timeOff for always-visible objects
@@ -262,8 +262,9 @@ def build(game, sec):
     game = Path(game)
     dat = resolve(game, sec.get('dat', 'data/gta.dat'))
     imgp = resolve(game, sec.get('img', 'models/gta3.img'))
-    if not dat or not imgp:
-        raise FileNotFoundError('need data/gta.dat and models/gta3.img (run: tools/assets.py sync)')
+    intp = resolve(game, sec.get('interior_img', 'models/gta_int.img'))
+    if not dat or not imgp or not intp:
+        raise FileNotFoundError('need data/gta.dat, models/gta3.img and models/gta_int.img (run: tools/assets.py sync)')
     ides, ipls = [], []
     for line in _lines(dat):
         k, _, v = line.partition(' ')
@@ -279,6 +280,14 @@ def build(game, sec):
             parse_ide(p, objs, parents)
 
     toc = {n.lower(): (o, s) for n, o, s in img.read_toc(imgp)}
+    int_toc = {n.lower(): (o, s) for n, o, s in img.read_toc(intp)}
+
+    def source(name):
+        if name in toc:
+            return imgp, toc[name], 0
+        if name in int_toc:
+            return intp, int_toc[name], 1
+        return None, None, 0
     bounds = sec.get('bounds')       # [minX, minY, maxX, maxY] or None = everything
     keep_lod = sec.get('lods', False)
     insts = []
@@ -290,9 +299,9 @@ def build(game, sec):
         base = p.stem.lower()
         text = parse_ipl_text(p)
         stream, k = [], 0
-        while f'{base}_stream{k}.ipl' in toc:
-            o, s = toc[f'{base}_stream{k}.ipl']
-            stream += parse_ipl_binary(img.read_entry(imgp, o, s))
+        while source(f'{base}_stream{k}.ipl')[0] is not None:
+            path, (o, s), _ = source(f'{base}_stream{k}.ipl')
+            stream += parse_ipl_binary(img.read_entry(path, o, s))
             k += 1
         # lod indices of both the text and the stream IPLs point into the text list
         entries = text + stream
@@ -301,10 +310,7 @@ def build(game, sec):
         for i, t in enumerate(entries):
             mid, x, y, z, qx, qy, qz, qw, area, lod = t
             o = objs.get(mid)
-            if (area & 0xFF) not in (0, AREA_ANY):
-                skipped['area'] += 1
-                continue
-            if o is None or o[0] + '.dff' not in toc:
+            if o is None or source(o[0] + '.dff')[0] is None:
                 skipped['model'] += 1
                 continue
             is_lod = (i < len(text) and i in lod_of) or o[0].startswith('lod')
@@ -315,7 +321,7 @@ def build(game, sec):
                 skipped['bounds'] += 1
                 continue
             linked = hd_of.get(i) if is_lod and i < len(text) else text[lod][0] if not is_lod and 0 <= lod < len(text) else None
-            insts.append((mid, x, y, z, rotation(qx, qy, qz, qw), is_lod, linked))
+            insts.append((mid, x, y, z, rotation(qx, qy, qz, qw), is_lod, linked, area & 0xFF))
 
     # tables: only what the instances reference
     mids = sorted({t[0] for t in insts})
@@ -329,15 +335,16 @@ def build(game, sec):
         tidx[n] = len(txds)
         txds.append([n, -1])
         par = parents.get(n)
-        if par and par != n and par + '.txd' in toc:
+        if par and par != n and source(par + '.txd')[0] is not None:
             txds[tidx[n]][1] = txd_index(par)
         return tidx[n]
 
     models = []
     for m in mids:
         name, txd, dd, flags, on, off = objs[m]
-        models.append((name, txd_index(txd) if txd + '.txd' in toc else 0xFFFF, dd, flags, on, off,
-                       _radius(imgp, *toc[name + '.dff'])))
+        path, location, pack = source(name + '.dff')
+        models.append((name, txd_index(txd) if source(txd + '.txd')[0] else 0xFFFF, dd,
+                       flags | (pack << 31), on, off, _radius(path, *location)))
 
     size = int(sec.get('sector', 50))
     xs = [t[1] for t in insts] or [0.0]
@@ -354,29 +361,32 @@ def build(game, sec):
     txds_off = models_off + 36 * len(models)
     sectors_off = txds_off + 28 * len(txds)
     inst_off = sectors_off + 8 * gw * gh
-    col_off = inst_off + 36 * len(insts)
+    col_off = inst_off + 40 * len(insts)
     out = bytearray(struct.pack('<4sHHhhHHHHIIIII', b'DWLD', VERSION, size, ox, oy, gw, gh, len(models), len(txds),
                                 len(insts), models_off, sectors_off, inst_off, col_off))
     assert len(out) == hdr
     for name, ti, dd, flags, on, off, rad in models:
         out += fname(name, 24) + struct.pack('<HHBBHI', ti, min(0xFFFF, int(dd)), on, off, rad, flags & 0xFFFFFFFF)
     for n, par in txds:
-        out += fname(n, 24) + struct.pack('<hH', par, 0)
+        out += fname(n, 24) + struct.pack('<hH', par, source(n + '.txd')[2])
     first = 0
     for c in cells:
         out += struct.pack('<IHH', first, len(c), 0)
         first += len(c)
     for c in cells:
-        for mid, x, y, z, rot, is_lod, linked in c:
+        for mid, x, y, z, rot, is_lod, linked, area in c:
             switch = 100 if linked in midx else 0
             if is_lod:
                 switch |= 0x8000
-            out += struct.pack('<3i9hHHH', fx(x), fx(y), fx(z), *(fx16(r) for r in rot), midx[mid],
-                               switch, midx.get(linked, 0xFFFF))
+            out += struct.pack('<3i9hHHHHH', fx(x), fx(y), fx(z), *(fx16(r) for r in rot), midx[mid],
+                               switch, midx.get(linked, 0xFFFF), area, 0)
     assert len(out) == col_off
 
     # collision: WorldColIndex[numModels], then the records (model space)
     cols, dups = _col_models(imgp, toc, {m[0] for m in models})
+    other, other_dups = _col_models(intp, int_toc, {m[0] for m in models} - cols.keys())
+    cols.update(other)
+    dups += other_dups
     index, recs = bytearray(), bytearray()
     rec_base = col_off + 12 * len(models)
     nfaces = ncol = 0

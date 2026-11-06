@@ -12,6 +12,7 @@
 #include "game/animstore.h"
 #include "game/cj.h"
 #include "game/collision.h"
+#include "game/entryexits.h"
 #include "game/hud/chud.h"
 #include "game/hud/radar.h"
 #include "game/menu/menu.h"
@@ -91,6 +92,12 @@ static bool jobOpenModels() {
 }
 // gta3's TOC is 256 KB: only a sparse index is built, 16 KB per slice
 static bool jobIndexModels() { return !streaming::g_models.isOpen() || streaming::g_models.indexStep(16); }
+static bool jobOpenInteriors() {
+	const bool ok = streaming::g_interiors.open("nitro:/models/gta_int.dspk");
+	hud::log("gta_int.dspk: %u entries", ok ? (unsigned)streaming::g_interiors.count() : 0u);
+	return true;
+}
+static bool jobIndexInteriors() { return !streaming::g_interiors.isOpen() || streaming::g_interiors.indexStep(16); }
 static bool jobOpenPlayer() { streaming::g_player.open("nitro:/models/player.dspk"); return true; }
 static bool jobOpenAnim() { streaming::g_anim.open("nitro:/anim/anim.dspk"); return true; }
 static bool jobPedBlock() {
@@ -101,8 +108,12 @@ static bool jobPedBlock() {
 }
 static bool jobHud() { return chud::initStep(); }
 static bool jobZones() { zones::preload(); return true; }
+static bool jobEntryExits() {
+	if (!entryexits::init()) hud::log("entry_exits.denx missing");
+	return true;
+}
 static bool jobCj() { return cj::initStep(); }
-static bool jobPlayer() { player::init(); return true; }
+static bool jobPlayer() { world::setArea(0); col::resetScene(); player::init(); return true; }
 static bool jobRadar() { radar::prefetch(); return true; }
 static bool jobTimeCycle() { return timecycle::loadStep(); }   // one weather (8 lines) per slice
 static bool jobSky() {
@@ -133,6 +144,8 @@ static bool (*const s_jobs[])() = {
 	jobTune,
 	jobOpenModels,
 	jobIndexModels,
+	jobOpenInteriors,
+	jobIndexInteriors,
 	jobOpenPlayer,
 	jobOpenAnim,
 	jobPedBlock,
@@ -143,6 +156,7 @@ static bool (*const s_jobs[])() = {
 	jobSky,
 	jobHud,
 	jobZones,
+	jobEntryExits,
 	jobRadar,
 	jobWorld,
 	jobCol,

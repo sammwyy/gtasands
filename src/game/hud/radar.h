@@ -8,7 +8,7 @@
 // from models/hud.txd.
 namespace radar {
 
-constexpr int MAP_TYPE_COUNT = 14;
+constexpr int MAP_TYPE_COUNT = 15;
 bool init();
 void prefetch();      // load every tile around the player now (loading screen)
 void draw();          // reads player::g each frame, streams tiles within a byte budget

@@ -13,6 +13,20 @@ typedef int16_t fx16;
 
 #define DS_FOURCC(a, b, c, d) ((uint32_t)(a) | (uint32_t)(b) << 8 | (uint32_t)(c) << 16 | (uint32_t)(d) << 24)
 
+struct EntryExitHeader {
+	uint32_t magic;
+	uint16_t version, count;
+};
+struct EntryExit {
+	float entrance[3], entranceAngle, range[2], unused, exit[3], exitAngle;
+	uint16_t flags;
+	int16_t area;
+	char name[8];
+	uint8_t sky, peds, timeOn, timeOff;
+	uint16_t sourceArea, link;
+};
+static_assert(sizeof(EntryExit) == 64);
+
 // ---------------------------------------------------------------- DSPK (pack)
 // Replaces IMG archives. Entries keep original names ("infernus.dff") but the
 // payload is the converted DS format, identified by its own magic.
@@ -192,7 +206,7 @@ static_assert(sizeof(PointHeader) == 8 && sizeof(MapPoint) == 6);
 // gridW x gridH sector grid (row-major from the south-west corner, x fastest).
 struct WorldHeader {
 	uint32_t magic;          // 'DWLD'
-	uint16_t version;        // 5
+	uint16_t version;        // 6
 	uint16_t sectorSize;     // metres
 	int16_t originX, originY; // SA coords of sector (0,0)'s south-west corner
 	uint16_t gridW, gridH;
@@ -209,7 +223,7 @@ struct WorldModel {
 	uint16_t drawDist;       // IDE draw distance (m)
 	uint8_t timeOn, timeOff; // tobj hours, 24/24 = always
 	uint16_t radius;         // m, bounding sphere around the model origin (|center| + r)
-	uint32_t flags;          // IDE flags (eModelInfoFlags)
+	uint32_t flags;          // IDE flags; high bit = model from gta_int.dspk
 };
 struct WorldTxd {
 	char name[24];           // pack entry = name + ".txd"
@@ -226,6 +240,8 @@ struct WorldInstance {
 	uint16_t model;          // WorldModel index
 	uint16_t lodSwitch;      // 0x8000 = LOD; low bits = HD/LOD switching distance (m), 0 = no link
 	uint16_t linkedModel;    // HD/LOD counterpart, 0xFFFF = none
+	uint16_t area;
+	uint16_t pad;
 };
 // Map collision (the model's COL from the gta3.img .col archives), model
 // space, 1/128 m units ("cu", like COL2+ vertices). Read per model on demand.
@@ -459,7 +475,7 @@ static_assert(sizeof(AnimHeader) == 32 && sizeof(AnimEntry) == 28 && sizeof(Anim
               sizeof(AnimDirEntry) == 32);
 static_assert(sizeof(RadarHeader) == 24);
 static_assert(sizeof(WorldHeader) == 40 && sizeof(WorldModel) == 36 && sizeof(WorldTxd) == 28 &&
-              sizeof(WorldSector) == 8 && sizeof(WorldInstance) == 36);
+              sizeof(WorldSector) == 8 && sizeof(WorldInstance) == 40);
 static_assert(sizeof(WorldColIndex) == 12 && sizeof(WorldCol) == 24 && sizeof(WorldColSphere) == 12 &&
               sizeof(WorldColBox) == 16 && sizeof(WorldColNode) == 16 && sizeof(WorldColFace) == 16);
 static_assert(sizeof(VehHeader) == 184 && sizeof(VehInfo) == 380 && sizeof(VehSurface) == 4);

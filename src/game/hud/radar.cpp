@@ -7,6 +7,8 @@
 #include "assets/txdfile.h"
 #include "game/hud/hudtex.h"
 #include "game/hud/subfb.h"
+#include "game/entryexits.h"
+#include "game/world.h"
 #include "game/player.h"
 #include "mem/pool.h"
 
@@ -44,7 +46,7 @@ static const struct { const char* icon, *key; } s_types[MAP_TYPE_COUNT] = {
 	{ "radar_gym", "LG_53" }, { "radar_tshirt", "LG_42" },
 	{ "radar_police", "LG_27" }, { "radar_tattoo", "LG_36" },
 	{ "radar_saveGame", "LG_32" }, { "radar_modGarage", "LG_24" },
-	{ "radar_centre", "LG_01" }, { "radar_waypoint", "LG_64" },
+	{ "radar_propertyG", "LG_32" }, { "radar_centre", "LG_01" }, { "radar_waypoint", "LG_64" },
 };
 static subfb::Sprite s_pointSprites[MAP_TYPE_COUNT - 2];
 
@@ -106,7 +108,7 @@ bool init() {
 		FILE* f = fopen("nitro:/data/map_points.dpoi", "rb");
 		ds::PointHeader h;
 		if (f && fread(&h, sizeof h, 1, f) == 1 && h.magic == DS_FOURCC('D', 'P', 'O', 'I') &&
-		    h.version == 1 && h.count <= 1024) {
+		    h.version == 2 && h.count <= 1024) {
 			s_points = (ds::MapPoint*)mem::alloc(h.count * sizeof(ds::MapPoint), mem::TAG_RADAR);
 			if (s_points && fread(s_points, sizeof(ds::MapPoint), h.count, f) == h.count)
 				s_pointCount = h.count;
@@ -151,7 +153,7 @@ void drawLegendIcon(int type, int x, int y, int size) {
 
 int legendTypes(float centerX, float centerY, bool full, u8* out, int capacity) {
 	bool seen[MAP_TYPE_COUNT] = {};
-	for (int i = 0; i < s_pointCount; i++) {
+	for (int i = 0; entryexits::unlocked() && i < s_pointCount; i++) {
 		const ds::MapPoint& p = s_points[i];
 		if (p.icon < MAP_TYPE_COUNT - 2 &&
 		    (full || (fabsf(p.x - centerX) < 512 && fabsf(p.y - centerY) < 384)))
@@ -174,7 +176,7 @@ int legendTypes(float centerX, float centerY, bool full, u8* out, int capacity) 
 int legendRadarTypes(u8* out, int capacity) {
 	bool seen[MAP_TYPE_COUNT] = {};
 	const float reach = s_range * (R - 9) / R, reach2 = reach * reach;
-	for (int i = 0; i < s_pointCount; i++) {
+	for (int i = 0; entryexits::unlocked() && i < s_pointCount; i++) {
 		const ds::MapPoint& p = s_points[i];
 		const float dx = p.x - player::g.x, dy = p.y - player::g.y;
 		if (p.icon < MAP_TYPE_COUNT - 2 && dx * dx + dy * dy < reach2) seen[p.icon] = true;
@@ -355,7 +357,7 @@ void drawPauseMap(float centerX, float centerY) {
 			dst[x] = t ? t[row | ((U >> 12) & 63)] : s_sea;
 		}
 	}
-	for (int i = 0; i < s_pointCount; i++) {
+	for (int i = 0; entryexits::unlocked() && i < s_pointCount; i++) {
 		const ds::MapPoint& p = s_points[i];
 		if (p.icon >= MAP_TYPE_COUNT - 2) continue;
 		const int x = subfb::W / 2 + (int)((p.x - centerX) / 4.0f);
@@ -381,7 +383,7 @@ void drawPauseMap(float centerX, float centerY) {
 }
 
 void drawFullPoints(int left, int top, int size) {
-	for (int i = 0; i < s_pointCount; i++) {
+	for (int i = 0; entryexits::unlocked() && i < s_pointCount; i++) {
 		const ds::MapPoint& p = s_points[i];
 		if (p.icon >= MAP_TYPE_COUNT - 2) continue;
 		const int x = left + (p.x + 3000) * size / 6000;
@@ -431,10 +433,11 @@ static void drawBlips() {
 }
 
 static void drawPoints() {
+	if (world::area() != 0) return;
 	const float c = cosf(player::g.heading), s = sinf(player::g.heading);
 	const float k = R / s_range, reach = s_range * (R - 9) / R;
 	const float reach2 = reach * reach;
-	for (int i = 0; i < s_pointCount; i++) {
+	for (int i = 0; entryexits::unlocked() && i < s_pointCount; i++) {
 		const ds::MapPoint& p = s_points[i];
 		if (p.icon >= MAP_TYPE_COUNT - 2) continue;
 		const float dx = p.x - player::g.x, dy = p.y - player::g.y;

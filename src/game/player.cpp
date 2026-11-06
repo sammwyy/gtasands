@@ -20,6 +20,7 @@
 #include "game/vehicledata.h"
 #include "game/vehiclemodel.h"
 #include "game/waterlevel.h"
+#include "game/world.h"
 #include "game/zones.h"
 #include "hud/hud.h"
 #include "platform/input.h"
@@ -1567,7 +1568,7 @@ void update() {
 			updateMove();
 			collide();
 		}
-		veh::step();
+		if (world::area() == 0) veh::step();
 		if (s_carTask == CT_DRIVE) {   // the driver follows the car it just moved
 			float seat[3], door[3];
 			const veh::Vehicle* cv = veh::get(s_car);

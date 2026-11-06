@@ -12,7 +12,7 @@ from fnmatch import fnmatchcase
 from multiprocessing import Pool
 from pathlib import Path
 
-from . import audio, ds_mesh, ds_misc, ds_radar, ds_texture, img, intro, map_points, peds, vehicles, world
+from . import audio, ds_mesh, ds_misc, ds_radar, ds_texture, entry_exits, img, intro, map_points, peds, vehicles, world
 from .dsfmt import name as fname, write_pack
 
 HANDLERS = {
@@ -443,6 +443,16 @@ class Builder:
         Not cached per entry: a full pass over the map data takes a few seconds."""
         try:
             blob, stats = world.build(self.cfg.game, sec)
+        except FileNotFoundError as e:
+            st['errors'].append(str(e))
+            return
+        st['stats'] = stats
+        st['out'] += self._emit(sec['out'], blob)
+        st['files'] = 1
+
+    def do_entry_exits(self, name, sec, st):
+        try:
+            blob, stats = entry_exits.build(self.cfg.game, sec)
         except FileNotFoundError as e:
             st['errors'].append(str(e))
             return

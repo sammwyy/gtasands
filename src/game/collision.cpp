@@ -642,6 +642,19 @@ void update(float x, float y, float z) {
 	if (s_index) step(x, y, z, UPDATE_US);
 }
 
+void resetScene() {
+	s_numNear = s_numWant = 0;
+	s_numSub = -1;
+	s_nearDirty = true;
+	s_stats.missing = 1;
+}
+
+bool preloadAreaStep(float x, float y, float z) {
+	if (!s_index) return false;
+	step(x, y, z, PRELOAD_US);
+	return !s_stats.missing && !s_stats.wants && !world::sectorsPending();
+}
+
 bool initStep() {
 	if (s_step == 0) {
 		s_step = 2;
