@@ -220,13 +220,12 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
 - **Data in RAM**: header, 8 B/model (draw distance, radius, tobj hours), the WorldTxd table
   (name + txdp parent), `slotOf[model]`. Model names are read (36 B) when a model loads.
 - **Sector window**: 50 m sectors within `fogView + 40` m of the current sector's centre
-  (re-evaluated only when the player crosses a sector edge, <= 2 sector reads/frame). Instances are
-  36 B (DWLD v5), rotation rows pre-converted to GL axes on load; each sector keeps a bounding sphere.
-  When the player moves more than one window radius or the largest free STREAM block is under
-  64 KB, the old map model/texture cache is cleared before loading sectors: without this, a
-  teleport SF -> LV left 74 map candidates but no free memory to load them (0 drawn).
-  Within a region, if the largest free block falls under 64 KB, at most four old model slots
-  are evicted per frame toward a 96 KB reserve; new loads pause below 64 KB.
+  (re-evaluated only when the player crosses a sector edge, <= 2 sector reads/frame, innermost
+  rings first). Instances are 36 B (DWLD v5), rotation rows pre-converted to GL axes on load;
+  each sector keeps a bounding sphere. Only a genuine jump by more than a window radius
+  discards the obsolete model/texture cache. Crossing a sector while STREAM memory is tight
+  never clears the whole world: old slots are evicted gradually, and smaller DMDLs can still
+  load even if the largest free block is below 64 KB.
 - **Scan** (in `draw`, ~1.7 ms for ~700 instances): sector sphere vs range/frustum, then per
   instance: tobj hour, distance (`d - radius < view && d < drawDist + radius`), linked HD/LOD
   switch at 100 m (LOD remains visible until HD is ready), sphere vs frustum
@@ -235,11 +234,15 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   models go to an 8-entry nearest-first want list (out of view = lower priority). Drawn or
   within 40 m = protected from LRU.
 - **Model streaming** (`world::update`, ~3 ms budget, 2 starts/frame): `startLoad` reads the DMDL
-  into STREAM and requests its textures; textures are found in the model TXD or its txdp parents
-  (4-entry TXD directory cache, entries read alone) and staged in RAM; `world::vblank` uploads
+  into STREAM and queues its textures; textures are found in the model TXD or its txdp parents
+  (4-entry TXD directory cache). At most eight DMDLs may wait for textures; each update
+  reads up to two queued textures in nearest-visible-instance order, with at most 32 KB staged
+  in RAM. Failed allocations defer a load rather than permanently marking a model missing.
+  `world::vblank` uploads
   <= 24 KB per vblank, only while `video::textureUploadWindow()` (VCOUNT 192..201: libnds maps the
   banks to LCD during the copy, the 3D engine starts the next frame at ~214; the rest waits a
-  vblank), evicting unreferenced textures LRU over `WORLD_TEX_VRAM`, and records
+  vblank), evicting unreferenced textures LRU over `WORLD_TEX_VRAM` (or stale model slots when
+  all texture entries are referenced), and records
   TEXIMAGE_PARAM (+repeat) / PLTT_BASE. Once all textures are in, `compile()` builds one GX list.
 - **compile()**: walks atomics rather than unique geometries (shared meshes may be instanced
   more than once), bakes each atomic's parented DFF frame transform into the display-list
@@ -249,6 +252,10 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   lighting trick: vertex colour (prelit * material colour) as AMBIENT + constant NORMAL with
   diffuse/specular/emission 0 -> GE outputs prelit * light0, light0 = world light per frame (no
   per-vertex CPU pass for the time of day). Emitted only when the colour changes. ~2.5 KB/model.
+  The worst-case list is assembled in `mem::Scratch`; only its actual size is copied to STREAM,
+  so building one list no longer requires two large STREAM allocations. Its vertices also
+  produce a tighter model-space sphere for frustum culling once the list is ready (used
+  only when the original origin-centred radius overestimates the bound by more than 8 m).
 - **Draw**: visible instances sorted by projected size (`radius << 10 / (near surface + 4 m)`,
   doubled for instances drawn last frame), a model is skipped when the hardware polygon count +
   tris/2 passes `dbg::opts.worldPolys` (+ `NEW_MARGIN` 96 for instances not drawn last frame);
@@ -259,10 +266,14 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   turns). Drawn set = 2 x 1024-entry pointer hash, swapped per draw. GE-bound: each `callList`
   waits for its DMA (~100 us per model).
 - **Eviction**: slots LRU (`WORLD_MODEL_SLOTS`, `WORLD_LIST_BYTES`), textures refcounted + LRU.
+  If texture VRAM cannot make space, upload waits briefly while stale models are evicted;
+  after 20 frames it falls back to an untextured model rather than blocking geometry forever.
   `world::suspend()` drops all lists/textures when the pause menu opens (VRAM); they stream back.
 - **Preload** (loading job): sectors + every model in range around the player, no frustum, until
   idle or 10 s.
 - Stats: PERF tab rows 15-18 (collision 19-20), `world:` / `col:` lines in hudok, REND tab toggle + poly budget.
+  `GTASADS_WORLDTEST` also reserves 24 KB and crosses a nearby sector at frame 1022; its
+  `boundary: ... kept=1 pressure=1` line checks that resident models survive the crossing.
 - Grove Street numbers: ~110 models / 600 instances in the window, ~70 drawn, ~1600 polys,
   lists ~850 KB, map textures ~200 KB VRAM; draw ~8 ms (scan 1.2) -> 30 fps with the 8 ms HUD.
 

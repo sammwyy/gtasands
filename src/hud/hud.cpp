@@ -305,6 +305,7 @@ static void skidTest(int f) {
 #if defined(GTASADS_DEBUG) && defined(GTASADS_WORLDTEST)
 static void worldTest(int f) {
 	static FILE* out;
+	static void* pressure;
 	if (f == 600) {
 		out = fopen("fat:/gtasads_worldtest.txt", "w");
 		player::g.x = -2150.0f; player::g.y = 550.0f; player::g.z = 34.5f;
@@ -315,6 +316,14 @@ static void worldTest(int f) {
 	if (f == 880) {
 		player::g.x = 2515.0f; player::g.y = 1975.0f; player::g.z = 10.0f;
 	}
+	if (f == 1018) pressure = mem::alloc(24 * 1024, mem::TAG_TEMP);
+	if (f == 1022) player::g.x += 50.0f;
+	if (f == 1026 && out) {
+		const world::Stats& s = world::stats();
+		fprintf(out, "boundary: ready=%u drawn=%u sectors=%u kept=%d pressure=%d\n",
+		        s.modelsReady, s.drawn, s.sectors, s.modelsReady >= 30, pressure != nullptr);
+	}
+	if (f == 1034) { mem::free(pressure); pressure = nullptr; }
 	if (f == 1040) {
 		player::g.x = -68.5f; player::g.y = 1020.75f; player::g.z = 19.2f;
 	}

@@ -1,6 +1,7 @@
 #include "game/world.h"
 
 #include <algorithm>
+#include <limits.h>
 #include <math.h>
 #include <nds.h>
 #include <stdio.h>
@@ -27,10 +28,12 @@ using namespace mem::budget;
 // Data
 // ----------------------------------------------------------------------------
 static constexpr uint16_t NONE = 0xFFFF;
+static constexpr uint16_t TEX_BUSY = 0xFFFE;
 static constexpr int MAX_MODEL_TEX = 12;     // unique textures per map model (rest draws untextured)
 static constexpr int VIEW_SLOT = 13;         // matrix stack slot holding the view (CJ uses 14..30)
 static constexpr int SECTOR_MARGIN = 40;     // m added to the view distance for the sector window
 static constexpr int MAX_WANTS = 8;
+static constexpr int MAX_LOADING = 8;
 static constexpr u32 UPDATE_US = 3000;       // streaming CPU per in-game frame
 static constexpr u32 PRELOAD_US = 8000;      // per loading-screen slice
 static constexpr u32 UPLOAD_BYTES = 24 * 1024; // texture bytes per vblank
@@ -52,10 +55,13 @@ struct Slot {
 	void* blob;               // DMDL while LOADING
 	mdl::Model* view;         // parsed view while LOADING
 	uint32_t lastUse;
+	int32_t priority;         // distance to closest visible instance while loading
+	int32_t boundCenter[3];   // model-space SA, 20.12
+	int32_t boundRadius;      // model-space, 1/16 m
 	uint16_t tex[MAX_MODEL_TEX];
 };
 
-enum : uint8_t { TEX_FREE, TEX_STAGED, TEX_READY, TEX_FAILED };
+enum : uint8_t { TEX_FREE, TEX_QUEUED, TEX_STAGED, TEX_READY, TEX_FAILED };
 struct TexEntry {
 	uint32_t nameHash;
 	uint16_t txd, refs;
@@ -64,6 +70,7 @@ struct TexEntry {
 	uint32_t param, pal;      // TEXIMAGE_PARAM (+ repeat) and PLTT_BASE for the lists
 	void* staging;            // DTEX waiting for the vblank
 	uint32_t lastUse;
+	uint32_t offset, size;    // DSPK payload to read when this texture is needed
 };
 
 using Inst = Instance;
@@ -116,6 +123,9 @@ static int s_numVis;
 
 static inline int32_t iabs(int32_t v) { return v < 0 ? -v : v; }
 
+static void freeSlot(Slot& s);
+static int lruSlot();
+
 bool ready() { return s_file && s_slots; }
 const Stats& stats() { return s_stats; }
 
@@ -154,7 +164,7 @@ static void releaseTex(uint16_t i) {
 	TexEntry& t = s_tex[i];
 	if (t.refs && --t.refs == 0) {
 		t.lastUse = s_frame;
-		if (t.state == TEX_STAGED || t.state == TEX_FAILED) freeTex(t);
+		if (t.state == TEX_QUEUED || t.state == TEX_STAGED || t.state == TEX_FAILED) freeTex(t);
 	}
 }
 
@@ -178,7 +188,14 @@ bool evictTexture() {
 static int newTexEntry() {
 	for (int i = 0; i < WORLD_TEX_ENTRIES; i++)
 		if (s_tex[i].state == TEX_FREE) return i;
-	const int v = lruTex();
+	int v = lruTex();
+	if (v < 0) {
+		const int slot = lruSlot();
+		if (slot >= 0) freeSlot(s_slots[slot]);
+		for (int i = 0; i < WORLD_TEX_ENTRIES; i++)
+			if (s_tex[i].state == TEX_FREE) return i;
+		v = lruTex();
+	}
 	if (v >= 0) freeTex(s_tex[v]);
 	return v;
 }
@@ -225,19 +242,15 @@ static uint16_t requestTex(int txd, const char* name) {
 		for (int k = 0; k < d->count; k++) {
 			if (strcasecmp(d->e[k].name, name)) continue;
 			const int i = newTexEntry();
-			if (i < 0) return NONE;
-			void* buf = mem::alloc(d->e[k].size, mem::TAG_TEXTURE);
-			if (!buf || !streaming::g_models.read(d->base + d->e[k].offset, buf, d->e[k].size)) {
-				mem::free(buf);
-				return NONE;
-			}
+			if (i < 0) return TEX_BUSY;
 			TexEntry& te = s_tex[i];
 			te = {};
 			te.nameHash = h;
 			te.txd = (uint16_t)t;
 			te.refs = 1;
-			te.state = TEX_STAGED;
-			te.staging = buf;
+			te.state = TEX_QUEUED;
+			te.offset = d->base + d->e[k].offset;
+			te.size = d->e[k].size;
 			return (uint16_t)i;
 		}
 	}
@@ -262,6 +275,11 @@ void vblank() {
 		for (int v; !t && (v = lruTex()) >= 0;) {   // VRAM fragmented/full: evict until it fits
 			freeTex(s_tex[v]);
 			t = tex::load(h, tex::GROUP_WORLD);
+		}
+		if (!t && bytes <= WORLD_TEX_VRAM) {
+			const int v = lruSlot();
+			if (v >= 0) freeSlot(s_slots[v]);
+			if (s_frame - te.lastUse < 20) break;
 		}
 		const bool paletted = h->numColors != 0;   // h dies with the staging buffer
 		mem::free(te.staging);
@@ -312,7 +330,7 @@ static int lruSlot() {
 	return best;
 }
 
-static bool startLoad(uint16_t model) {
+static bool startLoad(uint16_t model, int32_t priority) {
 	int si = -1;
 	for (int i = 0; i < WORLD_MODEL_SLOTS && si < 0; i++)
 		if (s_slots[i].state == SLOT_FREE) si = i;
@@ -323,6 +341,7 @@ static bool startLoad(uint16_t model) {
 	s.model = model;
 	s.state = SLOT_FAILED;
 	s.lastUse = s_frame;
+	s.priority = priority;
 	s_slotOf[model] = (uint16_t)si;
 	s_stats.loads++;
 
@@ -331,13 +350,20 @@ static bool startLoad(uint16_t model) {
 		return true;
 	char name[32];
 	snprintf(name, sizeof name, "%.24s.dff", wm.name);
-	s.blob = streaming::g_models.load(name, mem::TAG_MODEL);
+	ds::PackEntry pe;
+	if (!streaming::g_models.find(name, pe)) {
+		hud::log("\x1b[33mworld: %s missing\x1b[39m", name);
+		return true;
+	}
+	s.blob = streaming::g_models.load(pe, mem::TAG_MODEL);
+	if (!s.blob) {
+		freeSlot(s);
+		return false;
+	}
 	s.view = mdl::load(s.blob);
 	if (!s.view) {
-		hud::log("\x1b[33mworld: %s missing\x1b[39m", name);
-		mem::free(s.blob);
-		s.blob = nullptr;
-		return true;
+		freeSlot(s);
+		return false;
 	}
 	for (int g = 0; g < s.view->numGeoms; g++) {
 		const mdl::Geometry& geo = s.view->geoms[g];
@@ -347,7 +373,14 @@ static bool startLoad(uint16_t model) {
 			const uint32_t h = ds::fnv1a(tn);
 			bool dup = false;
 			for (int k = 0; k < s.numTex && !dup; k++) dup = s.tex[k] != NONE && s_tex[s.tex[k]].nameHash == h;
-			if (!dup) s.tex[s.numTex++] = requestTex(wm.txd, tn);
+			if (!dup) {
+				const uint16_t ti = requestTex(wm.txd, tn);
+				if (ti == TEX_BUSY) {
+					freeSlot(s);
+					return false;
+				}
+				s.tex[s.numTex++] = ti;
+			}
 		}
 	}
 	s.state = SLOT_LOADING;
@@ -401,6 +434,7 @@ static inline s32 atomicPos(const mdl::Geometry& g, int v, int k, const s32 mat[
 static bool compile(Slot& s) {
 	const mdl::Model* m = s.view;
 	s32 maxAbs = 1;
+	s32 lo[3] = { INT_MAX, INT_MAX, INT_MAX }, hi[3] = { INT_MIN, INT_MIN, INT_MIN };
 	uint32_t numIdx = 0, numMats = 0;
 	for (int a = 0; a < m->numAtomics; a++) {
 		const ds::ModelAtomic& atom = m->atomics[a];
@@ -412,20 +446,25 @@ static bool compile(Slot& s) {
 		numMats += geo.h->numMaterials;
 		for (int v = 0; v < geo.h->numVerts; v++)
 			for (int k = 0; k < 3; k++) {
-				const s32 extent = iabs(atomicPos(geo, v, k, mat));
+				const s32 value = atomicPos(geo, v, k, mat);
+				if (value < lo[k]) lo[k] = value;
+				if (value > hi[k]) hi[k] = value;
+				const s32 extent = iabs(value);
 				if (extent > maxAbs) maxAbs = extent;
 			}
 	}
+	s32 half[3] = {};
+	for (int k = 0; k < 3; k++)
+		if (lo[k] <= hi[k]) {
+			s.boundCenter[k] = lo[k] + (hi[k] - lo[k]) / 2;
+			half[k] = (hi[k] - lo[k] + 511) >> 9;
+		}
+	s.boundRadius = (int32_t)sqrt32(half[0] * half[0] + half[1] * half[1] + half[2] * half[2]) + 32;
 	int e = 0;
 	while ((maxAbs >> e) > 32767) e++;
 	const u32 cap = numIdx * 6 + numMats * 8 + 8;
-	const u32 est = cap * 4;
-	while (s_listBytes + est > WORLD_LIST_BYTES) {
-		const int v = lruSlot();
-		if (v < 0) return false;   // over budget with everything in view: retry later
-		freeSlot(s_slots[v]);
-	}
-	u32* buf = (u32*)mem::alloc(est, mem::TAG_MODEL);
+	mem::Scratch scratch;
+	u32* buf = (u32*)scratch.alloc(cap * 4);
 	if (!buf) return false;
 	gx::ListBuilder dl(buf, cap);
 	dl.cmd(gx::CMD_SPE_EMI, 0);
@@ -502,12 +541,18 @@ static bool compile(Slot& s) {
 		}
 	}
 	const u32 n = dl.finish();
-	if (!n) {
-		mem::free(buf);
-		return false;
+	if (!n) return false;
+	u32* list = nullptr;
+	for (;;) {
+		if (s_listBytes + n * 4 <= WORLD_LIST_BYTES)
+			list = (u32*)mem::alloc(n * 4, mem::TAG_MODEL);
+		if (list) break;
+		const int v = lruSlot();
+		if (v < 0) return false;
+		freeSlot(s_slots[v]);
 	}
-	s.list = (u32*)mem::realloc(buf, n * 4, mem::TAG_MODEL);
-	if (!s.list) s.list = buf;
+	memcpy(list, buf, n * 4);
+	s.list = list;
 	gx::flushList(s.list);
 	s.listBytes = n * 4;
 	s_listBytes += s.listBytes;
@@ -519,7 +564,8 @@ static bool compile(Slot& s) {
 // LOADING -> READY once every texture is uploaded (or failed).
 static bool finishLoad(Slot& s) {
 	for (int k = 0; k < s.numTex; k++)
-		if (s.tex[k] != NONE && s_tex[s.tex[k]].state == TEX_STAGED) return false;
+		if (s.tex[k] != NONE && (s_tex[s.tex[k]].state == TEX_QUEUED ||
+		                         s_tex[s.tex[k]].state == TEX_STAGED)) return false;
 	if (!compile(s)) return false;
 	mdl::free(s.view);
 	mem::free(s.blob);
@@ -599,8 +645,8 @@ static void updateSectors(float x, float y, int maxLoads) {
 		return dx * dx + dy * dy <= reach * reach;
 	};
 	if (cx != s_centerX || cy != s_centerY || r != s_windowR) {
-		if (s_centerX != -9999 && (iabs(cx - s_centerX) > r || iabs(cy - s_centerY) > r ||
-		    mem::stats(mem::REGION_STREAM).largestFree < 64 * 1024)) suspend();
+		if (s_centerX != -9999 && (iabs(cx - s_centerX) > r || iabs(cy - s_centerY) > r))
+			suspend();
 		for (Sector& sc : s_sectors)
 			if (sc.used && !inWindow(sc.sx, sc.sy)) freeSector(sc);
 		s_centerX = cx;
@@ -610,16 +656,19 @@ static void updateSectors(float x, float y, int maxLoads) {
 	}
 	if (!s_windowDirty) return;
 	bool missing = false;
-	for (int sy = cy - r; sy <= cy + r; sy++) {
-		if (sy < 0 || sy >= s_hdr.gridH) continue;
-		for (int sx = cx - r; sx <= cx + r; sx++) {
-			if (sx < 0 || sx >= s_hdr.gridW || !inWindow(sx, sy)) continue;
-			bool have = false;
-			for (const Sector& sc : s_sectors)
-				if (sc.used && sc.sx == sx && sc.sy == sy) { have = true; break; }
-			if (have) continue;
-			if (maxLoads > 0 && loadSector(sx, sy)) maxLoads--;
-			else missing = true;
+	for (int ring = 0; ring <= r; ring++) {
+		for (int sy = cy - ring; sy <= cy + ring; sy++) {
+			if (sy < 0 || sy >= s_hdr.gridH) continue;
+			for (int sx = cx - ring; sx <= cx + ring; sx++) {
+				if (sx < 0 || sx >= s_hdr.gridW || !inWindow(sx, sy) ||
+				    (iabs(sx - cx) != ring && iabs(sy - cy) != ring)) continue;
+				bool have = false;
+				for (const Sector& sc : s_sectors)
+					if (sc.used && sc.sx == sx && sc.sy == sy) { have = true; break; }
+				if (have) continue;
+				if (maxLoads > 0 && loadSector(sx, sy)) maxLoads--;
+				else missing = true;
+			}
 		}
 	}
 	s_windowDirty = missing;
@@ -672,7 +721,12 @@ static void markDrawn(const Inst* p) {
 static void addWant(uint16_t model, int32_t key) {
 	for (int i = 0; i < s_numWant; i++)
 		if (s_want[i].model == model) {
-			if (key < s_want[i].key) s_want[i].key = key;
+			if (key >= s_want[i].key) return;
+			while (i > 0 && s_want[i - 1].key > key) {
+				s_want[i] = s_want[i - 1];
+				i--;
+			}
+			s_want[i] = { model, key };
 			return;
 		}
 	int pos = s_numWant;
@@ -709,9 +763,10 @@ static void scan(const Cam& c) {
 		{   // whole sector out of range / behind the camera (and not close)
 			const int32_t dx = sc.c[0] - c.eye[0], dy = sc.c[1] - c.eye[1], dz = sc.c[2] - c.eye[2];
 			if (iabs(dx) > 0x4000 || iabs(dy) > 0x4000 || iabs(dz) > 0x4000) continue;
-			const int32_t d = (int32_t)sqrt32(dx * dx + dy * dy + dz * dz);
-			if (d - sc.reach > c.view) continue;
-			if (c.frustum && d - sc.reach > 40 * 16 && !inFrustum(c, dx, dy, dz, sc.reach)) continue;
+			const int64_t d2 = (int64_t)dx * dx + (int64_t)dy * dy + (int64_t)dz * dz;
+			const int64_t range = c.view + sc.reach, close = 40 * 16 + sc.reach;
+			if (d2 > range * range) continue;
+			if (c.frustum && d2 > close * close && !inFrustum(c, dx, dy, dz, sc.reach)) continue;
 		}
 		for (int i = 0; i < sc.count; i++) {
 			const Inst& in = sc.inst[i];
@@ -742,27 +797,45 @@ static void scan(const Cam& c) {
 			if (dd > 0x6000) dd = 0x6000;
 			if (d2 > reach * reach || d2 > dd * dd) continue;
 			candidates++;
-			const bool inView = !c.frustum || inFrustum(c, dx, dy, dz, rad);
 			const uint16_t si = s_slotOf[in.model];
+			bool inView = !c.frustum || inFrustum(c, dx, dy, dz, rad);
+			int32_t visDx = dx, visDy = dy, visDz = dz, visRad = rad;
+			if (inView && c.frustum && si != NONE && s_slots[si].state == SLOT_READY &&
+			    rad > s_slots[si].boundRadius + 8 * 16) {
+				const Slot& s = s_slots[si];
+				int64_t px = 0, py = 0, pz = 0;
+				for (int k = 0; k < 3; k++) {
+					px += (int64_t)s.boundCenter[k] * in.m[k * 3];
+					py -= (int64_t)s.boundCenter[k] * in.m[k * 3 + 2];
+					pz += (int64_t)s.boundCenter[k] * in.m[k * 3 + 1];
+				}
+				visDx += (int32_t)(px >> 20);
+				visDy += (int32_t)(py >> 20);
+				visDz += (int32_t)(pz >> 20);
+				visRad = s.boundRadius;
+				inView = inFrustum(c, visDx, visDy, visDz, visRad);
+			}
 			if (!inView && si != NONE) {
 				// protected from LRU eviction while close enough to turn around to
 				if (d2 < (40 * 16 + rad) * (40 * 16 + rad)) s_slots[si].lastUse = s_frame;
 				culled++;
 				continue;
 			}
-			const int32_t d = (int32_t)sqrt32(d2);
-			const int32_t near = d - rad > 0 ? d - rad : 0;
+			const int64_t visD2 = (int64_t)visDx * visDx + (int64_t)visDy * visDy + (int64_t)visDz * visDz;
+			const int32_t d = visD2 > INT_MAX ? c.view + visRad : (int32_t)sqrt32((uint32_t)visD2);
+			const int32_t near = d - visRad > 0 ? d - visRad : 0;
 			if (si == NONE) {
 				addWant(in.model, inView ? near : near * 2 + 32 * 16);
 				continue;
 			}
 			Slot& s = s_slots[si];
 			s.lastUse = s_frame;
+			if (s.state == SLOT_LOADING && near < s.priority) s.priority = near;
 			if (s.state != SLOT_READY || !c.frustum) continue;
 			// CRenderer::SetupEntityVisibility-ish: how big it looks (near
 			// surface, floor 4 m so everything close ranks first)
 			const uint8_t was = wasDrawn(&in);
-			int32_t key = (rad << 10) / (near + 64);
+			int32_t key = (visRad << 10) / (near + 64);
 			if (was) key <<= 1;
 			if (s_numVis < WORLD_VISIBLE_MAX) {
 				s_vis[s_numVis++] = { &in, si, was, 0, key };
@@ -810,16 +883,48 @@ static void stream(u32 budgetUs, int maxStarts) {
 			freeSlot(s_slots[v]);
 			worked = true;
 		}
+	u32 staged = 0;
+	for (int i = 0; i < WORLD_TEX_ENTRIES; i++)
+		if (s_tex[i].state == TEX_STAGED) staged += s_tex[i].size;
+	for (int reads = 0; reads < 2 && timing::usSince(t0) < budgetUs; reads++) {
+		if (staged >= 32 * 1024) break;
+		int best = -1, priority = 0x7FFFFFFF;
+		for (int i = 0; i < WORLD_MODEL_SLOTS; i++) {
+			const Slot& s = s_slots[i];
+			if (s.state != SLOT_LOADING) continue;
+			for (int k = 0; k < s.numTex; k++)
+				if (s.tex[k] != NONE && s_tex[s.tex[k]].state == TEX_QUEUED && s.priority < priority) {
+					priority = s.priority;
+					best = s.tex[k];
+				}
+		}
+		if (best < 0) break;
+		TexEntry& t = s_tex[best];
+		void* buf = mem::alloc(t.size, mem::TAG_TEXTURE);
+		if (!buf) break;
+		if (streaming::g_models.read(t.offset, buf, t.size) &&
+		    t.size >= sizeof(ds::TexHeader) && ((const ds::TexHeader*)buf)->magic == DS_FOURCC('D', 'T', 'E', 'X')) {
+			t.staging = buf;
+			t.state = TEX_STAGED;
+			t.lastUse = s_frame;
+			staged += t.size;
+		} else {
+			mem::free(buf);
+			t.state = TEX_FAILED;
+		}
+		worked = true;
+	}
+	int pendingLoads = 0;
 	for (int i = 0; i < WORLD_MODEL_SLOTS; i++) {
 		if (s_slots[i].state != SLOT_LOADING) continue;
-		worked |= finishLoad(s_slots[i]);
-		if (timing::usSince(t0) >= budgetUs) break;
+		if (timing::usSince(t0) < budgetUs) worked |= finishLoad(s_slots[i]);
+		pendingLoads += s_slots[i].state == SLOT_LOADING;
 	}
-	for (int i = 0; i < s_numWant && maxStarts > 0 && timing::usSince(t0) < budgetUs; i++) {
-		if (mem::stats(mem::REGION_STREAM).largestFree < 64 * 1024) break;
+	for (int i = 0; i < s_numWant && maxStarts > 0 && pendingLoads < MAX_LOADING && timing::usSince(t0) < budgetUs; i++) {
 		if (s_slotOf[s_want[i].model] != NONE) continue;
-		if (!startLoad(s_want[i].model)) break;
+		if (!startLoad(s_want[i].model, s_want[i].key)) continue;
 		maxStarts--;
+		pendingLoads++;
 		worked = true;
 	}
 	s_numWant = 0;
