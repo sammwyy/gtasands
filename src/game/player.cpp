@@ -11,6 +11,7 @@
 #include "game/collision.h"
 #include "game/debugopts.h"
 #include "game/melee.h"
+#include "game/menu/menu.h"
 #include "game/pad.h"
 #include "game/pedmove.h"
 #include "game/peds.h"
@@ -787,8 +788,8 @@ static void updateMove() {
 	// on the debug screen the touch panel drives the debug UI, not the camera
 	if (in.touching && hud::screen() == hud::Screen::GAME) {
 		if (s_camDrag) {
-			s_camYaw = wrap(s_camYaw + (float)(in.touchX - s_lastTx) * 0.012f);
-			s_camPitch += (float)(in.touchY - s_lastTy) * 0.010f;
+			s_camYaw = wrap(s_camYaw + (float)(in.touchX - s_lastTx) * 0.012f * FrontEndMenuManager.m_touchSensitivity);
+			s_camPitch += (float)(in.touchY - s_lastTy) * 0.010f * FrontEndMenuManager.m_touchSensitivity;
 		}
 		s_lastTx = in.touchX;
 		s_lastTy = in.touchY;
@@ -867,7 +868,8 @@ static void updateMove() {
 		const float vx = wx / DT + (s_action == ACT_GLIDE ? s_jumpVX : 0.0f);
 		const float vy = wy / DT + (s_action == ACT_GLIDE ? s_jumpVY : 0.0f);
 		g.speed = sqrtf(vx * vx + vy * vy);
-		if (!looking && !g.aiming && camFollows(pd.walkUD, hasMoveInput)) followCam(g.heading);
+		if (FrontEndMenuManager.m_cameraFollowDpad && !looking && !g.aiming &&
+		    camFollows(pd.walkUD, hasMoveInput)) followCam(g.heading);
 		else { s_betaSpeed = 0.0f; s_betaSign = 0; }
 		return;
 	}
@@ -924,7 +926,8 @@ static void updateMove() {
 
 	// keyboard-mode camera: swings back behind CJ while he moves (or is
 	// still finishing a start/stop) unless the player is looking around
-	if (!looking && !g.aiming && (moving || s_move.phase != 0) && camFollows(pd.walkUD, hasMoveInput))
+	if (FrontEndMenuManager.m_cameraFollowDpad && !looking && !g.aiming &&
+	    (moving || s_move.phase != 0) && camFollows(pd.walkUD, hasMoveInput))
 		followCam(g.heading);
 	else { s_betaSpeed = 0.0f; s_betaSign = 0; }
 }
@@ -1449,7 +1452,7 @@ static void updateCarCamera(const veh::Vehicle& v, bool looking) {
 	const bool flying = v.cls == veh::CLS_HELI || v.cls == veh::CLS_PLANE;
 	float target = veh::heading(v);
 	if (sp > 0.05f && v.speedFwd > 0.0f && v.cls != veh::CLS_HELI) target = atan2f(-v.moveSpeed[0], v.moveSpeed[1]);
-	if (!looking) {
+	if (!looking && FrontEndMenuManager.m_cameraFollowDpad) {
 		const float d = wrap(target - s_camYaw);
 		s_camYaw = wrap(s_camYaw + d * (sp > 0.02f ? 0.12f : 0.05f));
 		const float wantPitch = flying ? 0.3f - v.fwd[2] * 0.6f : 0.22f;

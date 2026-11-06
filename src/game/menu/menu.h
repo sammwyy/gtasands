@@ -26,9 +26,11 @@ public:
 	int8_t m_nRadioStation = 1;
 	int8_t m_nRadioVolume = 40, m_nSfxVolume = 40;
 	int8_t m_RadioMode = 0;
-	int32_t m_PrefsBrightness = 256;
+	int32_t m_PrefsBrightness = 0;
 	float m_fDrawDistance = 1.2f;
 	bool m_bPrefsFrameLimiter = true, m_bShowSubtitles = true, m_bWidescreenOn = false;
+	bool m_cameraFollowDpad = true;
+	float m_touchSensitivity = 1.0f;
 	bool m_bRadioEq = true, m_bRadioAutoSelect = true, m_bMapLegend = false, m_bHudOn = true;
 	bool m_bPrefsMipMapping = true, m_bTracksAutoScan = false, m_bSavePhotos = false;
 	bool m_bInvertPadX1 = false, m_bInvertPadY1 = false, m_bInvertPadX2 = false, m_bInvertPadY2 = false;

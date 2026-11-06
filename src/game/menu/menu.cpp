@@ -12,6 +12,7 @@
 #include "game/text/gxt.h"
 #include "game/hud/hudfont.h"
 #include "game/hud/hudtex.h"
+#include "game/hud/chud.h"
 #include "game/hud/radar.h"
 #include "game/hud/subfb.h"
 #include "game/player.h"
@@ -21,6 +22,7 @@
 #include "game/sfx.h"
 #include "hud/hud.h"
 #include "platform/timing.h"
+#include "platform/video.h"
 #include "render/sprite2d.h"
 
 CMenuManager FrontEndMenuManager;
@@ -37,15 +39,12 @@ static constexpr sprite::RGBA DISABLED{ 14, 30, 47, 255 };
 static constexpr auto mainMenu = { SCREEN_MAIN_MENU, SCREEN_PAUSE_MENU, SCREEN_GAME_SAVE,
 	SCREEN_GAME_WARNING_DONT_SAVE, SCREEN_SAVE_DONE_1, SCREEN_DELETE_FINISHED, SCREEN_EMPTY };
 static constexpr auto sliderActions = { MENU_ACTION_BRIGHTNESS, MENU_ACTION_RADIO_VOL, MENU_ACTION_SFX_VOL,
-	MENU_ACTION_DRAW_DIST, MENU_ACTION_MOUSE_SENS };
+	MENU_ACTION_TOUCH_SENS };
 static constexpr auto sliderSelect = { MENU_ACTION_BRIGHTNESS, MENU_ACTION_RADIO_VOL,
-	MENU_ACTION_DRAW_DIST, MENU_ACTION_MOUSE_SENS };
-static constexpr auto specialScreens = { SCREEN_AUDIO_SETTINGS, SCREEN_USER_TRACKS_OPTIONS,
-	SCREEN_DISPLAY_SETTINGS, SCREEN_DISPLAY_ADVANCED, SCREEN_CONTROLLER_SETUP, SCREEN_MOUSE_SETTINGS };
-static constexpr auto specialMenuActions = { MENU_ACTION_BACK, MENU_ACTION_MENU, MENU_ACTION_CTRLS_JOYPAD,
-	MENU_ACTION_CTRLS_FOOT, MENU_ACTION_CTRLS_CAR, MENU_ACTION_BRIGHTNESS, MENU_ACTION_RADIO_VOL,
-	MENU_ACTION_SFX_VOL, MENU_ACTION_RADIO_STATION, MENU_ACTION_RESET_CFG, MENU_ACTION_DRAW_DIST,
-	MENU_ACTION_MOUSE_SENS };
+	MENU_ACTION_TOUCH_SENS };
+static constexpr auto specialScreens = { SCREEN_AUDIO_SETTINGS, SCREEN_DISPLAY_SETTINGS, SCREEN_CONTROLLER_SETUP };
+static constexpr auto specialMenuActions = { MENU_ACTION_BACK, MENU_ACTION_MENU, MENU_ACTION_BRIGHTNESS,
+	MENU_ACTION_RADIO_VOL, MENU_ACTION_SFX_VOL, MENU_ACTION_RADIO_STATION, MENU_ACTION_TOUCH_SENS };
 
 template<class C, class T>
 static bool contains(const C& v, const T& x) {
@@ -402,12 +401,12 @@ void CMenuManager::processUserInput(bool down, bool up, bool enter, bool back, i
 	}
 	if (lr && scr.m_aItems[m_nCurrentScreenItem].m_nType == TI_OPTION) {
 		auto act = scr.m_aItems[m_nCurrentScreenItem].m_nActionType;
-		if (act == MENU_ACTION_SFX_VOL) sfx::noiseTest();
-		else if (contains(sliderSelect, act) ||
-		         (contains(specialScreens, (eMenuScreen)m_nCurrentScreen) && !contains(specialMenuActions, act)))
+		if (act != MENU_ACTION_SFX_VOL && (contains(sliderSelect, act) ||
+		         (contains(specialScreens, (eMenuScreen)m_nCurrentScreen) && !contains(specialMenuActions, act))))
 			sfx::select_();
 		processMenuOptions(lr, back, 0);
 		checkSliderMovement(lr);
+		if (act == MENU_ACTION_SFX_VOL) sfx::noiseTest();
 	}
 	if (back && m_RadioAvailable) {
 		sfx::back();
@@ -419,7 +418,8 @@ void CMenuManager::checkSliderMovement(int8_t lr) {
 	auto& item = aScreens[m_nCurrentScreen].m_aItems[m_nCurrentScreenItem];
 	switch (item.m_nActionType) {
 	case MENU_ACTION_BRIGHTNESS:
-		m_PrefsBrightness = std::clamp<int32_t>(lr * (363 / 15) + m_PrefsBrightness, 0, 384);
+		m_PrefsBrightness = std::clamp<int32_t>(m_PrefsBrightness + 2 * lr, -8, 8);
+		video::setScreenBrightness(m_PrefsBrightness);
 		break;
 	case MENU_ACTION_RADIO_VOL:
 		m_nRadioVolume = std::clamp<int8_t>(4 * lr + m_nRadioVolume, 0, 64);
@@ -427,11 +427,8 @@ void CMenuManager::checkSliderMovement(int8_t lr) {
 	case MENU_ACTION_SFX_VOL:
 		m_nSfxVolume = std::clamp<int8_t>(4 * lr + m_nSfxVolume, 0, 64);
 		break;
-	case MENU_ACTION_DRAW_DIST:
-		m_fDrawDistance = std::clamp(m_fDrawDistance + (7.0f / 128.0f) * lr, 0.925f, 1.8f);
-		break;
-	case MENU_ACTION_MOUSE_SENS:
-		m_fMouseSens = std::clamp(m_fMouseSens + (lr * (1.0f / 200.0f)) / 15.0f, 1.0f / 3200.0f, 1.0f / 200.0f);
+	case MENU_ACTION_TOUCH_SENS:
+		m_touchSensitivity = std::clamp(m_touchSensitivity + lr * 0.125f, 0.25f, 2.0f);
 		break;
 	default: break;
 	}
@@ -473,7 +470,11 @@ void CMenuManager::processMenuOptions(int8_t lr, bool& cancel, bool accept) {
 	case MENU_ACTION_RADIO_EQ: m_bRadioEq ^= true; return;
 	case MENU_ACTION_RADIO_RETUNE: m_bRadioAutoSelect ^= true; return;
 	case MENU_ACTION_RADIO_STATION: scrollRadioStations(lr); return;
-	case MENU_ACTION_SHOW_LEGEND: m_bMapLegend ^= true; return;
+	case MENU_ACTION_SHOW_LEGEND:
+		m_bMapLegend ^= true;
+		chud::invalidate();
+		return;
+	case MENU_ACTION_CAMERA_FOLLOW: m_cameraFollowDpad ^= true; return;
 	case MENU_ACTION_RADAR_MODE:
 		m_nRadarMode = (eRadarMode)(((int)m_nRadarMode + (int)lr + (int)eRadarMode::RADAR_MODE_COUNT) % (int)eRadarMode::RADAR_MODE_COUNT);
 		return;
@@ -493,8 +494,6 @@ void CMenuManager::processMenuOptions(int8_t lr, bool& cancel, bool accept) {
 		if (m_nPrefsFxQuality < 0) m_nPrefsFxQuality = 0;
 		if (m_nPrefsFxQuality > 3) m_nPrefsFxQuality = 3;
 		return;
-	case MENU_ACTION_CONTROL_TYPE: m_ControlMethod = eController((int(m_ControlMethod) + 1) % 2); return;
-	case MENU_ACTION_CTRLS_JOYPAD: m_ControlMethod = eController((int(m_ControlMethod) + 1) % 2); return;
 	case MENU_ACTION_MOUSE_STEERING: m_bEnableMouseSteering ^= true; return;
 	case MENU_ACTION_MOUSE_FLY: m_bEnableMouseFlying ^= true; return;
 	case MENU_ACTION_CONTROLS_MOUSE_INVERT_Y: m_bInvertMouseY ^= true; return;
@@ -719,9 +718,13 @@ void CMenuManager::drawDsMenus() {
 		font::setColor(color.r, color.g, color.b);
 		font::setOrientation(ALIGN_LEFT);
 		const bool slot = item.m_nType >= FIRST_SAVE_SLOT && item.m_nType <= MAX_SAVE_SLOT;
-		const GxtChar* label = item.m_nType == TI_MOUSEJOYPAD
-			? TheText.get(m_ControlMethod == eController::JOYPAD ? "FEJ_TIT" : "FEC_MOU")
-			: TheText.get(item.m_szName);
+		const bool spanish = m_nPrefsLanguage == eLanguage::SPANISH;
+		const GxtChar* label = item.m_nActionType == MENU_ACTION_CAMERA_FOLLOW
+			? (const GxtChar*)(spanish ? "Camara sigue cruceta" : "Follow D-pad turns")
+			: item.m_nActionType == MENU_ACTION_TOUCH_SENS
+			? (const GxtChar*)(spanish ? "Sensibilidad tactil" : "Touch sensitivity")
+			: item.m_nType == TI_MOUSEJOYPAD
+			? TheText.get("FEJ_TIT") : TheText.get(item.m_szName);
 		font::printString(58, y, label);
 		const GxtChar* value = nullptr;
 		char number[24];
@@ -733,6 +736,7 @@ void CMenuManager::drawDsMenus() {
 		case MENU_ACTION_RADIO_EQ: value = onOff(m_bRadioEq); break;
 		case MENU_ACTION_RADIO_RETUNE: value = onOff(m_bRadioAutoSelect); break;
 		case MENU_ACTION_SHOW_LEGEND: value = onOff(m_bMapLegend); break;
+		case MENU_ACTION_CAMERA_FOLLOW: value = onOff(m_cameraFollowDpad); break;
 		case MENU_ACTION_HUD_MODE: value = onOff(m_bHudOn); break;
 		case MENU_ACTION_MIP_MAPPING: value = onOff(m_bPrefsMipMapping); break;
 		case MENU_ACTION_CONTROLS_JOY_INVERT_X: value = onOff(m_bInvertPadX1); break;
@@ -755,7 +759,10 @@ void CMenuManager::drawDsMenus() {
 			snprintf(number, sizeof number, "< %d >", (int)m_nRadioVolume * 100 / 64);
 			value = (const GxtChar*)number; break;
 		case MENU_ACTION_BRIGHTNESS:
-			snprintf(number, sizeof number, "< %ld >", (long)m_PrefsBrightness * 100 / 384);
+			snprintf(number, sizeof number, "< %ld >", (long)m_PrefsBrightness);
+			value = (const GxtChar*)number; break;
+		case MENU_ACTION_TOUCH_SENS:
+			snprintf(number, sizeof number, "< %d%% >", (int)(m_touchSensitivity * 100.0f));
 			value = (const GxtChar*)number; break;
 		case MENU_ACTION_DRAW_DIST:
 			snprintf(number, sizeof number, "< %d >", (int)(m_fDrawDistance * 100));

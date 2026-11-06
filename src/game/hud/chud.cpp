@@ -8,6 +8,7 @@
 #include "game/hud/hudtex.h"
 #include "game/hud/radar.h"
 #include "game/hud/subfb.h"
+#include "game/menu/menu.h"
 #include "game/player.h"
 #include "game/streaming.h"
 #include "platform/timing.h"
@@ -382,6 +383,21 @@ void draw() {
 	snprintf(fb, sizeof fb, "%lu", timing::fps());
 	hudfont::print(hudfont::STYLE_GOTHIC, 5, 178, (const GxtChar*)fb,
 	               0.5f, 0.8f, c_lightGray, hudfont::LEFT, 1, c_black);
+	if (FrontEndMenuManager.m_bMapLegend) {
+		u8 types[radar::MAP_TYPE_COUNT];
+		const int count = radar::legendRadarTypes(types, radar::MAP_TYPE_COUNT);
+		const int page = count > 2 ? (timing::vblanks() / 240) % ((count + 1) / 2) : 0;
+		subfb::rect(120, 128, 136, 30, c_black);
+		for (int row = 0; row < 2 && page * 2 + row < count; row++) {
+			const int type = types[page * 2 + row], y = 128 + row * 15;
+			radar::drawLegendIcon(type, 122, y, 13);
+			const GxtChar* label = TheText.get(radar::typeLabelKey(type));
+			float scale = 0.45f;
+			const float width = hudfont::width(hudfont::STYLE_GOTHIC, label, scale);
+			if (width > 117.0f) scale *= 117.0f / width;
+			hudfont::print(hudfont::STYLE_GOTHIC, 138, y, label, scale, 0.7f, c_lightBlue);
+		}
+	}
 }
 
 void stats(char* buf, int n) {

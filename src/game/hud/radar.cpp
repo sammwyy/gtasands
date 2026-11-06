@@ -143,6 +143,12 @@ const char* typeLabelKey(int type) {
 	return (unsigned)type < MAP_TYPE_COUNT ? s_types[type].key : nullptr;
 }
 
+void drawLegendIcon(int type, int x, int y, int size) {
+	const subfb::Sprite* icon = (unsigned)type < MAP_TYPE_COUNT - 2 ? &s_pointSprites[type]
+		: type == MAP_TYPE_COUNT - 2 ? &s_arrow : nullptr;
+	if (icon && icon->col) subfb::blitScaled(*icon, x, y, size, size);
+}
+
 int legendTypes(float centerX, float centerY, bool full, u8* out, int capacity) {
 	bool seen[MAP_TYPE_COUNT] = {};
 	for (int i = 0; i < s_pointCount; i++) {
@@ -158,6 +164,26 @@ int legendTypes(float centerX, float centerY, bool full, u8* out, int capacity) 
 			for (int i = 0; i < MAP_TYPE_COUNT; i++)
 				if (b.spr.col && !strcmp(b.spriteName, s_types[i].icon)) seen[i] = true;
 		}
+	}
+	int count = 0;
+	for (int i = 0; i < MAP_TYPE_COUNT; i++)
+		if (seen[i] && count < capacity) out[count++] = (u8)i;
+	return count;
+}
+
+int legendRadarTypes(u8* out, int capacity) {
+	bool seen[MAP_TYPE_COUNT] = {};
+	const float reach = s_range * (R - 9) / R, reach2 = reach * reach;
+	for (int i = 0; i < s_pointCount; i++) {
+		const ds::MapPoint& p = s_points[i];
+		const float dx = p.x - player::g.x, dy = p.y - player::g.y;
+		if (p.icon < MAP_TYPE_COUNT - 2 && dx * dx + dy * dy < reach2) seen[p.icon] = true;
+	}
+	seen[MAP_TYPE_COUNT - 2] = true;
+	for (const Blip& b : s_blips) {
+		if (!b.on || !b.spr.col) continue;
+		for (int i = 0; i < MAP_TYPE_COUNT; i++)
+			if (!strcmp(b.spriteName, s_types[i].icon)) seen[i] = true;
 	}
 	int count = 0;
 	for (int i = 0; i < MAP_TYPE_COUNT; i++)
@@ -404,8 +430,25 @@ static void drawBlips() {
 	}
 }
 
+static void drawPoints() {
+	const float c = cosf(player::g.heading), s = sinf(player::g.heading);
+	const float k = R / s_range, reach = s_range * (R - 9) / R;
+	const float reach2 = reach * reach;
+	for (int i = 0; i < s_pointCount; i++) {
+		const ds::MapPoint& p = s_points[i];
+		if (p.icon >= MAP_TYPE_COUNT - 2) continue;
+		const float dx = p.x - player::g.x, dy = p.y - player::g.y;
+		if (dx * dx + dy * dy >= reach2) continue;
+		const subfb::Sprite& icon = s_pointSprites[p.icon];
+		if (icon.col)
+			subfb::blit(icon, CX + (int)((dx * c + dy * s) * k) - icon.w / 2,
+			                CY - (int)((-dx * s + dy * c) * k) - icon.h / 2);
+	}
+}
+
 void draw() {
 	drawMap();
+	drawPoints();
 	// north indicator on the rim (world-north direction -> radar space)
 	if (s_north.col) {
 		const float c = cosf(player::g.heading), s = sinf(player::g.heading);

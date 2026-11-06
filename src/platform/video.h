@@ -36,6 +36,7 @@ struct Fog {
 };
 void setFog(const Fog* fog);          // nullptr = off
 void setClearColor(u16 rgb15);
+void setScreenBrightness(int level);
 // Translucent polygons in submission order (GL_TRANS_MANUALSORT) instead of
 // the hardware Y-sort: layered sky sprites need it.
 void setManualSort(bool on);

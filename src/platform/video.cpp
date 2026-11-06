@@ -12,6 +12,8 @@ static Fog s_fog;
 static bool s_fogOn;
 static u16 s_clear = DEFAULT_CLEAR;
 static bool s_manualSort;
+static int s_brightness;
+static int s_appliedBrightness = 17;
 
 void init() {
 	powerOn(POWER_ALL);
@@ -51,6 +53,7 @@ void setFog(const Fog* fog) {
 	if (fog) s_fog = *fog;
 }
 void setClearColor(u16 rgb15) { s_clear = rgb15; }
+void setScreenBrightness(int level) { s_brightness = level; }
 void setManualSort(bool on) { s_manualSort = on; }
 
 static void applyEnv() {
@@ -98,6 +101,10 @@ static void stepCapture() {
 void endFrame() {
 	glFlush(s_manualSort ? GL_TRANS_MANUALSORT : 0);
 	swiWaitForVBlank();
+	if (s_appliedBrightness != s_brightness) {
+		::setBrightness(3, s_brightness);
+		s_appliedBrightness = s_brightness;
+	}
 	applyEnv();   // ~20 scanlines before the engine starts rendering the new frame
 #ifdef GTASADS_DEBUG
 	if (s_capState) stepCapture();

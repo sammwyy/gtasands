@@ -533,6 +533,17 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   renderers advance the cursor without drawing the atlas's nonblank space cell. Menu art is
   decoded from fronten2.txd only at boot and released on game start; pause forces
   the bottom screen to GAME mode (SELECT is disabled until the menu closes).
+- DS settings only expose D-pad camera follow and touch-look sensitivity in Controls
+  (joypad buttons are fixed), radio/SFX volume plus station selection in Audio, and
+  software screen brightness, minimap legend and subtitles in Display. Obsolete PC
+  settings screens keep empty enum slots to preserve frontend screen IDs. Brightness
+  uses libnds `setBrightness(3, level)` for both engines in vblank (−8..+8; this
+  changes pixels, not the console's backlight). The SFX slider feeds
+  `aesound::setEffectsVolume` via `audio::service` and its preview sound is unpausable.
+  The in-game minimap draws the extracted service icons and, when the legend is on,
+  shows nearby icon names from GXT in a compact panel next to the radar; its pages
+  cycle automatically because L/R are gameplay controls (the pause map still uses
+  manual L/R pagination).
 - Loading screen (`loadscreen.cpp`): resumable jobs with a 10 ms/frame budget, order:
   free frontend, splash, loading tune, open gta3 + sparse TOC index, player/anim packs, ped anim
   block, CJ (part per slice), player init, weather init, timecyc (weather per slice), sky
