@@ -1,10 +1,13 @@
 #include "game/peddata.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "hud/hud.h"
+#include "game/player.h"
 #include "mem/mem.h"
+#include "platform/timing.h"
 
 namespace peddata {
 
@@ -16,17 +19,35 @@ static ds::PedAnimGroup* s_anims;
 static ds::PedGroup* s_groups;
 static uint16_t* s_members;
 static ds::PedZone* s_zones;
-static ds::PathCell* s_cells;
-static ds::PathNode* s_nodes;
-static uint16_t* s_links;
-static ds::PathNode* s_roads;
-static uint16_t* s_roadLinks;
 static ds::PedGroup* s_carGroups;
 static uint16_t* s_carMembers;
 static int s_step;
+static int s_initWait;
 static Stats s_st;
 static int s_rowKey = -1;
 static ds::PopRow s_row;
+static constexpr int CACHE_CELLS = 32, CACHE_RADIUS = 2;
+struct PathChunk {
+	int16_t cx, cy;
+	ds::PathCell cell;
+	uint32_t linkFirst, linkCount, bytes;
+	ds::PathNode* nodes;
+	uint16_t* links;
+	bool used;
+};
+static PathChunk s_paths[2][CACHE_CELLS];
+static int s_centerX = -9999, s_centerY = -9999;
+struct PendingChunk {
+	int16_t cx, cy;
+	uint8_t kind, stage;
+	ds::PathCell cell;
+	uint32_t linkFirst, linkCount;
+	ds::PathNode* nodes;
+	uint16_t* links;
+	bool active;
+};
+static PendingChunk s_pending;
+static int s_nextKind;
 
 static bool readAt(uint32_t off, void* dst, uint32_t n) {
 	return s_file && !fseek(s_file, (long)off, SEEK_SET) && fread(dst, 1, n, s_file) == n;
@@ -41,16 +62,123 @@ template <typename T> static bool table(T*& out, uint32_t off, uint32_t count) {
 	return true;
 }
 
-bool ready() { return s_nodes != nullptr; }
+bool ready() { return s_step == 7; }
+
+static void clearChunk(PathChunk& c) {
+	if (!c.used) return;
+	mem::free(c.nodes);
+	mem::free(c.links);
+	s_st.bytes -= c.bytes;
+	c = {};
+}
+
+static PathChunk* chunk(int kind, int cx, int cy) {
+	for (PathChunk& c : s_paths[kind])
+		if (c.used && c.cx == cx && c.cy == cy) return &c;
+	return nullptr;
+}
+
+static void discardPending() {
+	mem::free(s_pending.nodes);
+	mem::free(s_pending.links);
+	s_pending = {};
+}
+
+static bool stepChunk() {
+	PendingChunk& p = s_pending;
+	const int kind = p.kind;
+	PathChunk* c = nullptr;
+	for (PathChunk& slot : s_paths[kind])
+		if (!slot.used) { c = &slot; break; }
+	if (!c) return false;
+	if (p.stage == 0) {
+		const uint32_t cellOff = (kind ? s_hdr.roadCellOffset : s_hdr.cellOffset) +
+			(p.cy * s_hdr.gridW + p.cx) * sizeof(ds::PathCell);
+		if (!readAt(cellOff, &p.cell, sizeof p.cell)) return false;
+		if ((uint32_t)p.cell.first + p.cell.count > (kind ? s_hdr.numRoadNodes : s_hdr.numNodes)) return false;
+		if (p.cell.count) {
+			p.nodes = (ds::PathNode*)mem::alloc(p.cell.count * sizeof(ds::PathNode), mem::TAG_PED);
+			if (!p.nodes) return false;
+			p.stage = 1;
+			return false;
+		}
+	}
+	if (p.stage == 1) {
+		const uint32_t nodeOff = (kind ? s_hdr.roadNodeOffset : s_hdr.nodeOffset) +
+			p.cell.first * sizeof(ds::PathNode);
+		if (!readAt(nodeOff, p.nodes, p.cell.count * sizeof(ds::PathNode))) return false;
+		p.linkFirst = p.nodes[0].firstLink;
+		p.linkCount = p.nodes[p.cell.count - 1].firstLink + p.nodes[p.cell.count - 1].numLinks - p.linkFirst;
+		if (p.linkFirst + p.linkCount > (kind ? s_hdr.numRoadLinks : s_hdr.numLinks)) return false;
+		if (p.linkCount) {
+			p.links = (uint16_t*)mem::alloc(p.linkCount * sizeof(uint16_t), mem::TAG_PED);
+			if (!p.links) return false;
+			p.stage = 2;
+			return false;
+		}
+	}
+	if (p.stage == 2 && !readAt((kind ? s_hdr.roadLinkOffset : s_hdr.linkOffset) +
+	                            p.linkFirst * sizeof(uint16_t), p.links, p.linkCount * sizeof(uint16_t)))
+		return false;
+	*c = { p.cx, p.cy, p.cell, p.linkFirst, p.linkCount,
+	       p.cell.count * sizeof(ds::PathNode) + p.linkCount * sizeof(uint16_t), p.nodes, p.links, true };
+	s_st.bytes += c->bytes;
+	s_st.pathLoads++;
+	p.nodes = nullptr;
+	p.links = nullptr;
+	discardPending();
+	s_nextKind = 1 - kind;
+	return true;
+}
+
+static bool service(float x, float y) {
+	const int cx = (int)(x - s_hdr.gridX0) / s_hdr.cellSize;
+	const int cy = (int)(y - s_hdr.gridY0) / s_hdr.cellSize;
+	if (cx < 0 || cy < 0 || cx >= s_hdr.gridW || cy >= s_hdr.gridH) return false;
+	if (cx != s_centerX || cy != s_centerY) {
+		s_centerX = cx;
+		s_centerY = cy;
+		if (s_pending.active &&
+		    (abs(s_pending.cx - cx) > CACHE_RADIUS || abs(s_pending.cy - cy) > CACHE_RADIUS))
+			discardPending();
+		for (auto& paths : s_paths)
+			for (PathChunk& c : paths)
+				if (c.used && (abs(c.cx - cx) > CACHE_RADIUS || abs(c.cy - cy) > CACHE_RADIUS))
+					clearChunk(c);
+	}
+	if (s_pending.active) { stepChunk(); return false; }
+	for (int i = 0; i < 2; i++) {
+		const int kind = (i + s_nextKind) & 1;
+		for (int radius = 0; radius <= CACHE_RADIUS; radius++)
+			for (int dy = -radius; dy <= radius; dy++)
+				for (int dx = -radius; dx <= radius; dx++) {
+					if (abs(dx) != radius && abs(dy) != radius) continue;
+					const int xx = cx + dx, yy = cy + dy;
+					if (xx < 0 || yy < 0 || xx >= s_hdr.gridW || yy >= s_hdr.gridH || chunk(kind, xx, yy)) continue;
+					s_pending = { (int16_t)xx, (int16_t)yy, (uint8_t)kind, 0, {}, 0, 0, nullptr, nullptr, true };
+					stepChunk();
+					return false;
+				}
+	}
+	return true;
+}
+
+void update(float x, float y) {
+	if (!ready()) return;
+	const u32 t0 = timing::ticks();
+	service(x, y);
+	s_st.pathUs = (uint16_t)timing::usSince(t0);
+	if (s_st.pathUs > s_st.pathPeakUs) s_st.pathPeakUs = s_st.pathUs;
+}
 
 bool initStep() {
-	if (s_step >= 6) return true;   // a second new game: the tables are still there
+	if (s_step >= 7) return true;   // a second new game: the tables are still there
 	bool ok = true;
 	switch (s_step++) {
 	case 0:
 		s_file = fopen("nitro:/data/peds.dped", "rb");
 		if (!s_file || fread(&s_hdr, sizeof s_hdr, 1, s_file) != 1 || s_hdr.magic != DS_FOURCC('D', 'P', 'E', 'D') ||
-		    s_hdr.version != 4) {
+		    s_hdr.version != 5) {
 			hud::log("\x1b[33mpeds.dped missing/old (make assets)\x1b[39m");
 			if (s_file) fclose(s_file);
 			s_file = nullptr;
@@ -67,36 +195,38 @@ bool initStep() {
 		ok = ok && table(s_members, s_hdr.groupOffset + s_hdr.numGroups * sizeof(ds::PedGroup), members);
 		break;
 	}
-	case 3: ok = table(s_zones, s_hdr.zoneOffset, s_hdr.numZones) &&
-	             table(s_cells, s_hdr.cellOffset, (uint32_t)s_hdr.gridW * s_hdr.gridH); break;
-	case 4: ok = table(s_links, s_hdr.linkOffset, s_hdr.numLinks) && table(s_nodes, s_hdr.nodeOffset, s_hdr.numNodes); break;
+	case 3: ok = table(s_zones, s_hdr.zoneOffset, s_hdr.numZones); break;
+	case 4: break;
 	case 5: {
-		ok = table(s_roads, s_hdr.roadNodeOffset, s_hdr.numRoadNodes) &&
-		     table(s_roadLinks, s_hdr.roadLinkOffset, s_hdr.numRoadLinks) &&
-		     table(s_carGroups, s_hdr.carGroupOffset, 29);
+		ok = table(s_carGroups, s_hdr.carGroupOffset, 29);
 		uint32_t count = 0;
 		for (int g = 0; ok && g < 29; g++)
 			if (s_carGroups[g].first + s_carGroups[g].count > count) count = s_carGroups[g].first + s_carGroups[g].count;
 		ok = ok && table(s_carMembers, s_hdr.carGroupOffset + 29 * sizeof(ds::PedGroup), count);
 		break;
 	}
-	default: return true;
-	}
-	if (!ok) {
-		hud::log("\x1b[31mpeds.dped: read failed\x1b[39m");
-		mem::free(s_nodes);
-		s_nodes = nullptr;
-		mem::free(s_roads);
-		s_roads = nullptr;
-		s_step = 99;
-		return true;
-	}
-	if (s_step == 6) {
+	case 6:
+		if (!service(player::g.x, player::g.y)) {
+			if (++s_initWait > 900) {
+				hud::log("\x1b[31mpeds.dped: path preload failed\x1b[39m");
+				s_step = 99;
+				return true;
+			}
+			s_step--;
+			return false;
+		}
+		s_step = 7;
 		s_st.models = s_hdr.numModels;
 		s_st.nodes = (uint16_t)s_hdr.numNodes;
 		s_st.zones = s_hdr.numZones;
 		hud::log("peds: %u models %u nodes %u zones %luK", s_st.models, s_st.nodes, s_st.zones,
 		         (unsigned long)(s_st.bytes >> 10));
+		return true;
+	default: return true;
+	}
+	if (!ok) {
+		hud::log("\x1b[31mpeds.dped: read failed\x1b[39m");
+		s_step = 99;
 		return true;
 	}
 	return false;
@@ -163,17 +293,31 @@ const ds::PedZone* zoneAt(float x, float y) {
 	return best;
 }
 
-int numNodes() { return s_nodes ? (int)s_hdr.numNodes : 0; }
-const ds::PathNode* node(int i) { return (unsigned)i < (unsigned)numNodes() ? &s_nodes[i] : nullptr; }
-int link(const ds::PathNode* n, int k) { return k < n->numLinks ? s_links[n->firstLink + k] : -1; }
-int numRoadNodes() { return s_roads ? (int)s_hdr.numRoadNodes : 0; }
-const ds::PathNode* roadNode(int i) { return (unsigned)i < (unsigned)numRoadNodes() ? &s_roads[i] : nullptr; }
-int roadLink(const ds::PathNode* n, int k) { return n && k >= 0 && k < n->numLinks ? s_roadLinks[n->firstLink + k] : -1; }
+int numNodes() { return ready() ? (int)s_hdr.numNodes : 0; }
+static const ds::PathNode* pathNode(int kind, int i) {
+	if (!ready() || i < 0 || (uint32_t)i >= (kind ? s_hdr.numRoadNodes : s_hdr.numNodes)) return nullptr;
+	for (const PathChunk& c : s_paths[kind])
+		if (c.used && i >= c.cell.first && i - c.cell.first < c.cell.count) return &c.nodes[i - c.cell.first];
+	return nullptr;
+}
+const ds::PathNode* node(int i) { return pathNode(0, i); }
+static int pathLink(int kind, const ds::PathNode* n, int k) {
+	if (!n || k < 0 || k >= n->numLinks) return -1;
+	const uint32_t index = n->firstLink + k;
+	for (const PathChunk& c : s_paths[kind])
+		if (c.used && index >= c.linkFirst && index - c.linkFirst < c.linkCount)
+			return c.links[index - c.linkFirst];
+	return -1;
+}
+int link(const ds::PathNode* n, int k) { return pathLink(0, n, k); }
+int numRoadNodes() { return ready() ? (int)s_hdr.numRoadNodes : 0; }
+const ds::PathNode* roadNode(int i) { return pathNode(1, i); }
+int roadLink(const ds::PathNode* n, int k) { return pathLink(1, n, k); }
 int carGroupSize(int g) { return s_carGroups && (unsigned)g < 29 ? s_carGroups[g].count : 0; }
 int carGroupMember(int g, int k) { return (unsigned)k < (unsigned)carGroupSize(g) ? s_carMembers[s_carGroups[g].first + k] : -1; }
 
 bool cellRange(float x, float y, float r, int& cx0, int& cy0, int& cx1, int& cy1) {
-	if (!s_nodes) return false;
+	if (!ready()) return false;
 	const float cs = (float)s_hdr.cellSize;
 	cx0 = (int)((x - r - s_hdr.gridX0) / cs);
 	cy0 = (int)((y - r - s_hdr.gridY0) / cs);
@@ -187,14 +331,22 @@ bool cellRange(float x, float y, float r, int& cx0, int& cy0, int& cx1, int& cy1
 	return true;
 }
 
-const ds::PathCell* cell(int cx, int cy) { return &s_cells[cy * s_hdr.gridW + cx]; }
+const ds::PathCell* cell(int cx, int cy) {
+	const PathChunk* c = chunk(0, cx, cy);
+	return c ? &c->cell : nullptr;
+}
+const ds::PathCell* roadCell(int cx, int cy) {
+	const PathChunk* c = chunk(1, cx, cy);
+	return c ? &c->cell : nullptr;
+}
 
 int nearestNode(float x, float y, float z, float range) {
 	int best = -1;
 	float bestD = range * range;
 	forNodesNear(x, y, range, [&](int i) {
-		const ds::PathNode& n = s_nodes[i];
-		const float dx = nodeX(&n) - x, dy = nodeY(&n) - y, dz = (nodeZ(&n) - z) * 3.0f;   // other floors count more
+		const ds::PathNode* n = node(i);
+		if (!n) return true;
+		const float dx = nodeX(n) - x, dy = nodeY(n) - y, dz = (nodeZ(n) - z) * 3.0f;   // other floors count more
 		const float d = dx * dx + dy * dy + dz * dz;
 		if (d < bestD) { bestD = d; best = i; }
 		return true;

@@ -11,15 +11,16 @@ ARCHITECTURE.md when a system changes or a new one lands.
 
 Current state: frontend + loading screen + intro, audio engine (SFX + ambience), CJ (clothes, anims, locomotion, jump/fight/aim),
 bottom-screen GTA HUD with radar, debug UI, time cycle + weather + sky/fog/rain, the streamed
-map (Grove Street / Ganton box from `[world] bounds`: sectors, map models + textures, culling,
-poly budget; no LODs yet) and map collision (COL baked into world.dwld: CJ walks on the real
+exterior San Andreas map (sector/model/texture streaming, linked HD/LOD switching, culling,
+poly budget) and map collision (COL baked into world.dwld: CJ walks on the real
 ground, walls stop him, falls off ledges, the camera is pulled in front of walls; REND tab
 overlays: skeleton + collision wireframe on top with an outline), vehicles (ARCHITECTURE 6d: every IDE type - cars, bikes/BMX/quads,
 boats on water.dat, helis, planes, trains on tracks.dat, trailers, RC - spawned by type or model id from the debug
 GAME tab, enter/exit per type, fixed-point physics, damage panels, burst tyres, fire, explosion, skidmarks, head /
 tail lights, engine / horn / skid / door / crash sounds), random peds (ARCHITECTURE 6e: popcycle/zone driven
 population on the ped paths, streamed skinned models, wander / flee / fight / shoot / hit / knock-down / die / dive,
-gangs + cops, CWanted chaos, money drops). ~28 fps at the spawn (~15-25 while driving).
+gangs + cops, CWanted chaos, money drops; ped/road paths paged from the global graph). ~28 fps
+at the spawn (~15-25 while driving).
 
 ## Toolchain
 - devkitPro at `~/devkitpro` (`source ~/devkitpro/devkitarm.sh`).
@@ -87,6 +88,12 @@ gangs + cops, CWanted chaos, money drops). ~28 fps at the spawn (~15-25 while dr
   front of CJ (shot0), punches it (its gang mate joins), gives a pistol and shoots the other; `gtasads_pedtest.txt` =
   CJ + every ped's task / health / distance per 20 frames. Needs `timeout -s INT 110`. Peds look flat in captures
   (their textures are in VRAM D, borrowed by the capture).
+- World/path test (DEBUG): `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DGTASADS_WORLDTEST"`
+  teleports from Ganton through San Fierro, Las Venturas, its northern outskirts and a countryside town;
+  `gtasads_worldtest.txt` records loaded path/road nodes, population, traffic, render and memory counts,
+  including the path-read time and `heapok`. Allow `timeout -s INT 200` and inspect `gtasads_world_*.dscr`.
+- Skid regression (DEBUG): the same flags with `-DGTASADS_SKIDTEST` write `gtasads_skidtest.txt` after
+  a normal Greenwood turn and straight driving; both should report `skid=0.00`.
 - What stopped CJ there? `python3 tools/colnear.py X Y Z [R]` lists the baked collision
   (faces with world n.z, boxes) around a point.
 
@@ -100,7 +107,7 @@ python3 tools/assets.py info models/gta3.img:infernus.dff   # inspect img/txd/df
 python3 tools/assets.py preview models/gta3.img:infernus.txd [TEX] --section gta3_img
 ```
 Full cold build ~6 min (16 cores); `models_loose` alone ~20 s. Use single sections / `--limit N`
-while tuning. Current total ~413 MB of the 448 MB budget.
+while tuning. Current total ~381 MB of the 448 MB budget.
 
 ## Hardware budget (keep in mind for every decision)
 - ARM9 67 MHz, no FPU -> fixed point at runtime (20.12 / 4.12, libnds `f32`/`v16`/`t16`).
@@ -120,11 +127,10 @@ while tuning. Current total ~413 MB of the 448 MB budget.
 - Source basenames must be unique (objects are flattened into `build/`).
 
 ## Roadmap (suggested order)
-1. World data + streaming: done for a bounds box (see ARCHITECTURE 6b), collision too (6c). Next: LODs (keep
-   `lods = true` instances with their HD link, draw the LOD past the HD draw distance / while the
-   HD is not loaded: far field for a few tris), triangle strips in compile() (lists are GE/DMA
-   bound, ~8 ms for ~70 models), then grow `bounds` to all of LS (model records are already read
-   on demand; the TXD table is resident).
+1. World data + streaming: all exterior IPLs with HD/LOD links (ARCHITECTURE 6b), collision (6c),
+   ped and road graph cells paged on demand (6e). Next: triangle strips in compile() (lists are
+   GE/DMA bound, ~8 ms for ~70 models), performance and extended travel tests; interiors and
+   mission-specific content are not included in the exterior map.
 2. Performance: the HUD costs ~8 ms/frame and the map draw ~8 ms -> 30 fps; strips + chaining
    the list DMAs from the DMA IRQ (CPU free while the GE works) would bring back 60.
 3. Physics: ped vs world collision and all vehicle types are done (ARCHITECTURE 6c / 6d). Vehicle TODO:

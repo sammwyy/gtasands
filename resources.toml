@@ -151,11 +151,10 @@ kind = "vehicles"
 out = "data/vehicles.dveh"
 
 # Ped population: peds.ide / pedstats / pedgrp / popcycle / animgrp tables, the ped path
-# nodes inside [peds] bounds and main.scm's new-game zone setup (src/game/peddata.cpp).
+# global ped/road path nodes and main.scm's new-game zone setup (src/game/peddata.cpp).
 [peds]
 kind = "peds"
 out = "data/peds.dped"
-bounds = [2150, -1950, 2850, -1400]
 
 # -----------------------------------------------------------------------------
 [gta_int_img]             # interiors

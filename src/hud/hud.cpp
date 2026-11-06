@@ -21,6 +21,7 @@
 #include "game/timecycle.h"
 #include "game/weather.h"
 #include "game/debugopts.h"
+#include "game/peddata.h"
 #include "game/pedmodel.h"
 #include "game/peds.h"
 #include "game/player.h"
@@ -311,16 +312,33 @@ static void worldTest(int f) {
 	if (f == 760) {
 		player::g.x = 1942.0f; player::g.y = 1073.0f; player::g.z = 10.0f;
 	}
-	if ((f == 700 || (f >= 780 && f <= 860 && f % 20 == 0)) && out) {
+	if (f == 880) {
+		player::g.x = 2515.0f; player::g.y = 1975.0f; player::g.z = 10.0f;
+	}
+	if (f == 1040) {
+		player::g.x = -68.5f; player::g.y = 1020.75f; player::g.z = 19.2f;
+	}
+	if ((f == 700 || (f >= 780 && f <= 1180 && f % 20 == 0)) && out) {
 		const world::Stats& s = world::stats();
 		char memLine[128];
 		mem::summary(memLine, sizeof memLine);
 		fprintf(out, "%d %s: sectors=%u inst=%u cand=%u drawn=%u ready=%u loading=%u loads=%lu tex=%u fail=%u lists=%luK %s\n",
-		        f, f == 700 ? "SF" : "LV", s.sectors, s.instances, s.candidates, s.drawn,
+		        f, f == 700 ? "SF" : f < 880 ? "LV" : f < 1040 ? "LV north" : "countryside",
+		        s.sectors, s.instances, s.candidates, s.drawn,
 		        s.modelsReady, s.modelsLoading, (unsigned long)s.loads, s.textures, s.texFailed,
 		        (unsigned long)(s.listBytes >> 10), memLine);
-		if (f == 700 || f == 860) video::requestCapture(f == 700 ? "fat:/gtasads_world_sf.dscr" : "fat:/gtasads_world_lv.dscr");
-		if (f == 860) { fclose(out); out = nullptr; }
+		int paths = 0, roads = 0;
+		peddata::forNodesNear(player::g.x, player::g.y, 40.0f, [&](int) { paths++; return true; });
+		peddata::forRoadNodesNear(player::g.x, player::g.y, 40.0f, [&](int) { roads++; return true; });
+		fprintf(out, "  pos=%.1f,%.1f,%.1f path=%d road=%d nearest=%d peds=%u traffic=%u pathUs=%u peak=%u pathLoads=%lu\n",
+		        player::g.x, player::g.y, player::g.z, paths, roads,
+		        peddata::nearestNode(player::g.x, player::g.y, player::g.z, 40.0f),
+		        peds::stats().live, veh::stats().traffic, peddata::stats().pathUs, peddata::stats().pathPeakUs,
+		        (unsigned long)peddata::stats().pathLoads);
+		if (f == 700 || f == 860 || f == 1020 || f == 1180)
+			video::requestCapture(f == 700 ? "fat:/gtasads_world_sf.dscr" : f == 860 ? "fat:/gtasads_world_lv.dscr" :
+			                      f == 1020 ? "fat:/gtasads_world_north.dscr" : "fat:/gtasads_world_country.dscr");
+		if (f == 1180) { fprintf(out, "heapok=%d\n", mem::check()); fclose(out); out = nullptr; }
 	}
 }
 #endif

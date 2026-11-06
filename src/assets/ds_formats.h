@@ -315,10 +315,10 @@ struct VehSurface { uint8_t adhesionGroup; int8_t wetGrip; uint8_t skidmark, pad
 // popcycle.dat ([20 zone types][weekday, weekend][12 two-hour slots]), the
 // walkcycle groups of animgrp.dat the peds use (index 0 = "man"), the info.zon
 // zones touching the map bounds with main.scm's new-game population setup, and
-// the ped path nodes (nodes*.dat) inside the bounds bucketed in a cell grid.
+// the exterior ped/road path nodes (nodes*.dat) bucketed in a cell grid.
 struct PedHeader {
 	uint32_t magic;          // 'DPED'
-	uint16_t version;        // 4
+	uint16_t version;        // 5
 	uint16_t numModels, numStats, numAnimGroups, numGroups, numZones;
 	uint32_t numNodes, numLinks;
 	int16_t gridX0, gridY0;  // SA coords of cell (0,0)'s south-west corner
@@ -336,6 +336,7 @@ struct PedHeader {
 	uint32_t numRoadNodes, numRoadLinks;
 	uint32_t roadNodeOffset, roadLinkOffset; // PathNode[numRoadNodes], uint16_t[numRoadLinks]
 	uint32_t carGroupOffset; // PedGroup[29], then uint16_t vehicle indices (cargrp.dat)
+	uint32_t roadCellOffset; // PathCell[gridW * gridH], road nodes grouped by cell
 };
 struct PedModel {
 	uint16_t modelId;
@@ -378,14 +379,15 @@ enum PathNodeFlags : uint8_t {
 };
 struct PathNode {
 	int16_t x, y, z;         // 1/8 m (CompressedLargeVector)
-	uint16_t firstLink;
+	uint16_t pad0;
+	uint32_t firstLink;
 	uint8_t numLinks;
 	uint8_t width;           // 1/16 m
 	uint8_t flags;           // ped: PathNodeFlags; vehicle: ROAD_*; both: spawn probability << 4
 	uint8_t pad;
 };
-static_assert(sizeof(PedHeader) == 96 && sizeof(PedModel) == 12 && sizeof(PedStat) == 12 && sizeof(PedAnimGroup) == 160 &&
-              sizeof(PopRow) == 24 && sizeof(PedZone) == 24 && sizeof(PathNode) == 12);
+static_assert(sizeof(PedHeader) == 100 && sizeof(PedModel) == 12 && sizeof(PedStat) == 12 && sizeof(PedAnimGroup) == 160 &&
+              sizeof(PopRow) == 24 && sizeof(PedZone) == 24 && sizeof(PathNode) == 16);
 
 // ---------------------------------------------------------------- audio
 enum SoundFormat : uint8_t { SND_PCM8 = 0, SND_PCM16 = 1, SND_ADPCM = 2 };  // = DS SOUNDxCNT format bits

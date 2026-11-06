@@ -698,11 +698,22 @@ static void spawnTraffic() {
 	int traffic = 0;
 	for (const Car& c : g_cars) traffic += c.v.npcDriver;
 	if (traffic >= 2) return;
-	const int start = rand() % peddata::numRoadNodes();
-	for (int tryNode = 0; tryNode < peddata::numRoadNodes(); tryNode++) {
-		const int from = (start + tryNode) % peddata::numRoadNodes();
+	int cand[64], nc = 0;
+	peddata::forRoadNodesNear(player::g.x, player::g.y, 50.0f, [&](int i) {
+		const ds::PathNode* a = peddata::roadNode(i);
+		if (!roadOpen(a) || !a->numLinks || !(a->flags >> 4)) return true;
+		if (nc < 64) cand[nc] = i;
+		else {
+			const int j = rand() % (nc + 1);
+			if (j < 64) cand[j] = i;
+		}
+		nc++;
+		return true;
+	});
+	const int attempts = nc < 24 ? nc : 24;
+	for (int tryNode = 0; tryNode < attempts; tryNode++) {
+		const int from = cand[rand() % (nc < 64 ? nc : 64)];
 		const ds::PathNode* a = peddata::roadNode(from);
-		if (!roadOpen(a) || !a->numLinks || !(a->flags >> 4)) continue;
 		const int to = peddata::roadLink(a, rand() % a->numLinks);
 		const ds::PathNode* b = peddata::roadNode(to);
 		if (!roadOpen(b) || !(b->flags >> 4)) continue;

@@ -7,8 +7,8 @@
 // The ped half of CModelInfo + CPedStats + CPopulation's ped groups + CPopCycle's
 // table + CTheZones' zone info + CPathFind's ped nodes, from data/peds.dped
 // (tools/gtasa/peds.py). Resident: the 12 B model records, stats, walkcycle
-// anim groups, ped groups, zones and the ped path graph inside the map bounds
-// (~35 KB). Model names and popcycle rows are read on demand.
+// anim groups, ped groups and zones. Ped/road graph cells are loaded from the
+// global map on demand; model names and popcycle rows are read on demand.
 namespace peddata {
 
 // ePedType (the values the population code tests)
@@ -24,6 +24,7 @@ enum : int { GROUP_BALLAS = 42, GROUP_DEALERS = 52, NUM_PERC_GROUPS = 18 };
 // Loading-screen job (one read per table).
 bool initStep();
 bool ready();
+void update(float x, float y);
 
 int numModels();
 const ds::PedModel* model(int i);
@@ -42,7 +43,7 @@ bool popRow(int zoneType, int weekend, int slot, ds::PopRow& out);
 // CTheZones::GetZoneInfo: the smallest zone around (x, y), or null.
 const ds::PedZone* zoneAt(float x, float y);
 
-// Ped path graph (local indices). Positions in metres.
+// Ped path graph (stable global indices). Positions in metres.
 int numNodes();
 const ds::PathNode* node(int i);
 inline float nodeX(const ds::PathNode* n) { return n->x * 0.125f; }
@@ -62,8 +63,9 @@ template <typename F> void forNodesNear(float x, float y, float r, F fn);
 // internal for forNodesNear
 bool cellRange(float x, float y, float r, int& cx0, int& cy0, int& cx1, int& cy1);
 const ds::PathCell* cell(int cx, int cy);
+const ds::PathCell* roadCell(int cx, int cy);
 
-struct Stats { uint16_t models, nodes, zones; uint32_t bytes; };
+struct Stats { uint16_t models, nodes, zones, pathUs, pathPeakUs; uint32_t bytes, pathLoads; };
 const Stats& stats();
 
 template <typename F> void forNodesNear(float x, float y, float r, F fn) {
@@ -72,6 +74,19 @@ template <typename F> void forNodesNear(float x, float y, float r, F fn) {
 	for (int cy = cy0; cy <= cy1; cy++)
 		for (int cx = cx0; cx <= cx1; cx++) {
 			const ds::PathCell* c = cell(cx, cy);
+			if (!c) continue;
+			for (int i = c->first; i < c->first + c->count; i++)
+				if (!fn(i)) return;
+		}
+}
+
+template <typename F> void forRoadNodesNear(float x, float y, float r, F fn) {
+	int cx0, cy0, cx1, cy1;
+	if (!cellRange(x, y, r, cx0, cy0, cx1, cy1)) return;
+	for (int cy = cy0; cy <= cy1; cy++)
+		for (int cx = cx0; cx <= cx1; cx++) {
+			const ds::PathCell* c = roadCell(cx, cy);
+			if (!c) continue;
 			for (int i = c->first; i < c->first + c->count; i++)
 				if (!fn(i)) return;
 		}

@@ -2,8 +2,8 @@
 
 CFileLoader::LoadPedObject, CPedStats::LoadPedStats, CPopulation::LoadPedGroups,
 CPopCycle::Initialise, CAnimManager::ReadAnimAssociationDefinitions (the walkcycle
-groups the peds use) and CPathFind::LoadPathFindData (ped nodes only, inside the
-map bounds) run here. The zone population setup that main.scm does on a new game
+groups the peds use) and CPathFind::LoadPathFindData (ped and road nodes across the
+exterior world) run here. The zone population setup that main.scm does on a new game
 (SET_ZONE_POPULATION_TYPE / SET_ZONE_GANG_STRENGTH / SET_ZONE_DEALER_STRENGTH /
 SET_ZONE_POPULATION_RACE in the start-up thread) is found by scanning the script
 for those opcodes with an inline 8-byte zone label, and baked per info.zon zone.
@@ -16,7 +16,7 @@ from pathlib import Path
 from .dsfmt import name as fname
 from .world import resolve
 
-VERSION = 4
+VERSION = 5
 CELL = 50                 # path node grid cell (m)
 MARGIN = 60               # nodes kept around the bounds (m)
 ZONE_TYPES = 20           # eZonePopulationType::COUNT
@@ -333,7 +333,7 @@ def build(game, sec, world_bounds=None):
         # flags: bit0 dontWander, bit1 switchedOff, bit2 deadEnd, high nibble spawn probability
         f = (1 if flags & (1 << 10) else 0) | (2 if flags & (1 << 5) else 0) | (4 if flags & (1 << 4) else 0) | \
             (((flags >> 16) & 15) << 4)
-        node_blob += struct.pack('<3hHBBBB', x, y, z, nlinks, len(ll), width, f, 0)
+        node_blob += struct.pack('<3h2xIBBBB', x, y, z, nlinks, len(ll), width, f, 0)
         for t in ll:
             link_blob += struct.pack('<H', t)
         nlinks += len(ll)
@@ -341,14 +341,21 @@ def build(game, sec, world_bounds=None):
         link_blob += b'\0\0'
 
     roads = read_path_nodes(paths_dir, bounds, vehicles=True)
-    road_keys = sorted(roads)
+    road_keys = sorted(roads, key=lambda k: (cell(roads[k]), k))
+    if len(keys) > 65535 or len(road_keys) > 32767:
+        raise ValueError('path graph exceeds 16-bit node IDs (road IDs are signed in vehicle state)')
     road_local = {k: i for i, k in enumerate(road_keys)}
     road_nodes, road_links = bytearray(), bytearray()
-    for k in road_keys:
+    road_cells = [[0, 0] for _ in range(gw * gh)]
+    for i, k in enumerate(road_keys):
         x, y, z, width, flags, links = roads[k]
+        c = cell(roads[k])
+        if not road_cells[c][1]:
+            road_cells[c][0] = i
+        road_cells[c][1] += 1
         connected = [road_local[t] for t in links if t in road_local and t != k]
         road_flags = ((flags >> 5) & 1) | (((flags >> 6) & 1) << 1) | (((flags >> 7) & 1) << 2)
-        road_nodes += struct.pack('<3hHBBBB', x, y, z, len(road_links) // 2, len(connected),
+        road_nodes += struct.pack('<3h2xIBBBB', x, y, z, len(road_links) // 2, len(connected),
                                   width, road_flags | (((flags >> 16) & 15) << 4), 0)
         for t in connected:
             road_links += struct.pack('<H', t)
@@ -390,9 +397,10 @@ def build(game, sec, world_bounds=None):
                          for x1, y1, x2, y2, pt, races, dealer, gang, _ in zones)
     cell_blob = b''.join(struct.pack('<HH', a, b) for a, b in cells)
 
-    hdr_size = 4 + 2 * 6 + 4 * 2 + 2 * 6 + 4 * 15
+    hdr_size = 4 + 2 * 6 + 4 * 2 + 2 * 6 + 4 * 16
     parts = [model_blob, name_blob, stat_blob, anim_blob, grp_blob, pop_blob, zone_blob, cell_blob,
-             node_blob, link_blob, road_nodes, road_links, car_blob]
+             node_blob, link_blob, road_nodes, road_links, car_blob,
+             b''.join(struct.pack('<HH', a, b) for a, b in road_cells)]
     offs, at = [], hdr_size
     for b in parts:
         offs.append(at)
@@ -403,7 +411,7 @@ def build(game, sec, world_bounds=None):
     out += struct.pack('<hhHHHH', gx0, gy0, gw, gh, CELL, 0)
     out += struct.pack('<10I', *offs[:10])
     out += struct.pack('<4I', len(road_keys), len(road_links) // 2, offs[10], offs[11])
-    out += struct.pack('<I', offs[12])
+    out += struct.pack('<II', offs[12], offs[13])
     assert len(out) == hdr_size, len(out)
     for b in parts:
         out += b

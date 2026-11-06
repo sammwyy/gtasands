@@ -225,6 +225,8 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   When the player moves more than one window radius or the largest free STREAM block is under
   64 KB, the old map model/texture cache is cleared before loading sectors: without this, a
   teleport SF -> LV left 74 map candidates but no free memory to load them (0 drawn).
+  Within a region, if the largest free block falls under 64 KB, at most four old model slots
+  are evicted per frame toward a 96 KB reserve; new loads pause below 64 KB.
 - **Scan** (in `draw`, ~1.7 ms for ~700 instances): sector sphere vs range/frustum, then per
   instance: tobj hour, distance (`d - radius < view && d < drawDist + radius`), linked HD/LOD
   switch at 100 m (HD close, LOD far, suppressing redundant loads), sphere vs frustum
@@ -404,13 +406,19 @@ CDamageManager / CAEVehicleAudioEntity, reduced; every IDE type spawns, pool of 
 ## 6e. Peds (`game/peddata.*`, `game/pedmodel.*`, `game/pedanim.*`, `game/peds.*`)
 
 CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, reduced; pool of `budget::MAX_PEDS` 12.
-- **Data** (offline, `tools/gtasa/peds.py`, section `[peds]` -> `data/peds.dped` v4, `ds::Ped*`): peds.ide (12 B
+- **Data** (offline, `tools/gtasa/peds.py`, section `[peds]` -> `data/peds.dped` v5, `ds::Ped*`): peds.ide (12 B
   resident record per model, names read on demand), pedstats, pedgrp.dat (57 ePopcyclePedGroup lines), popcycle.dat
   rows (read on demand), the walkcycle groups of animgrp.dat (index 0 = man; missing clips fall back to it at
-  runtime), info.zon zones touching `[world] bounds` with main.scm's new-game zone setup (SET_ZONE_POPULATION_TYPE /
+  runtime), info.zon zones touching the exterior world with main.scm's new-game zone setup (SET_ZONE_POPULATION_TYPE /
   GANG_STRENGTH / DEALER_STRENGTH / POPULATION_RACE found by scanning the script for the opcodes with an inline label,
-  first dense run only = the start-up thread; Ganton = GANGLAND + Grove 25), the ped path nodes of nodes*.dat in the
-  bounds + 60 m (1602 nodes, 3340 links, 50 m cell grid). ~35 KB resident (tag `ped`).
+  first dense run only = the start-up thread; Ganton = GANGLAND + Grove 25). The global
+  paths have 37,650 ped nodes / 80,686 links and 30,587 road nodes / 62,936 links, sorted by
+  50 m cells. Node `firstLink` is 32 bits; node IDs still fit 16 bits, but ped tasks keep
+  their IDs in signed 32-bit fields. A 5x5-cell window for each graph performs at most one
+  file read per frame (also one per resumable loading-screen step), splitting metadata,
+  nodes and links across frames; all other nodes/links stay on disk. Empty or not-yet-loaded
+  cells yield no spawn candidates. Road spawns iterate local
+  cells rather than the entire graph. No global node/link arrays are resident.
 - **Models** (`pedmodel`, 6 slots, refcounted, LRU reuse): DMDL (wedge decimation to ~270 tris: clustering averaged
   UVs across islands, qem stalls at ~700) + TXD staged, uploaded in `peds::vblank` (map textures evicted when VRAM is
   full), compiled into lists of <= 24 dominant bones each (`SEG_BONES`, usually 1 segment); per draw a segment stores
@@ -456,6 +464,11 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   drawn/posed, nearest ped task), `peds:` line in hudok, `GTASADS_PEDTEST` (AGENTS.md). Screenshots show peds flat:
   their textures land in VRAM D, which the capture borrows during that very frame.
 - **Cost** (DEBUG -Og, Ganton noon, 8-9 peds): update ~1.6-2 ms, draw ~0.8 ms + ~0.9 ms per pose; 27-29 fps at the spawn.
+  `GTASADS_WORLDTEST` checks paths and traffic after SF -> LV -> northern LV -> countryside teleports:
+  each populated test area recovered with visible geometry and nearby graph nodes; peds and traffic
+  spawned in all four. The path streamer peaked at 8.5 ms for one SD read, then ~0.2 ms idle;
+  heap validation passed. During a teleport the new path cells and ped models take several frames
+  to arrive; sparse countryside without pedestrian nodes only spawns road traffic.
 
 ## 7. Bottom screen
 
@@ -570,9 +583,9 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   nibbles low first) or PCM8/16. `banks.dsbl` maps global bank id -> pak/index.
 - World (`kind = "world"`, `tools/gtasa/world.py`): gta.dat -> IDE objs/tobj/anim/txdp, IPL inst
   + binary `<ipl>_stream<N>.ipl` from gta3.img (lod indices point into the text IPL), area 0/13
-  only, LODs retained (`lods = true`, 100 m linked HD/LOD switching), no `bounds` crop (all exterior San Andreas); only sectors
-  around the player are resident. `peds.bounds` still restricts ped/traffic paths to Ganton:
-  full-world paths exceed the 16-bit link offsets and cannot all reside in 4 MB RAM.
+  only, LODs retained (`lods = true`, 100 m linked HD/LOD switching), no `bounds` crop
+  (all exterior San Andreas); only sectors around the player are resident. Ped/traffic
+  paths also cover the exterior through a separate streamed DPED v5 graph (section 6e).
   ~45,050 instances (6,150 LODs), ~11,264 models, ~14,280 sectors and ~30 MB DWLD v5; quaternion
   negated + CMatrix::SetRotate like LoadObjectInstance; model radius from the dff spheres; the
   models' COL records (section 6c) appended after the instances.

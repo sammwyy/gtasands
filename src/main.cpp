@@ -5,6 +5,7 @@
 #include "game/collision.h"
 #include "game/intro.h"
 #include "game/loadscreen.h"
+#include "game/peddata.h"
 #include "game/peds.h"
 #include "game/player.h"
 #include "game/sfx.h"
@@ -134,6 +135,7 @@ int main() {
 		timing::setSection(timing::SEC_3D, timing::usSince(t));
 		t = timing::ticks();
 		if (s_state == AppState::INGAME && !FrontEndMenuManager.m_bMenuActive) {
+			peddata::update(player::g.x, player::g.y);
 			col::update(player::g.x, player::g.y, player::g.z);        // collision near list + streaming
 			player::update();
 			weather::update(player::g.x, player::g.y, player::g.z);     // CWeather::Update

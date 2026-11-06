@@ -57,7 +57,8 @@ struct Ped {
 	bool struck, onScreen, poseValid, still, moneyGiven, near;
 	int8_t model;                 // pedmodel handle
 	int8_t target, leader;
-	int16_t pedIndex, from, to;
+	int16_t pedIndex;
+	int32_t from, to;
 	const ds::PedStat* stat;
 	float x, y, z, heading;
 	float vx, vy, vz;             // thrown (car hit, explosion)
@@ -445,9 +446,9 @@ static void resumeWander(Ped& p) {
 	p.target = TARGET_NONE;
 	const int n = peddata::nearestNode(p.x, p.y, p.z, 30.0f);
 	if (n < 0) { setTask(p, TASK_STAND, 600); return; }
-	p.from = (int16_t)n;
+	p.from = n;
 	const int to = nextNode(-1, n);
-	p.to = (int16_t)(to >= 0 ? to : n);
+	p.to = to >= 0 ? to : n;
 	setTarget(p);
 	if (p.to == p.from) {   // a lone node: walk onto it and stand
 		const ds::PathNode* a = peddata::node(n);
@@ -473,7 +474,7 @@ static void fleeNow(Ped& p, float fx, float fy, int32_t dur) {
 	p.leader = -1;
 	const bool already = p.task == TASK_FLEE;
 	setTask(p, TASK_FLEE, dur);
-	p.from = (int16_t)peddata::nearestNode(p.x, p.y, p.z, 10.0f);
+	p.from = peddata::nearestNode(p.x, p.y, p.z, 10.0f);
 	p.to = -1;
 	if (!already && p.voiceCd <= 0 && irand(2)) {
 		aeped::sayPedPain(p.female, aeped::PAIN_PED_PANIC, voicePos(p));
@@ -700,7 +701,7 @@ static void taskStep(Ped& p, int dt) {
 			const int n = nextNode(p.from, p.to);
 			if (n < 0) { setTask(p, TASK_STAND, 300); break; }
 			p.from = p.to;
-			p.to = (int16_t)n;
+			p.to = n;
 			setTarget(p);
 		}
 		locomote(p, avoid(p, headingTo(p.tx - p.x, p.ty - p.y), dt), 1.0f, false, dt);
@@ -751,7 +752,7 @@ static void taskStep(Ped& p, int dt) {
 				const float rank = heading * 2.0f + forward + frand() * 0.3f;
 				if (rank > score) { score = rank; best = to; }
 			}
-			p.to = (int16_t)best;
+			p.to = best;
 			if (best >= 0) setTarget(p);
 			target = peddata::node(best);
 		}
@@ -1310,8 +1311,8 @@ static bool addToPopulation(bool start) {
 	const float heading = headingTo(peddata::nodeX(nt) - x, peddata::nodeY(nt) - y);
 	Ped* p = addPed(mi, x, y, z, heading);
 	if (!p) return false;
-	p->from = (int16_t)from;
-	p->to = (int16_t)to;
+	p->from = from;
+	p->to = to;
 	p->lane = lane;
 	setTarget(*p);
 	p->task = TASK_WANDER;

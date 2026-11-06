@@ -757,12 +757,20 @@ static Cam makeCam(float ex, float ey, float ez, float yaw, float pitch, bool fr
 static void stream(u32 budgetUs, int maxStarts) {
 	const u32 t0 = timing::ticks();
 	bool worked = false;
+	if (mem::stats(mem::REGION_STREAM).largestFree < 64 * 1024)
+		for (int k = 0; k < 4 && mem::stats(mem::REGION_STREAM).largestFree < 96 * 1024; k++) {
+			const int v = lruSlot();
+			if (v < 0) break;
+			freeSlot(s_slots[v]);
+			worked = true;
+		}
 	for (int i = 0; i < WORLD_MODEL_SLOTS; i++) {
 		if (s_slots[i].state != SLOT_LOADING) continue;
 		worked |= finishLoad(s_slots[i]);
 		if (timing::usSince(t0) >= budgetUs) break;
 	}
 	for (int i = 0; i < s_numWant && maxStarts > 0 && timing::usSince(t0) < budgetUs; i++) {
+		if (mem::stats(mem::REGION_STREAM).largestFree < 64 * 1024) break;
 		if (s_slotOf[s_want[i].model] != NONE) continue;
 		if (!startLoad(s_want[i].model)) break;
 		maxStarts--;
