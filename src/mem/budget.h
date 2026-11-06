@@ -28,7 +28,7 @@ constexpr size_t PERM_BYTES = 320 * 1024;
 
 // Category soft budgets inside STREAM (checked by the debug HUD/logs).
 constexpr size_t ANIM_CACHE_BYTES = 256 * 1024;   // streamed anim clips (LRU over refcount 0); CJ pins ~100K, peds share the rest
-constexpr size_t WORLD_LIST_BYTES = 900 * 1024;   // compiled map-object display lists (LRU)
+constexpr size_t WORLD_LIST_BYTES = 720 * 1024;   // compiled map-object display lists (LRU)
 constexpr size_t WORLD_TEX_VRAM = 280 * 1024;     // map textures in VRAM (LRU over refcount 0); 384K total, ~20K left for vehicles
 constexpr size_t COL_CACHE_BYTES = 192 * 1024;    // map collision records around the player (LRU)
 constexpr int COL_NEAR_MAX = 48;                  // collision instances queried by the player / camera

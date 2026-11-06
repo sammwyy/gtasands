@@ -268,6 +268,63 @@ static void vehTest(int f) {
 }
 #endif
 
+#if defined(GTASADS_DEBUG) && defined(GTASADS_SKIDTEST)
+static void skidTest(int f) {
+	static int id = -1;
+	static float turnSkid, turnSpeed;
+	static bool driving;
+	if (f == 600) {
+		player::respawn();
+		id = veh::spawn(vehdata::findModel(492), player::g.x, player::g.y + 6.0f, player::g.z + 1.0f, 1.5708f, 0);
+		veh::setDriver(id, true);
+	}
+	if (f == 625) player::enterVehicleNow(id);
+	if (f == 700) input::debugHold(KEY_UP);
+	if (f == 710) input::debugHold(KEY_UP | KEY_LEFT);
+	if (f == 720) {
+		const veh::Vehicle* v = veh::get(id);
+		driving = player::vehicleId() == id;
+		turnSkid = v ? v->skid : -1.0f;
+		turnSpeed = v ? v->speedFwd * 180.0f : 0.0f;
+	}
+	if (f == 730) input::debugHold(KEY_UP);
+	if (f == 740) {
+		const veh::Vehicle* v = veh::get(id);
+		FILE* out = fopen("fat:/gtasads_skidtest.txt", "w");
+		if (out) {
+			fprintf(out, "turn driving=%d speed=%.1f skid=%.2f\n", driving, turnSpeed, turnSkid);
+			fprintf(out, "straight driving=%d speed=%.1f skid=%.2f\n", player::vehicleId() == id,
+			        v ? v->speedFwd * 180.0f : 0.0f, v ? v->skid : -1.0f);
+			fclose(out);
+		}
+	}
+}
+#endif
+
+#if defined(GTASADS_DEBUG) && defined(GTASADS_WORLDTEST)
+static void worldTest(int f) {
+	static FILE* out;
+	if (f == 600) {
+		out = fopen("fat:/gtasads_worldtest.txt", "w");
+		player::g.x = -2150.0f; player::g.y = 550.0f; player::g.z = 34.5f;
+	}
+	if (f == 760) {
+		player::g.x = 1942.0f; player::g.y = 1073.0f; player::g.z = 10.0f;
+	}
+	if ((f == 700 || (f >= 780 && f <= 860 && f % 20 == 0)) && out) {
+		const world::Stats& s = world::stats();
+		char memLine[128];
+		mem::summary(memLine, sizeof memLine);
+		fprintf(out, "%d %s: sectors=%u inst=%u cand=%u drawn=%u ready=%u loading=%u loads=%lu tex=%u fail=%u lists=%luK %s\n",
+		        f, f == 700 ? "SF" : "LV", s.sectors, s.instances, s.candidates, s.drawn,
+		        s.modelsReady, s.modelsLoading, (unsigned long)s.loads, s.textures, s.texFailed,
+		        (unsigned long)(s.listBytes >> 10), memLine);
+		if (f == 700 || f == 860) video::requestCapture(f == 700 ? "fat:/gtasads_world_sf.dscr" : "fat:/gtasads_world_lv.dscr");
+		if (f == 860) { fclose(out); out = nullptr; }
+	}
+}
+#endif
+
 #if defined(GTASADS_DEBUG) && defined(GTASADS_PEDTEST)
 // Headless ped test (after the screenshot sequence): a ped placed 1 m in
 // front of CJ takes a punch combo (hit / knock-down / response), then CJ gets
@@ -348,6 +405,12 @@ void draw() {
 #endif
 #ifdef GTASADS_VEHTEST
 			vehTest(s_gameFrames);
+#endif
+#ifdef GTASADS_SKIDTEST
+			skidTest(s_gameFrames);
+#endif
+#ifdef GTASADS_WORLDTEST
+			worldTest(s_gameFrames);
 #endif
 #ifdef GTASADS_PEDTEST
 			pedTest(s_gameFrames);

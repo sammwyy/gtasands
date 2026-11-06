@@ -182,7 +182,7 @@ struct RadarHeader {
 // gridW x gridH sector grid (row-major from the south-west corner, x fastest).
 struct WorldHeader {
 	uint32_t magic;          // 'DWLD'
-	uint16_t version;        // 4
+	uint16_t version;        // 5
 	uint16_t sectorSize;     // metres
 	int16_t originX, originY; // SA coords of sector (0,0)'s south-west corner
 	uint16_t gridW, gridH;
@@ -214,6 +214,8 @@ struct WorldInstance {
 	fx32 pos[3];             // SA world position
 	fx16 rot[9];             // rows right, forward, up (SA world = x*right + y*fwd + z*up + pos)
 	uint16_t model;          // WorldModel index
+	uint16_t lodSwitch;      // 0x8000 = LOD; low bits = HD/LOD switching distance (m), 0 = no link
+	uint16_t linkedModel;    // HD/LOD counterpart, 0xFFFF = none
 };
 // Map collision (the model's COL from the gta3.img .col archives), model
 // space, 1/128 m units ("cu", like COL2+ vertices). Read per model on demand.
@@ -445,7 +447,7 @@ static_assert(sizeof(AnimHeader) == 32 && sizeof(AnimEntry) == 28 && sizeof(Anim
               sizeof(AnimDirEntry) == 32);
 static_assert(sizeof(RadarHeader) == 24);
 static_assert(sizeof(WorldHeader) == 40 && sizeof(WorldModel) == 36 && sizeof(WorldTxd) == 28 &&
-              sizeof(WorldSector) == 8 && sizeof(WorldInstance) == 32);
+              sizeof(WorldSector) == 8 && sizeof(WorldInstance) == 36);
 static_assert(sizeof(WorldColIndex) == 12 && sizeof(WorldCol) == 24 && sizeof(WorldColSphere) == 12 &&
               sizeof(WorldColBox) == 16 && sizeof(WorldColNode) == 16 && sizeof(WorldColFace) == 16);
 static_assert(sizeof(VehHeader) == 184 && sizeof(VehInfo) == 380 && sizeof(VehSurface) == 4);

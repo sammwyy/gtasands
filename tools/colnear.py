@@ -27,11 +27,11 @@ def main():
     R = float(args[3]) if len(args) > 3 else 1.0
     d = dwld.read_bytes()
     _, ver, _, _, _, _, _, nm, _, ni, mo, _, io, co = struct.unpack_from('<4sHHhhHHHHIIIII', d)
-    if ver != 4:
-        sys.exit(f'{dwld}: DWLD v{ver}, expected 4')
+    if ver != 5:
+        sys.exit(f'{dwld}: DWLD v{ver}, expected 5')
     names = [d[mo + i * 36:mo + i * 36 + 24].split(b'\0')[0].decode() for i in range(nm)]
     for i in range(ni):
-        p = struct.unpack_from('<3i9hH', d, io + i * 32)
+        p = struct.unpack_from('<3i9hH', d, io + i * 36)
         pos = [v / 4096 for v in p[:3]]
         rot = [v / 4096 for v in p[3:12]]
         off, _, rad, _ = struct.unpack_from('<IIHH', d, co + p[12] * 12)

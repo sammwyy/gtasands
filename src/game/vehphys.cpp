@@ -1069,6 +1069,7 @@ void physStep(Car& c) {
 		wheelPair(c, vehmdl::WHEEL_RL, vehmdl::WHEEL_RR, 0, false, cs, cp, cw, traction, accel, brake, false);
 		// wheel spin (drawing + audio) and the skidmarks
 		v.skid = 0.0f;
+		const q sideSpeed = fx::abs(dot(c.move, c.right));
 		for (int i = 0; i < 4; i++) {
 			const bool front = i == vehmdl::WHEEL_FL || i == vehmdl::WHEEL_FR;
 			const q r = c.wheelR[front ? 0 : 1] > F(0.05) ? c.wheelR[front ? 0 : 1] : F(0.35);
@@ -1082,11 +1083,14 @@ void physStep(Car& c) {
 			if (c.wheelRot[i] > F(6.2831853)) c.wheelRot[i] -= F(6.2831853);
 			if (c.wheelRot[i] < -F(6.2831853)) c.wheelRot[i] += F(6.2831853);
 			const bool skidding = c.susp[i] < ONE && c.wheelState[i] != WHEEL_NORMAL;
-			if (c.wheelCounts[i] > 0 && c.wheelState[i] != WHEEL_NORMAL &&
-			    (v.status == STATUS_PLAYER || (c.slip[i] > F(0.2) && fx::abs(c.speedFwd) > F(0.03))))
+			const bool audible = skidding &&
+			    ((c.wheelState[i] == WHEEL_FIXED && (c.brake > F(0.3) || v.handbrake)) ||
+			     (c.slip[i] > F(0.2) && sideSpeed > F(0.08)) ||
+			     (c.wheelState[i] == WHEEL_SPINNING && fx::abs(c.speedFwd) < F(0.03) && c.gas > F(0.5)));
+			if (audible && (v.status == STATUS_PLAYER || fx::abs(c.speedFwd) > F(0.03)))
 				v.skid += fminf(fx::toFloat(c.slip[i]) + 0.3f, 1.5f);
 			// CVehicle::AddSingleWheelParticles -> CSkidmarks::RegisterOne
-			if (skidding && (c.wheelState[i] == WHEEL_FIXED || c.slip[i] > F(0.2)) && fx::abs(c.speedFwd) > F(0.03)) {
+			if (audible && fx::abs(c.speedFwd) > F(0.03)) {
 				const int vid = (int)(&c - g_cars);
 				const float x = floatOf(c.pos[0] + c.contactRel[i].x), y = floatOf(c.pos[1] + c.contactRel[i].y),
 				            z = floatOf(c.pos[2] + c.contactRel[i].z);

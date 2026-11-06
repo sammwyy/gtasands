@@ -563,6 +563,8 @@ static void updateSectors(float x, float y, int maxLoads) {
 		return dx * dx + dy * dy <= reach * reach;
 	};
 	if (cx != s_centerX || cy != s_centerY || r != s_windowR) {
+		if (s_centerX != -9999 && (iabs(cx - s_centerX) > r || iabs(cy - s_centerY) > r ||
+		    mem::stats(mem::REGION_STREAM).largestFree < 64 * 1024)) suspend();
 		for (Sector& sc : s_sectors)
 			if (sc.used && !inWindow(sc.sx, sc.sy)) freeSector(sc);
 		s_centerX = cx;
@@ -687,9 +689,16 @@ static void scan(const Cam& c) {
 			const int32_t rad = ml.radius * 16;
 			const int32_t reach = c.view + rad;
 			if (iabs(dx) > reach || iabs(dy) > reach || iabs(dz) > reach || reach > 0x6000) continue;   // d^2 fits s32
-			// no LODs yet: HD models stay up to the view distance (nearest
-			// surface), small props still respect their IDE draw distance
+			// HD/LOD counterparts switch when both are ready; keep the other
+			// visible during streaming, and respect the IDE draw distance
 			const int32_t d2 = dx * dx + dy * dy + dz * dz;
+			const int32_t sw = (in.lodSwitch & 0x7FFF) * 16;
+			if ((in.lodSwitch & 0x8000) && d2 < (sw ? sw * sw : (100 * 16) * (100 * 16))) continue;
+			if (sw && in.linkedModel != NONE && in.linkedModel < s_hdr.numModels) {
+				const uint16_t linked = s_slotOf[in.linkedModel];
+				if (!(in.lodSwitch & 0x8000) && d2 >= sw * sw &&
+				    (linked == NONE || s_slots[linked].state == SLOT_READY)) continue;
+			}
 			int32_t dd = ml.drawDist * 16 + rad;
 			if (dd > 0x6000) dd = 0x6000;
 			if (d2 > reach * reach || d2 > dd * dd) continue;
@@ -794,7 +803,7 @@ static bool open() {
 	s_file = fopen("nitro:/data/world.dwld", "rb");
 	if (!s_file) return false;
 	if (fread(&s_hdr, sizeof s_hdr, 1, s_file) != 1 || s_hdr.magic != DS_FOURCC('D', 'W', 'L', 'D') ||
-	    s_hdr.version != 4 || !s_hdr.numModels) {
+	    s_hdr.version != 5 || !s_hdr.numModels) {
 		fclose(s_file);
 		s_file = nullptr;
 		return false;

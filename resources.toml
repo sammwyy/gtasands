@@ -141,8 +141,8 @@ out = "data/world.dwld"
 dat = "data/gta.dat"
 img = "models/gta3.img"
 sector = 50               # sector size in metres
-lods = false              # LOD instances (lod*.dff) are not drawn yet
-bounds = [2150, -1950, 2850, -1400]   # Grove Street / Ganton / Idlewood for now; remove for the whole map
+lods = true               # Stream distant LODs; switch from HD at 100 m when both models are ready
+# bounds = [2150, -1950, 2850, -1400]   # Optional local map crop; no bounds streams all of San Andreas
 
 # Vehicle definitions: vehicles.ide + handling.cfg (game units) + carcols.dat +
 # surface adhesion (surface.dat / surfinfo.dat) in one table (src/game/vehicledata.cpp).
@@ -151,10 +151,11 @@ kind = "vehicles"
 out = "data/vehicles.dveh"
 
 # Ped population: peds.ide / pedstats / pedgrp / popcycle / animgrp tables, the ped path
-# nodes inside [world] bounds and main.scm's new-game zone setup (src/game/peddata.cpp).
+# nodes inside [peds] bounds and main.scm's new-game zone setup (src/game/peddata.cpp).
 [peds]
 kind = "peds"
 out = "data/peds.dped"
+bounds = [2150, -1950, 2850, -1400]
 
 # -----------------------------------------------------------------------------
 [gta_int_img]             # interiors

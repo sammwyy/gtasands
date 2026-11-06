@@ -221,10 +221,14 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   (name + txdp parent), `slotOf[model]`. Model names are read (36 B) when a model loads.
 - **Sector window**: 50 m sectors within `fogView + 40` m of the current sector's centre
   (re-evaluated only when the player crosses a sector edge, <= 2 sector reads/frame). Instances are
-  32 B, rotation rows pre-converted to GL axes on load; each sector keeps a bounding sphere.
-- **Scan** (in `draw`, ~1.2 ms for ~600 instances): sector sphere vs range/frustum, then per
-  instance: tobj hour, distance (`d - radius < view && d < drawDist + radius`; no LODs yet, so HD
-  models stay until the fog), sphere vs frustum (fixed point, 1/16 m), slot state. Not-loaded
+  36 B (DWLD v5), rotation rows pre-converted to GL axes on load; each sector keeps a bounding sphere.
+  When the player moves more than one window radius or the largest free STREAM block is under
+  64 KB, the old map model/texture cache is cleared before loading sectors: without this, a
+  teleport SF -> LV left 74 map candidates but no free memory to load them (0 drawn).
+- **Scan** (in `draw`, ~1.7 ms for ~700 instances): sector sphere vs range/frustum, then per
+  instance: tobj hour, distance (`d - radius < view && d < drawDist + radius`), linked HD/LOD
+  switch at 100 m (HD close, LOD far, suppressing redundant loads), sphere vs frustum
+  (fixed point, 1/16 m), slot state. Not-loaded
   models go to an 8-entry nearest-first want list (out of view = lower priority). Drawn or
   within 40 m = protected from LRU.
 - **Model streaming** (`world::update`, ~3 ms budget, 2 starts/frame): `startLoad` reads the DMDL
@@ -262,7 +266,8 @@ CCollision / CColStore / CWorld::ProcessLineOfSight reduced to an on-foot player
   `.col` archives), model space, 1/128 m s16 ("cu"). Faces re-wound to CCW-front
   (`(c-a)x(b-a)` in COL), unit normal 4.12 per face, degenerate ones dropped, then a BVH (median
   split, <= 6 faces per leaf, 16 B nodes); boxes + spheres kept as they are; per-model radius in
-  the index. Grove box: 269 models, 24.7k faces, ~690 KB. Layout `ds::WorldCol*` (DWLD v4).
+  the index. Full exterior: 6,026 COL models, ~1 million faces, ~28 MB on disk.
+  Layout `ds::WorldCol*` (DWLD v5).
 - **Runtime**: index resident (12 B/model). `col::update` (before `player::update`) rebuilds a
   near list every 8 frames / 2 m moved / cache change: instances within `GATHER_M` 14 m, their
   transform copied (sectors may be freed by world::update) + a world AABB of the record bbox.
@@ -348,7 +353,9 @@ CDamageManager / CAEVehicleAudioEntity, reduced; every IDE type spawns, pool of 
 - **Lights / marks**: at night (20-7 h, engine on) head + tail coronas (glow sprites at the light dummies, mirrored),
   brake lights brighter, a glow pool on the road ahead (CShadows car light, cars / bikes); `dbg::opts.vehLights`.
   Skidmarks (`game/skidmarks`, CSkidmarks: 24 marks x 16 parts, new part every 100 ms, fade 2.5..20 s, colour by
-  surface type, <= 140 polys/frame, `dbg::opts.skidmarks`) registered by fixed / slipping wheels.
+  surface type, <= 140 polys/frame, `dbg::opts.skidmarks`) registered by locked tyres, wheelspin
+  or wheels sliding while the body actually moves sideways (>0.08 game units/step). Ordinary
+  steering without a sideways drift no longer triggers the skid sound or marks.
 - **Water** (`game/waterlevel`): GetWaterLevel over the water.dat polygons (bilinear quads, flat triangles, last-hit
   cache, z = 0 outside the map square), one translucent timecyc-water-coloured quad per polygon clipped to the view
   square (`dbg::opts.water`). In the Grove box there is only a pond at (2310, -1416); the debug spawn moves CJ to
@@ -536,7 +543,7 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
 - libc `_malloc_r` & co are replaced in `mem.cpp` (newlib dlmalloc/sbrk are not linked).
   `tlsf.cpp` is portable and passed a 400k-op host stress test (git history); keep it portable.
 - Pool budgets for peds/vehicles/objects are already declared in `budget.h`, plus the world ones
-  (`WORLD_*`: 192 model slots, 900 KB lists, 320 texture entries, 280 KB map VRAM (rest: vehicles), 96 sectors),
+  (`WORLD_*`: 192 model slots, 720 KB lists, 320 texture entries, 280 KB map VRAM (rest: vehicles), 96 sectors),
   collision `COL_CACHE_BYTES` 192 KB / `COL_NEAR_MAX` 48 (tag `col`).
 - `tex::` slots: 384 (PERM), most of them map textures.
 
@@ -563,10 +570,13 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   nibbles low first) or PCM8/16. `banks.dsbl` maps global bank id -> pak/index.
 - World (`kind = "world"`, `tools/gtasa/world.py`): gta.dat -> IDE objs/tobj/anim/txdp, IPL inst
   + binary `<ipl>_stream<N>.ipl` from gta3.img (lod indices point into the text IPL), area 0/13
-  only, LODs dropped (`lods = false`), optional `bounds` box (Grove Street area for now), quaternion
+  only, LODs retained (`lods = true`, 100 m linked HD/LOD switching), no `bounds` crop (all exterior San Andreas); only sectors
+  around the player are resident. `peds.bounds` still restricts ped/traffic paths to Ganton:
+  full-world paths exceed the 16-bit link offsets and cannot all reside in 4 MB RAM.
+  ~45,050 instances (6,150 LODs), ~11,264 models, ~14,280 sectors and ~30 MB DWLD v5; quaternion
   negated + CMatrix::SetRotate like LoadObjectInstance; model radius from the dff spheres; the
   models' COL records (section 6c) appended after the instances.
-  Not cached per entry (~1 s for the Grove box; a dff parse per referenced model).
+  Not cached per entry (~50 s for the full world; a dff parse per referenced model).
 - Map models (rule `match_ide = "data/maps/**/*.ide"`): ratio 0.25 clustering with `min_area 0.85`
   (target grows until 85% of the surface survives), mostly-horizontal geometry (`is_flat`,
   ground/roads/bridge decks) uses `decimate_wedge` instead (`ground_qem`): quadric half-edge

@@ -12,7 +12,7 @@ from pathlib import Path
 from . import col, dff, img
 from .dsfmt import fx, fx16, name as fname, pad4
 
-VERSION = 4
+VERSION = 5
 COL_UNIT = 128        # collision coordinates: s16 at 1/128 m (as COL2+ vertices)
 COL_LEAF = 6          # faces per BVH leaf
 NO_TIME = 24          # timeOn/timeOff for always-visible objects
@@ -271,9 +271,11 @@ def build(game, sec):
             stream += parse_ipl_binary(img.read_entry(imgp, o, s))
             k += 1
         # lod indices of both the text and the stream IPLs point into the text list
-        lod_of = {t[9] for t in text + stream if t[9] >= 0}
-        for i, t in enumerate(text + stream):
-            mid, x, y, z, qx, qy, qz, qw, area, _lod = t
+        entries = text + stream
+        lod_of = {t[9] for t in entries if 0 <= t[9] < len(text)}
+        hd_of = {t[9]: t[0] for t in entries if 0 <= t[9] < len(text)}
+        for i, t in enumerate(entries):
+            mid, x, y, z, qx, qy, qz, qw, area, lod = t
             o = objs.get(mid)
             if (area & 0xFF) not in (0, AREA_ANY):
                 skipped['area'] += 1
@@ -288,7 +290,8 @@ def build(game, sec):
             if bounds and not (bounds[0] <= x <= bounds[2] and bounds[1] <= y <= bounds[3]):
                 skipped['bounds'] += 1
                 continue
-            insts.append((mid, x, y, z, rotation(qx, qy, qz, qw)))
+            linked = hd_of.get(i) if is_lod and i < len(text) else text[lod][0] if not is_lod and 0 <= lod < len(text) else None
+            insts.append((mid, x, y, z, rotation(qx, qy, qz, qw), is_lod, linked))
 
     # tables: only what the instances reference
     mids = sorted({t[0] for t in insts})
@@ -327,7 +330,7 @@ def build(game, sec):
     txds_off = models_off + 36 * len(models)
     sectors_off = txds_off + 28 * len(txds)
     inst_off = sectors_off + 8 * gw * gh
-    col_off = inst_off + 32 * len(insts)
+    col_off = inst_off + 36 * len(insts)
     out = bytearray(struct.pack('<4sHHhhHHHHIIIII', b'DWLD', VERSION, size, ox, oy, gw, gh, len(models), len(txds),
                                 len(insts), models_off, sectors_off, inst_off, col_off))
     assert len(out) == hdr
@@ -340,8 +343,12 @@ def build(game, sec):
         out += struct.pack('<IHH', first, len(c), 0)
         first += len(c)
     for c in cells:
-        for mid, x, y, z, rot in c:
-            out += struct.pack('<3i9hH', fx(x), fx(y), fx(z), *(fx16(r) for r in rot), midx[mid])
+        for mid, x, y, z, rot, is_lod, linked in c:
+            switch = 100 if linked in midx else 0
+            if is_lod:
+                switch |= 0x8000
+            out += struct.pack('<3i9hHHH', fx(x), fx(y), fx(z), *(fx16(r) for r in rot), midx[mid],
+                               switch, midx.get(linked, 0xFFFF))
     assert len(out) == col_off
 
     # collision: WorldColIndex[numModels], then the records (model space)

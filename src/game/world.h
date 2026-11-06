@@ -22,12 +22,13 @@ struct DrawView {
 	float originX, originY, originZ; // SA point that maps to the GL origin (player-local space)
 };
 
-// An instance as kept in RAM: same 32 bytes as ds::WorldInstance, but the
+// An instance as kept in RAM: same 36 bytes as ds::WorldInstance, but the
 // rotation rows are already converted to GL axes (SA (x,y,z) -> GL (x,z,-y)).
 struct Instance {
 	int32_t pos[3];           // SA, 20.12
 	int16_t m[9];             // GL basis rows right/forward/up, 4.12
 	uint16_t model;
+	uint16_t lodSwitch, linkedModel;
 };
 
 // Loaded sector window, for game/collision (instances stay valid until the
