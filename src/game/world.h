@@ -69,6 +69,7 @@ void setArea(int area);
 int area();
 bool preloadAreaStep(float x, float y, float z);
 bool animateDoorNear(float x, float y, float z, float angle);
+bool doorTarget(float& x, float& y);
 void clearDoorAnimation();
 // Texture uploads; call right after the vblank (VRAM is free for ~20 lines).
 void vblank();

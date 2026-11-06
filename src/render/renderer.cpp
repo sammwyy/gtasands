@@ -107,7 +107,7 @@ void draw() {
 	const int ax = (int)floorf(px * 0.125f), ay = (int)floorf(py * 0.125f);
 	const float adx = ax * 8.0f - px, adz = -(ay * 8.0f - py);
 	s32 attached[12];
-	if (player::hiddenInVehicle()) {}
+	if (player::hiddenInVehicle() || (player::vehicleId() < 0 && player::camDist() < 1.35f)) {}
 	else if (player::attachedMatrix(px, py, vz, attached)) cj::drawBasis(attached);
 	else cj::draw(0.0f, 0.0f, player::g.z - vz, player::g.heading);
 	// vehicles right after CJ (their own light0: the sun), then the map's budget

@@ -48,7 +48,7 @@ struct Slot {
 	uint16_t model;
 	uint8_t state, numTex;
 	int8_t scaleExp;          // list vertices are v16 * 2^scaleExp
-	uint8_t pad;
+	uint8_t hingeDoor;
 	uint16_t tris;
 	u32* list;
 	uint32_t listBytes;
@@ -116,6 +116,8 @@ static Stats s_stats;
 static int s_area;
 static const Inst* s_door;
 static float s_doorAngle;
+static float s_doorX, s_doorY;
+static int s_doorSign;
 
 // key = projected size (radius / distance), doubled for instances drawn last
 // frame: the polygon budget drops the smallest-looking ones and keeps the set
@@ -464,6 +466,9 @@ static bool compile(Slot& s) {
 			s.boundCenter[k] = lo[k] + (hi[k] - lo[k]) / 2;
 			half[k] = (hi[k] - lo[k] + 511) >> 9;
 		}
+	s.hingeDoor = lo[0] <= hi[0] && lo[1] <= hi[1] &&
+	              hi[0] - lo[0] > 2048 && hi[1] - lo[1] < 2048 &&
+	              (iabs(lo[0]) < 1024 || iabs(hi[0]) < 1024);
 	s.boundRadius = (int32_t)sqrt32(half[0] * half[0] + half[1] * half[1] + half[2] * half[2]) + 32;
 	int e = 0;
 	while ((maxAbs >> e) > 32767) e++;
@@ -983,7 +988,7 @@ void setArea(int area) {
 }
 
 bool animateDoorNear(float x, float y, float z, float angle) {
-	s_doorAngle = angle;
+	s_doorAngle = angle * s_doorSign;
 	if (s_door) return true;
 	float best = 64.0f;
 	for (const Sector& sc : s_sectors)
@@ -994,18 +999,39 @@ bool animateDoorNear(float x, float y, float z, float angle) {
 			const float dz = in.pos[2] * (1.0f / 4096.0f) - z;
 			const float d = dx * dx + dy * dy + dz * dz;
 			if (d >= best) continue;
+			const int slot = s_slotOf[in.model];
+			if (slot == NONE || s_slots[slot].state != SLOT_READY || !s_slots[slot].hingeDoor) continue;
 			ds::WorldModel m;
 			if (!readAt(s_hdr.modelsOffset + in.model * sizeof m, &m, sizeof m)) continue;
 			bool door = false;
 			for (int k = 0; k < 20 && m.name[k + 3]; k++)
 				if ((m.name[k] | 32) == 'd' && (m.name[k + 1] | 32) == 'o' &&
 				    (m.name[k + 2] | 32) == 'o' && (m.name[k + 3] | 32) == 'r') door = true;
-			if (door) { best = d; s_door = &in; }
+			if (door) {
+				best = d;
+				s_door = &in;
+				const s32* center = s_slots[slot].boundCenter;
+				const int64_t cx = (int64_t)in.m[0] * center[0] + (int64_t)in.m[3] * center[1] + (int64_t)in.m[6] * center[2];
+				const int64_t cy = (int64_t)in.m[2] * center[0] + (int64_t)in.m[5] * center[1] + (int64_t)in.m[8] * center[2];
+				s_doorX = (in.pos[0] + (cx >> 12)) * (1.0f / 4096.0f);
+				s_doorY = (in.pos[1] - (cy >> 12)) * (1.0f / 4096.0f);
+				const float vx = s_doorX - in.pos[0] * (1.0f / 4096.0f);
+				const float vy = s_doorY - in.pos[1] * (1.0f / 4096.0f);
+				s_doorSign = ((x - s_doorX) * -vy + (y - s_doorY) * vx > 0) ? -1 : 1;
+				s_doorAngle = angle * s_doorSign;
+			}
 		}
 	return s_door != nullptr;
 }
 
-void clearDoorAnimation() { s_door = nullptr; s_doorAngle = 0.0f; }
+bool doorTarget(float& x, float& y) {
+	if (!s_door) return false;
+	x = s_doorX;
+	y = s_doorY;
+	return true;
+}
+
+void clearDoorAnimation() { s_door = nullptr; s_doorAngle = 0.0f; s_doorSign = 1; }
 
 bool preloadAreaStep(float x, float y, float z) {
 	if (!ready()) return false;
@@ -1152,11 +1178,21 @@ void draw(const DrawView& v) {
 		const Inst& in = *vi.inst;
 		const int e = s.scaleExp;
 		MATRIX_RESTORE = VIEW_SLOT;
-		for (int k = 0; k < 9; k++) MATRIX_MULT4x3 = (s32)in.m[k] * (1 << e);
+		if (&in == s_door && s_doorAngle != 0.0f) {
+			const int32_t cs = cosLerp((int)(s_doorAngle * (32768.0f / 360.0f)));
+			const int32_t sn = sinLerp((int)(s_doorAngle * (32768.0f / 360.0f)));
+			for (int k = 0; k < 3; k++) {
+				const int32_t x = in.m[k * 3], z = in.m[k * 3 + 2];
+				MATRIX_MULT4x3 = ((x * cs + z * sn) >> 12) * (1 << e);
+				MATRIX_MULT4x3 = (s32)in.m[k * 3 + 1] * (1 << e);
+				MATRIX_MULT4x3 = ((z * cs - x * sn) >> 12) * (1 << e);
+			}
+		} else {
+			for (int k = 0; k < 9; k++) MATRIX_MULT4x3 = (s32)in.m[k] * (1 << e);
+		}
 		MATRIX_MULT4x3 = in.pos[0] - ox;
 		MATRIX_MULT4x3 = in.pos[2] - oz;
 		MATRIX_MULT4x3 = oy - in.pos[1];
-		if (&in == s_door && s_doorAngle != 0.0f) glRotatef(s_doorAngle, 0.0f, 1.0f, 0.0f);
 		gx::callList(s.list);
 		markDrawn(vi.inst);
 		drawn++;

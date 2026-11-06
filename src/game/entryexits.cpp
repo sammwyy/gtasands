@@ -35,9 +35,18 @@ static int s_backArea, s_virtualArea;
 static uint32_t s_lastVbl;
 static float s_dst[4];
 static float s_src[4];
+static float s_rearmPos[3];
 static int s_dstArea, s_srcArea, s_prevOutside, s_from;
 static bool s_hasDoor;
+static float s_enterHeading;
 static constexpr int FADE_FRAMES = 18;
+static constexpr int WALK_TICKS = 12, ENTER_TICKS = 40;
+
+static float wrap(float angle) {
+	while (angle > 3.14159265f) angle -= 6.2831853f;
+	while (angle < -3.14159265f) angle += 6.2831853f;
+	return angle;
+}
 
 static bool inRange(const ds::EntryExit& e, float x, float y, float z) {
 	const float dx = x - e.entrance[0], dy = y - e.entrance[1];
@@ -67,10 +76,10 @@ static int closest(float x, float y, float z, bool inside) {
 	return best;
 }
 
-static void setPose(const char* clip, bool restart) {
+static void setPose(const char* clip, bool restart, int ticks) {
 	const cj::Clip pose{ clip, 1.0f, false, false, false, restart, 0.0f };
 	cj::pose(&pose, 1);
-	cj::advance(1);
+	cj::advance(ticks > 0 ? ticks : 1);
 }
 
 static void start(int i) {
@@ -82,6 +91,7 @@ static void start(int i) {
 		s_from = -1;
 		s_dstArea = s_backArea;
 		memcpy(s_dst, s_backDest, sizeof s_dst);
+		memcpy(s_rearmPos, s_dst, sizeof s_rearmPos);
 		s_hasDoor = false;
 		s_virtual = false;
 		s_phase = ENTER;
@@ -102,6 +112,7 @@ static void start(int i) {
 	s_dst[1] = target.exit[1];
 	s_dst[2] = target.exit[2];
 	s_dst[3] = target.exitAngle * (3.14159265f / 180.0f);
+	memcpy(s_rearmPos, s_dst, sizeof s_rearmPos);
 	s_virtual = link == i && (s_dstArea != s_srcArea ||
 	            fabsf(s_dst[0] - e.entrance[0]) + fabsf(s_dst[1] - e.entrance[1]) +
 	            fabsf(s_dst[2] - e.entrance[2]) > 6.0f);
@@ -113,6 +124,9 @@ static void start(int i) {
 	}
 	if (e.sourceArea == 0 && s_dstArea != 0) s_outside = i;
 	s_hasDoor = world::animateDoorNear(e.entrance[0], e.entrance[1], e.entrance[2], 0.0f);
+	float tx, ty;
+	if (s_hasDoor && world::doorTarget(tx, ty))
+		s_enterHeading = atan2f(player::g.x - tx, ty - player::g.y);
 	s_phase = ENTER;
 	s_wait = 0;
 	s_lastVbl = timing::vblanks();
@@ -171,9 +185,13 @@ bool update() {
 	if (s_phase == IDLE) {
 		if (!s_unlocked || !world::ready()) return true;
 		const player::State& p = player::g;
+		if (!s_armed) {
+			const float dx = p.x - s_rearmPos[0], dy = p.y - s_rearmPos[1];
+			s_armed = dx * dx + dy * dy >= 3.5f * 3.5f || fabsf(p.z - s_rearmPos[2]) >= 2.5f;
+			if (!s_armed) return true;
+		}
 		const int i = closest(p.x, p.y, p.z, false);
-		if (i < 0) s_armed = true;
-		else if (s_armed && !p.inVehicle && p.health > 0.0f) start(i);
+		if (i >= 0 && !p.inVehicle && p.health > 0.0f) start(i);
 		return s_phase == IDLE;
 	}
 	input::consumeEdges();
@@ -182,11 +200,18 @@ bool update() {
 	const int elapsed = (int)(now - s_lastVbl);
 	s_lastVbl = now;
 	if (s_phase == ENTER) {
-		setPose(s_hasDoor && s_wait < 18 ? "DOOR_LHinge_O" : "Walk_DoorPartial",
-		        s_wait == 0 || (s_hasDoor && s_wait == 18));
-		if (s_hasDoor) world::animateDoorNear(0.0f, 0.0f, 0.0f, s_wait * 2.5f);
-		s_wait += elapsed > 4 ? 4 : elapsed;
-		if (s_wait >= 28) { s_phase = FADE_OUT; s_wait = 0; }
+		const int ticks = elapsed > 4 ? 4 : elapsed;
+		if (s_hasDoor && s_wait < WALK_TICKS) {
+			const float t = ticks < WALK_TICKS - s_wait ? (float)ticks / (float)(WALK_TICKS - s_wait) : 1.0f;
+			player::faceEntry(player::g.heading + wrap(s_enterHeading - player::g.heading) * t);
+		}
+		setPose(s_wait < WALK_TICKS ? cj::motion().walk : "Walk_DoorPartial", s_wait == 0, ticks);
+		if (s_hasDoor) {
+			const int open = s_wait - WALK_TICKS;
+			world::animateDoorNear(0.0f, 0.0f, 0.0f, open <= 0 ? 0.0f : open >= 28 ? 90.0f : open * (90.0f / 28.0f));
+		}
+		s_wait += ticks;
+		if (s_wait >= ENTER_TICKS) { s_phase = FADE_OUT; s_wait = 0; }
 	} else if (s_phase == FADE_OUT) {
 		s_wait += elapsed > 4 ? 4 : elapsed;
 		if (s_wait >= FADE_FRAMES) {
@@ -232,7 +257,7 @@ bool update() {
 }
 
 void drawMarker(float originX, float originY, float originZ) {
-	if (!s_unlocked || s_phase != IDLE) return;
+	if (!s_unlocked || s_phase != IDLE || !s_armed) return;
 	const player::State& p = player::g;
 	const int i = closest(p.x, p.y, p.z, true);
 	if (i < 0) return;
@@ -245,17 +270,17 @@ void drawMarker(float originX, float originY, float originZ) {
 	glPushMatrix();
 	glTranslatef(e.entrance[0] - originX, e.entrance[2] - originZ, originY - e.entrance[1]);
 	glBindTexture(0, 0);
-	glPolyFmt(POLY_ALPHA(18) | POLY_CULL_NONE);
+	glPolyFmt(POLY_ALPHA(11) | POLY_CULL_BACK);
 	glColor(RGB15(31, 27, 0));
 	glBegin(GL_QUADS);
 	for (int a = 0; a < 8; a++) {
 		const int t0 = a * 4096, t1 = (a + 1) * 4096;
-		const v16 x0 = (v16)(sinLerp(t0) * 2 / 3), z0 = (v16)(cosLerp(t0) * 2 / 3);
-		const v16 x1 = (v16)(sinLerp(t1) * 2 / 3), z1 = (v16)(cosLerp(t1) * 2 / 3);
+		const v16 x0 = (v16)(sinLerp(t0) / 2), z0 = (v16)(cosLerp(t0) / 2);
+		const v16 x1 = (v16)(sinLerp(t1) / 2), z1 = (v16)(cosLerp(t1) / 2);
 		glVertex3v16(x0, 0, z0);
 		glVertex3v16(x1, 0, z1);
-		glVertex3v16(x1, floattov16(1.35f), z1);
-		glVertex3v16(x0, floattov16(1.35f), z0);
+		glVertex3v16(x1, floattov16(1.2f), z1);
+		glVertex3v16(x0, floattov16(1.2f), z0);
 	}
 	glEnd();
 	glEnable(GL_TEXTURE_2D);

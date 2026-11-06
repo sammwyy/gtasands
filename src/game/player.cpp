@@ -386,6 +386,8 @@ void teleport(float x, float y, float z, float heading) {
 	s_teleportWait = 300;
 }
 
+void faceEntry(float heading) { g.heading = s_camYaw = wrap(heading); }
+
 void locoDebug(char* buf, int n) {
 	static const char* const k_state[] = { "none", "walk", "run", "sprint" };
 	snprintf(buf, n, "mbr %.2f %s %s%s", s_move.moveBlend, k_state[s_move.moveState & 3],

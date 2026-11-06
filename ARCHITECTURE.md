@@ -525,8 +525,8 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   (4 m/pixel, using the existing streamed radar.dsrt tile pool, no global-map allocation) with a small control strip
   while paused. The map submenu supports D-pad/touch panning, L/R legend pages with radar icon sprites
   on the top screen, and X for a full overview read in 4 KB slices into a temporary ~66 KB paletted image.
-  `map_points` extracts exterior service entrances from the source IPL `enex` sections to
-  `data/map_points.dpoi` v1 (s16 x/y + icon type); radar loads these during HUD init and draws
+  `map_points` extracts all exterior IPL entrances (service icons or a generic property icon) to
+  `data/map_points.dpoi` v2 (s16 x/y + icon type); radar loads these during HUD init and draws
   them on both map views. The legend lists only types present in the current view, with labels
   resolved from the active GXT (`LG_*` keys from CRadar::GetBlipName), never fixed translations.
   IPL service and generic property icons are hidden until the CHTS WORLD unlock-all-interiors switch.
@@ -535,8 +535,14 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   area is separate from the `enex` destination area, with reciprocal named links and
   an origin record for returning from reused interior layouts. Unpaired area-changing
   or distant warps get a session-only reverse marker at the destination. The entry/exit marker
-  uses the original oriented rectangle and height; CJ plays the partial-door clip
-  (and nearby standalone door models rotate when available), then the scene fades
+  uses the original oriented rectangle and height; on arrival, the destination marker
+  remains hidden until CJ moves 3.5 m away. CJ turns toward a nearby hinged door,
+  walks and plays `Walk_DoorPartial`; separate doors rotate around the verified hinge
+  on the world-up axis, away from CJ, synchronized with his partial-door clip.
+  The `DOOR_LHinge_O` clip animates a door bone, not CJ's skeleton. A door without
+  a separate hinged object uses CJ's clip and no object rotation. When walls pull
+  the chase camera closer than 1.35 m, CJ is hidden to leave a clear view.
+  The scene then fades
   to black while the area, sectors, display lists, textures and COL records are switched
   and preloaded before fading back in. If destination streaming/collision/ground cannot
   become ready, the transition returns CJ to the source under black instead of
