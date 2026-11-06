@@ -128,8 +128,32 @@ def _radius(imgp, off, size):
         m = dff.parse(img.read_entry(imgp, off, size))
     except Exception:  # noqa: BLE001 - a broken dff just gets a generous radius
         return 64
-    r = max((math.sqrt(s[0] ** 2 + s[1] ** 2 + s[2] ** 2) + s[3] for s in (g.sphere for g in m.geometries) if s),
-            default=8.0)
+    matrices = [None] * len(m.frames)
+
+    def matrix(i):
+        if matrices[i] is not None:
+            return matrices[i]
+        f = m.frames[i]
+        rot, pos = list(f.rot), list(f.pos)
+        if 0 <= f.parent < len(m.frames) and f.parent != i:
+            parent = matrix(f.parent)
+            rot = [sum(f.rot[row * 3 + k] * parent[k * 3 + col] for k in range(3))
+                   for row in range(3) for col in range(3)]
+            pos = [sum(f.pos[k] * parent[k * 3 + col] for k in range(3)) + parent[9 + col]
+                   for col in range(3)]
+        matrices[i] = rot + pos
+        return matrices[i]
+
+    radii = []
+    for frame, geom in m.atomics:
+        if frame >= len(m.frames) or geom >= len(m.geometries):
+            continue
+        s = m.geometries[geom].sphere
+        mat = matrix(frame)
+        center = [sum(s[k] * mat[k * 3 + col] for k in range(3)) + mat[9 + col] for col in range(3)]
+        scale = max(math.sqrt(sum(mat[row * 3 + col] ** 2 for col in range(3))) for row in range(3))
+        radii.append(math.sqrt(sum(c * c for c in center)) + s[3] * scale)
+    r = max(radii, default=8.0)
     return max(1, min(0xFFFF, math.ceil(r)))
 
 

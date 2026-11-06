@@ -229,8 +229,9 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   are evicted per frame toward a 96 KB reserve; new loads pause below 64 KB.
 - **Scan** (in `draw`, ~1.7 ms for ~700 instances): sector sphere vs range/frustum, then per
   instance: tobj hour, distance (`d - radius < view && d < drawDist + radius`), linked HD/LOD
-  switch at 100 m (HD close, LOD far, suppressing redundant loads), sphere vs frustum
-  (fixed point, 1/16 m), slot state. Not-loaded
+  switch at 100 m (LOD remains visible until HD is ready), sphere vs frustum
+  (fixed point, 1/16 m), slot state. When the visible array is full, its least important
+  entry is replaced instead of discarding subsequently scanned nearby instances. Not-loaded
   models go to an 8-entry nearest-first want list (out of view = lower priority). Drawn or
   within 40 m = protected from LRU.
 - **Model streaming** (`world::update`, ~3 ms budget, 2 starts/frame): `startLoad` reads the DMDL
@@ -240,7 +241,9 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   banks to LCD during the copy, the 3D engine starts the next frame at ~214; the rest waits a
   vblank), evicting unreferenced textures LRU over `WORLD_TEX_VRAM`, and records
   TEXIMAGE_PARAM (+repeat) / PLTT_BASE. Once all textures are in, `compile()` builds one GX list.
-- **compile()**: model-wide s16 positions (scale 2^e folded into the instance matrix), per
+- **compile()**: walks atomics rather than unique geometries (shared meshes may be instanced
+  more than once), bakes each atomic's parented DFF frame transform into the display-list
+  vertices; model-wide s16 positions (scale 2^e folded into the instance matrix), per
   material POLY_ATTR (alpha, cull back, fog, light0) + texture registers, triangle list with
   TEXCOORD (shifted per triangle by whole repeats so 12.4 texcoords stay in range) and the
   lighting trick: vertex colour (prelit * material colour) as AMBIENT + constant NORMAL with
@@ -248,7 +251,9 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   per-vertex CPU pass for the time of day). Emitted only when the colour changes. ~2.5 KB/model.
 - **Draw**: visible instances sorted by projected size (`radius << 10 / (near surface + 4 m)`,
   doubled for instances drawn last frame), a model is skipped when the hardware polygon count +
-  tris/2 passes `dbg::opts.worldPolys` (+ `NEW_MARGIN` 96 for instances not drawn last frame).
+  tris/2 passes `dbg::opts.worldPolys` (+ `NEW_MARGIN` 96 for instances not drawn last frame);
+  a separate worst-case full-triangle check reserves 64 of the hardware's 2048 polygon
+  slots so a model cannot overflow the GX polygon RAM when backface culling removes few faces.
   The budget drops what looks smallest and the drawn set has hysteresis: with near->far buckets
   ~37 dropped models/frame flipped in and out (~300 pops per 2400 frames, now ~20, at the camera
   turns). Drawn set = 2 x 1024-entry pointer hash, swapped per draw. GE-bound: each `callList`
@@ -588,10 +593,13 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   paths also cover the exterior through a separate streamed DPED v5 graph (section 6e).
   ~45,050 instances (6,150 LODs), ~11,264 models, ~14,280 sectors and ~30 MB DWLD v5; quaternion
   negated + CMatrix::SetRotate like LoadObjectInstance; model radius from the dff spheres; the
-  models' COL records (section 6c) appended after the instances.
+  models' COL records (section 6c) appended after the instances. Render radii include
+  each atomic's transformed geometry sphere, including its parent frame chain.
   Not cached per entry (~50 s for the full world; a dff parse per referenced model).
 - Map models (rule `match_ide = "data/maps/**/*.ide"`): ratio 0.25 clustering with `min_area 0.85`
-  (target grows until 85% of the surface survives), mostly-horizontal geometry (`is_flat`,
+  (target grows until 85% of the surface survives) and `max_shift 0.5` m (grow the target
+  rather than moving building corners too far, but stop at the existing `max_tris`/area
+  output so the polygon budget is not raised without bound); mostly-horizontal geometry (`is_flat`,
   ground/roads/bridge decks) uses `decimate_wedge` instead (`ground_qem`): quadric half-edge
   collapses on the welded mesh, borders locked, seams only collapse wedge-to-wedge, folds rejected
   -> no holes/cracks (clustering kept the area with folded tris and showed the sky through).

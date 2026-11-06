@@ -364,6 +364,33 @@ static inline s32 posAt(const mdl::Geometry& g, int v, int k) {
 	return g.h->offset[k] + (pe >= 0 ? (s32)g.pos[v][k] * (1 << pe) : (s32)g.pos[v][k] >> -pe);
 }
 
+static void frameMatrix(const mdl::Model& m, int frame, s32 out[12]) {
+	for (int k = 0; k < 12; k++) out[k] = k < 9 && k % 4 == 0 ? 4096 : 0;
+	for (int depth = 0; frame >= 0 && frame < m.numFrames && depth < m.numFrames; depth++) {
+		const mdl::Frame& f = m.frames[frame];
+		s32 next[12];
+		for (int r = 0; r < 3; r++)
+			for (int c = 0; c < 3; c++) {
+				int64_t sum = 0;
+				for (int k = 0; k < 3; k++) sum += (int64_t)out[r * 3 + k] * f.rot[k * 3 + c];
+				next[r * 3 + c] = (s32)(sum >> 12);
+			}
+		for (int c = 0; c < 3; c++) {
+			int64_t sum = 0;
+			for (int k = 0; k < 3; k++) sum += (int64_t)out[9 + k] * f.rot[k * 3 + c];
+			next[9 + c] = (s32)(sum >> 12) + f.pos[c];
+		}
+		memcpy(out, next, sizeof next);
+		frame = f.parent;
+	}
+}
+
+static inline s32 atomicPos(const mdl::Geometry& g, int v, int k, const s32 mat[12]) {
+	int64_t sum = 0;
+	for (int j = 0; j < 3; j++) sum += (int64_t)posAt(g, v, j) * mat[j * 3 + k];
+	return (s32)(sum >> 12) + mat[9 + k];
+}
+
 // DMDL -> one packed GX list for the whole model. World lighting without a
 // per-vertex CPU pass: each vertex colour (prelit * material colour) is sent
 // as the AMBIENT material colour followed by a constant NORMAL; with diffuse,
@@ -375,14 +402,18 @@ static bool compile(Slot& s) {
 	const mdl::Model* m = s.view;
 	s32 maxAbs = 1;
 	uint32_t numIdx = 0, numMats = 0;
-	for (int g = 0; g < m->numGeoms; g++) {
-		const mdl::Geometry& geo = m->geoms[g];
+	for (int a = 0; a < m->numAtomics; a++) {
+		const ds::ModelAtomic& atom = m->atomics[a];
+		if (atom.geometry >= m->numGeoms) continue;
+		const mdl::Geometry& geo = m->geoms[atom.geometry];
+		s32 mat[12];
+		frameMatrix(*m, atom.frame, mat);
 		numIdx += geo.h->numIndices;
 		numMats += geo.h->numMaterials;
 		for (int v = 0; v < geo.h->numVerts; v++)
 			for (int k = 0; k < 3; k++) {
-				const s32 a = iabs(posAt(geo, v, k));
-				if (a > maxAbs) maxAbs = a;
+				const s32 extent = iabs(atomicPos(geo, v, k, mat));
+				if (extent > maxAbs) maxAbs = extent;
 			}
 	}
 	int e = 0;
@@ -399,8 +430,12 @@ static bool compile(Slot& s) {
 	gx::ListBuilder dl(buf, cap);
 	dl.cmd(gx::CMD_SPE_EMI, 0);
 	uint32_t tris = 0;
-	for (int g = 0; g < m->numGeoms; g++) {
-		const mdl::Geometry& geo = m->geoms[g];
+	for (int a = 0; a < m->numAtomics; a++) {
+		const ds::ModelAtomic& atom = m->atomics[a];
+		if (atom.geometry >= m->numGeoms) continue;
+		const mdl::Geometry& geo = m->geoms[atom.geometry];
+		s32 frame[12];
+		frameMatrix(*m, atom.frame, frame);
 		const int nv = geo.h->numVerts, ue = geo.h->uvExp;
 		for (int mi = 0; mi < geo.h->numMaterials; mi++) {
 			const ds::GeometryMaterial& mat = geo.mats[mi];
@@ -458,7 +493,8 @@ static bool compile(Slot& s) {
 						dl.cmd(gx::CMD_NORMAL, NORMAL_UP);
 						lastCol = c;
 					}
-					const s32 x = posAt(geo, v, 0) >> e, y = posAt(geo, v, 1) >> e, z = posAt(geo, v, 2) >> e;
+					const s32 x = atomicPos(geo, v, 0, frame) >> e, y = atomicPos(geo, v, 1, frame) >> e,
+					          z = atomicPos(geo, v, 2, frame) >> e;
 					dl.cmd(gx::CMD_VTX_16, (u32)(u16)(s16)x | ((u32)(u16)(s16)y << 16), (u32)(u16)(s16)z);
 				}
 				tris++;
@@ -693,7 +729,10 @@ static void scan(const Cam& c) {
 			// visible during streaming, and respect the IDE draw distance
 			const int32_t d2 = dx * dx + dy * dy + dz * dz;
 			const int32_t sw = (in.lodSwitch & 0x7FFF) * 16;
-			if ((in.lodSwitch & 0x8000) && d2 < (sw ? sw * sw : (100 * 16) * (100 * 16))) continue;
+			if ((in.lodSwitch & 0x8000) && d2 < (sw ? sw * sw : (100 * 16) * (100 * 16))) {
+				const uint16_t hd = in.linkedModel < s_hdr.numModels ? s_slotOf[in.linkedModel] : NONE;
+				if (hd != NONE && s_slots[hd].state == SLOT_READY) continue;
+			}
 			if (sw && in.linkedModel != NONE && in.linkedModel < s_hdr.numModels) {
 				const uint16_t linked = s_slotOf[in.linkedModel];
 				if (!(in.lodSwitch & 0x8000) && d2 >= sw * sw &&
@@ -719,13 +758,20 @@ static void scan(const Cam& c) {
 			}
 			Slot& s = s_slots[si];
 			s.lastUse = s_frame;
-			if (s.state != SLOT_READY || !c.frustum || s_numVis >= WORLD_VISIBLE_MAX) continue;
+			if (s.state != SLOT_READY || !c.frustum) continue;
 			// CRenderer::SetupEntityVisibility-ish: how big it looks (near
 			// surface, floor 4 m so everything close ranks first)
 			const uint8_t was = wasDrawn(&in);
 			int32_t key = (rad << 10) / (near + 64);
 			if (was) key <<= 1;
-			s_vis[s_numVis++] = { &in, si, was, 0, key };
+			if (s_numVis < WORLD_VISIBLE_MAX) {
+				s_vis[s_numVis++] = { &in, si, was, 0, key };
+			} else {
+				int smallest = 0;
+				for (int j = 1; j < s_numVis; j++)
+					if (s_vis[j].key < s_vis[smallest].key) smallest = j;
+				if (key > s_vis[smallest].key) s_vis[smallest] = { &in, si, was, 0, key };
+			}
 		}
 	}
 	s_stats.candidates = candidates;
@@ -917,7 +963,8 @@ void draw(const DrawView& v) {
 		// backface culling removes roughly half of a closed model; a model that
 		// was not on screen last frame only comes in with room to spare, so the
 		// set at the edge of the budget does not flip every frame
-		if (polys + s.tris / 2 + (vi.wasDrawn ? 0 : NEW_MARGIN) > budget) {
+		if (polys + s.tris / 2 + (vi.wasDrawn ? 0 : NEW_MARGIN) > budget ||
+		    polys + s.tris > 2048 - 64) {
 			dropped++;
 			continue;
 		}

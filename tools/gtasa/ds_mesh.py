@@ -9,7 +9,7 @@ from .dsfmt import fx, fx16, name, pad4, rgb15
 VF_UV, VF_NORMAL, VF_COLOR, VF_BONE = 1, 2, 4, 8
 MF_SKINNED = 1
 
-DEFAULTS = dict(ratio=1.0, min_tris=64, max_tris=0, decimate='cluster', min_area=0.0, ground_qem=False,
+DEFAULTS = dict(ratio=1.0, min_tris=64, max_tris=0, decimate='cluster', min_area=0.0, max_shift=0.0, ground_qem=False,
                 uvs=True, normals=False, vertex_colors=True, skin=True, drop_damage=False, drop_vlo=True,
                 drop_frames=[])
 
@@ -96,16 +96,25 @@ def is_flat(verts, tris):
     return total > 0 and up >= 0.6 * total
 
 
-def decimate(verts, tris, target, min_area=0.0):
+def decimate(verts, tris, target, min_area=0.0, max_shift=0.0, max_output=0):
     """Vertex clustering on a uniform grid; binary-searches the grid resolution so the
     surviving triangle count is the largest <= target. With min_area, the target grows
     (x1.25) until that fraction of the surface area survives (small details vanish
     first otherwise). Returns (vertex->rep position, tris)."""
-    if min_area > 0 and target < len(tris) and tris:
-        full = _area(tris, verts)
+    if (min_area > 0 or max_shift > 0) and target < len(tris) and tris:
+        full = _area(tris, verts) if min_area > 0 else 0
+        fallback = None
         while True:
             rep, out = decimate(verts, tris, target)
-            if rep is None or _area(out, rep) >= min_area * full:
+            area_ok = min_area <= 0 or rep is None or _area(out, rep) >= min_area * full
+            if area_ok and max_output and len(out) > max_output and fallback:
+                return fallback
+            if area_ok:
+                fallback = rep, out
+            shift_ok = max_shift <= 0 or rep is None or all(
+                sum((verts[i][k] - rep[i][k]) ** 2 for k in range(3)) <= max_shift * max_shift
+                for i in {v for t in out for v in t[:3]})
+            if area_ok and (shift_ok or max_output and len(out) > max_output):
                 return rep, out
             target = int(target * 1.25) + 1
     if target >= len(tris) or not tris:
@@ -420,7 +429,7 @@ def convert_geometry(g, p):
         # does not matter much -> crack/hole-free collapses there
         rep, tris = decimate_wedge(g.verts, tris, target)
     else:
-        rep, tris = decimate(g.verts, tris, target, p['min_area'])
+        rep, tris = decimate(g.verts, tris, target, p['min_area'], p['max_shift'], p['max_tris'])
     pos = rep or g.verts
 
     def attrs(i):
