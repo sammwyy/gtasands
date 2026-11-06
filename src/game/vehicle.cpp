@@ -12,6 +12,7 @@
 #include "game/collision.h"
 #include "game/debugopts.h"
 #include "game/peds.h"
+#include "game/peddata.h"
 #include "game/player.h"
 #include "game/skidmarks.h"
 #include "game/timecycle.h"
@@ -156,6 +157,7 @@ int spawn(int vehIndex, float x, float y, float z, float hdg, int colour) {
 	c.gear = 1;
 	c.inertia2 = fx::ONE;
 	c.track = -1;
+	c.roadFrom = c.roadTo = c.roadNext = -1;
 	v.audio = aeveh::create(v.modelId);
 	hud::log("spawn %.12s #%d cls %d", c.h.model, id, v.cls);
 	return id;
@@ -164,6 +166,7 @@ int spawn(int vehIndex, float x, float y, float z, float hdg, int colour) {
 void remove(int id) {
 	if (!get(id)) return;
 	Car& c = g_cars[id];
+	if (c.v.npcDriver) s_stats.removed++;
 	if (player::vehicleId() == id) player::leaveVehicleNow();
 	aeveh::destroy(c.v.audio);
 	vehmdl::release(c.v.model);
@@ -185,6 +188,8 @@ void setDriver(int id, bool isPlayer) {
 	Vehicle* v = get(id);
 	if (!v || v->status == STATUS_WRECKED) return;
 	v->status = isPlayer ? STATUS_PLAYER : STATUS_PHYSICS;
+	v->npcDriver = false;
+	if (isPlayer) v->playerOwned = true;
 	if (isPlayer && !v->engineOn) {
 		v->engineOn = v->type != ds::VEH_BMX;   // CAEVehicleAudioEntity::JustGotInVehicleAsDriver -> AE_START_ENGINE
 		if (v->engineOn) aeveh::event(v->audio, aeveh::EV_START_ENGINE, v->pos[0], v->pos[1], v->pos[2]);
@@ -347,6 +352,7 @@ void blowUp(int id) {
 	Vehicle& v = *vp;
 	const bool driven = player::vehicleId() == id;
 	v.status = STATUS_WRECKED;
+	v.npcDriver = false;
 	v.health = 0.0f;
 	v.engineOn = false;
 	v.asleep = false;
@@ -494,6 +500,136 @@ static bool inRange(const Vehicle& v) {
 	return dx * dx + dy * dy < ACTIVE_RANGE * ACTIVE_RANGE;
 }
 
+static float roadX(const ds::PathNode* n) { return n->x * 0.125f; }
+static float roadY(const ds::PathNode* n) { return n->y * 0.125f; }
+static bool roadOpen(const ds::PathNode* n) { return n && !(n->flags & (ds::ROAD_SWITCHED_OFF | ds::ROAD_BLOCK | ds::ROAD_WATER)); }
+
+static int trafficModel(const ds::PedZone* zone) {
+	if (!zone) return -1;
+	ds::PopRow row;
+	const int wd = player::g_weekday, hour = (int)player::g_clockH;
+	const int weekend = wd == 7 || wd == 0 ? 1 : wd == 1 ? hour < 20 : wd == 6 ? hour >= 20 : 0;
+	if (!peddata::popRow(zone->popType, weekend, hour / 2, row) || !row.maxCars) return -1;
+	int gangSum = 0;
+	for (int g = 0; g < 10; g++) gangSum += zone->gang[g];
+	const int gangWeight = (int)fminf(50.0f, (float)gangSum * 0.5f) * row.percGang / 100;
+	const int dealerWeight = zone->dealer * row.percDealers / 100;
+	for (int attempt = 0; attempt < 12; attempt++) {
+		int group = -1;
+		const int category = rand() % 100;
+		if (category < gangWeight && gangSum) {
+			int pick = rand() % gangSum;
+			for (int g = 0; g < 10; g++) {
+				if (pick < zone->gang[g]) { group = 18 + g; break; }
+				pick -= zone->gang[g];
+			}
+		} else if (category < gangWeight + dealerWeight) group = 28;
+		if (group < 0) {
+			int total = 0;
+			for (int g = 0; g < peddata::NUM_PERC_GROUPS; g++) total += row.group[g];
+			if (!total) return -1;
+			int pick = rand() % total;
+			for (int g = 0; g < peddata::NUM_PERC_GROUPS; g++) {
+				if (pick < row.group[g]) { group = g; break; }
+				pick -= row.group[g];
+			}
+		}
+		const int n = peddata::carGroupSize(group);
+		if (!n) continue;
+		const int index = peddata::carGroupMember(group, rand() % n);
+		if (vehdata::type(index) == ds::VEH_CAR || vehdata::type(index) == ds::VEH_MTRUCK) return index;
+	}
+	return -1;
+}
+
+static int chooseRoad(int from, int at) {
+	const ds::PathNode* n = peddata::roadNode(at);
+	if (!roadOpen(n)) return -1;
+	int pick = -1, choices = 0;
+	for (int k = 0; k < n->numLinks; k++) {
+		const int b = peddata::roadLink(n, k);
+		const ds::PathNode* to = peddata::roadNode(b);
+		if (!roadOpen(to) || b == from) continue;
+		const float dx = roadX(to) - roadX(n), dy = roadY(to) - roadY(n);
+		if (dx * dx + dy * dy < 1.0f || fabsf(to->z - n->z) > sqrtf(dx * dx + dy * dy) * 4.0f) continue;
+		if (!(rand() % ++choices)) pick = b;
+	}
+	return pick >= 0 ? pick : roadOpen(peddata::roadNode(from)) ? from : -1;
+}
+
+static void nextRoad(Car& c) {
+	const int pick = c.roadNext >= 0 ? c.roadNext : chooseRoad(c.roadFrom, c.roadTo);
+	c.roadFrom = c.roadTo;
+	c.roadTo = (int16_t)pick;
+	c.roadNext = -1;
+	if (pick < 0) c.v.npcDriver = false;
+}
+
+static void driveTraffic(Car& c, bool physics) {
+	Vehicle& v = c.v;
+	const ds::PathNode* a = peddata::roadNode(c.roadFrom);
+	const ds::PathNode* b = peddata::roadNode(c.roadTo);
+	if (!roadOpen(a) || !roadOpen(b)) { v.npcDriver = false; return; }
+	float sx = roadX(b) - roadX(a), sy = roadY(b) - roadY(a);
+	const float length = sqrtf(sx * sx + sy * sy);
+	if (length < 1.0f) { nextRoad(c); return; }
+	const float laneX = sy * 1.35f / length, laneY = -sx * 1.35f / length;
+	float tx = roadX(b) + laneX - v.pos[0], ty = roadY(b) + laneY - v.pos[1];
+	if (tx * tx + ty * ty < 9.0f) { nextRoad(c); return; }
+	if (c.roadNext < 0) c.roadNext = (int16_t)chooseRoad(c.roadFrom, c.roadTo);
+	float corner = 0.0f;
+	const ds::PathNode* next = peddata::roadNode(c.roadNext);
+	if (next) {
+		const float nx = roadX(next) - roadX(b), ny = roadY(next) - roadY(b);
+		const float nl = sqrtf(nx * nx + ny * ny);
+		if (nl > 1.0f) {
+			corner = clampf(1.0f - (sx * nx + sy * ny) / (length * nl), 0.0f, 2.0f);
+			const float dist = sqrtf(tx * tx + ty * ty);
+			const float blend = clampf((12.0f - dist) / 9.0f, 0.0f, 1.0f);
+			tx += ((nx * 4.0f + ny * 1.35f) / nl - laneX) * blend;
+			ty += ((ny * 4.0f - nx * 1.35f) / nl - laneY) * blend;
+		}
+	}
+	const float cross = v.fwd[0] * ty - v.fwd[1] * tx;
+	const float along = v.fwd[0] * tx + v.fwd[1] * ty;
+	const float angle = atan2f(-cross, along);
+	v.handbrake = false;
+	v.engineOn = true;
+	v.asleep = false;
+	c.pad = { clampf(angle * 1.2f, -0.7f, 0.7f), 0.35f, 0.0f, 0.0f, 0.0f, false, false };
+	float gap = 100.0f;
+	for (const Car& other : g_cars) {
+		if (&other == &c || other.v.status == STATUS_FREE || !other.placed) continue;
+		const float dx = other.v.pos[0] - v.pos[0], dy = other.v.pos[1] - v.pos[1];
+		const float ahead = dx * v.fwd[0] + dy * v.fwd[1];
+		const float side = fabsf(dx * v.right[0] + dy * v.right[1]);
+		if (ahead > 0.0f && ahead < gap && side < 3.2f) gap = ahead;
+	}
+	const float dist = sqrtf(tx * tx + ty * ty);
+	const float turnSpeed = dist < 14.0f ? 0.09f - 0.055f * fminf(corner, 1.0f) : 0.09f;
+	const float gapSpeed = gap < 5.0f ? 0.0f : gap < 9.0f ? 0.025f : 0.09f;
+	const float targetSpeed = fminf(turnSpeed, gapSpeed);
+	if (gap < 7.0f || (physics && v.speedFwd > targetSpeed + 0.01f)) {
+		c.pad.accel = 0.0f;
+		c.pad.brake = gap < 4.0f ? 0.8f : 0.2f;
+	}
+	if (physics) return;
+	const float speed = clampf(v.speedFwd + clampf(targetSpeed - v.speedFwd, -0.005f, 0.003f), 0.0f, 0.09f);
+	const float turn = clampf(angle, -0.025f, 0.025f);
+	const float h = heading(v) - turn;
+	const float sn = sinf(h), cs = cosf(h);
+	v.fwd[0] = -sn; v.fwd[1] = cs;
+	v.right[0] = cs; v.right[1] = sn;
+	v.pos[0] += v.fwd[0] * speed;
+	v.pos[1] += v.fwd[1] * speed;
+	v.moveSpeed[0] = v.fwd[0] * speed;
+	v.moveSpeed[1] = v.fwd[1] * speed;
+	v.moveSpeed[2] = 0.0f;
+	v.speedFwd = speed;
+	v.skid = 0.0f;
+	pull(c);
+}
+
 void step() {
 	const u32 t0 = timing::ticks();
 	uint16_t awake = 0;
@@ -502,6 +638,11 @@ void step() {
 		Vehicle& v = c.v;
 		if (v.status == STATUS_FREE || !c.placed) continue;
 		const bool remote = player::vehicleId() == i;   // driven / remote-controlled: always simulated
+		if (v.npcDriver && !remote) {
+			const bool physics = inRange(v) && col::available();
+			driveTraffic(c, physics);
+			if (!v.npcDriver || !physics) continue;
+		}
 		if (!remote && v.cls != CLS_TRAIN && (!inRange(v) || !col::available())) continue;
 		if (v.asleep && !remote) continue;
 		physStep(c);
@@ -550,6 +691,55 @@ void step() {
 	g_colTicks = 0;
 }
 
+static uint32_t s_trafficFrame;
+
+static void spawnTraffic() {
+	if (!peddata::numRoadNodes() || count() >= MAX - 2) return;
+	int traffic = 0;
+	for (const Car& c : g_cars) traffic += c.v.npcDriver;
+	if (traffic >= 2) return;
+	const int start = rand() % peddata::numRoadNodes();
+	for (int tryNode = 0; tryNode < peddata::numRoadNodes(); tryNode++) {
+		const int from = (start + tryNode) % peddata::numRoadNodes();
+		const ds::PathNode* a = peddata::roadNode(from);
+		if (!roadOpen(a) || !a->numLinks || !(a->flags >> 4)) continue;
+		const int to = peddata::roadLink(a, rand() % a->numLinks);
+		const ds::PathNode* b = peddata::roadNode(to);
+		if (!roadOpen(b) || !(b->flags >> 4)) continue;
+		const float sx = roadX(b) - roadX(a), sy = roadY(b) - roadY(a);
+		const float length = sqrtf(sx * sx + sy * sy);
+		if (length < 8.0f || fabsf(b->z - a->z) > length * 4.0f) continue;
+		const float t = frand(0.2f, 0.8f);
+		const float x = roadX(a) + sx * t + sy * 1.35f / length;
+		const float y = roadY(a) + sy * t - sx * 1.35f / length;
+		const float z = (a->z + (b->z - a->z) * t) * 0.125f;
+		const float dx = x - player::g.x, dy = y - player::g.y;
+		const float d2 = dx * dx + dy * dy;
+		if (d2 < 22.0f * 22.0f || d2 > 38.0f * 38.0f || fabsf(z - player::g.z) > 12.0f ||
+		    peds::visible(x, y, z + 1.0f, 2.5f)) continue;
+		bool clear = true;
+		for (const Car& c : g_cars) {
+			if (c.v.status == STATUS_FREE) continue;
+			const float cx = x - c.v.pos[0], cy = y - c.v.pos[1];
+			if (cx * cx + cy * cy < 9.0f * 9.0f) { clear = false; break; }
+		}
+		if (!clear) continue;
+		const int index = trafficModel(peddata::zoneAt(x, y));
+		if (index < 0) continue;
+		const int id = spawn(index, x, y, z, atan2f(-sx, sy));
+		if (id < 0) return;
+		Car& c = g_cars[id];
+		c.roadFrom = (int16_t)from;
+		c.roadTo = (int16_t)to;
+		c.roadNext = -1;
+		c.v.npcDriver = true;
+		c.trafficBorn = s_trafficFrame;
+		c.trafficSeen = false;
+		s_stats.spawned++;
+		return;
+	}
+}
+
 static void setupFromModel(Car& c) {
 	Vehicle& v = c.v;
 	const Model* m = vehmdl::get(v.model);
@@ -566,17 +756,30 @@ static void setupFromModel(Car& c) {
 
 void update() {
 	vehmdl::update();
+	if (++s_trafficFrame % 90 == 0) spawnTraffic();
 	skid::update();
 	static uint32_t s_lastVbl;
 	const uint32_t vb = timing::vblanks();
 	const float frameMs = (float)((vb - s_lastVbl) > 6 ? 6 : vb - s_lastVbl) * (1000.0f / 60.0f) * (float)dbg::opts.simSpeedQ / 4.0f;
 	s_lastVbl = vb;
-	uint16_t active = 0;
+	uint16_t active = 0, traffic = 0;
 	for (int i = 0; i < MAX; i++) {
 		Car& c = g_cars[i];
 		Vehicle& v = c.v;
 		if (v.status == STATUS_FREE) continue;
+		const bool seen = peds::visible(v.pos[0], v.pos[1], v.pos[2] + 1.0f, 3.5f);
+		if (v.npcDriver && seen) { c.trafficSeen = true; c.trafficOffscreen = 0; }
+		else if (v.npcDriver && c.trafficOffscreen < 600) c.trafficOffscreen++;
+		if (v.status != STATUS_PLAYER && !v.playerOwned &&
+		    !seen) {
+			const float dx = v.pos[0] - player::g.x, dy = v.pos[1] - player::g.y;
+			if ((v.npcDriver && ((c.trafficSeen && c.trafficOffscreen > 90 &&
+			                      dx * dx + dy * dy > 32.0f * 32.0f) ||
+			                     (!c.trafficSeen && s_trafficFrame - c.trafficBorn > 180))) ||
+			    dx * dx + dy * dy > 45.0f * 45.0f) { remove(i); continue; }
+		}
 		active++;
+		traffic += v.npcDriver;
 		if (!c.placed) {
 			const Model* m = vehmdl::get(v.model);
 			if (!m || m->state == STATE_FAILED) { hud::log("\x1b[33mveh #%d: model failed\x1b[39m", i); remove(i); continue; }
@@ -615,6 +818,7 @@ void update() {
 	for (Fx& f : s_fx)
 		if (f.used && (f.t += frameMs / 1000.0f) > 3.0f) f.used = false;
 	s_stats.active = active;
+	s_stats.traffic = traffic;
 	s_stats.skids = (uint16_t)skid::active();
 }
 
@@ -977,6 +1181,7 @@ void draw(const View& w) {
 
 void init() {
 	removeAll();
+	s_stats = {};
 	skid::clear();
 	for (Debris& d : s_debris) d.used = false;
 	for (Fx& f : s_fx) f.used = false;

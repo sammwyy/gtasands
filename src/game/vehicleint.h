@@ -84,6 +84,10 @@ struct Car {
 	// train (kinematic on a tracks.dat loop)
 	int8_t track;
 	float trackDist, trackSpeed;
+	int16_t roadFrom, roadTo, roadNext;
+	uint32_t trafficBorn;
+	uint16_t trafficOffscreen;
+	bool trafficSeen;
 	// state
 	bool placed;
 	uint32_t hasDam;            // components with a *_dam variant

@@ -316,7 +316,7 @@ struct VehSurface { uint8_t adhesionGroup; int8_t wetGrip; uint8_t skidmark, pad
 // the ped path nodes (nodes*.dat) inside the bounds bucketed in a cell grid.
 struct PedHeader {
 	uint32_t magic;          // 'DPED'
-	uint16_t version;        // 1
+	uint16_t version;        // 4
 	uint16_t numModels, numStats, numAnimGroups, numGroups, numZones;
 	uint32_t numNodes, numLinks;
 	int16_t gridX0, gridY0;  // SA coords of cell (0,0)'s south-west corner
@@ -331,6 +331,9 @@ struct PedHeader {
 	uint32_t cellOffset;     // PathCell[gridW * gridH] (row-major from the SW corner)
 	uint32_t nodeOffset;     // PathNode[numNodes], grouped by cell
 	uint32_t linkOffset;     // uint16_t[numLinks] node indices
+	uint32_t numRoadNodes, numRoadLinks;
+	uint32_t roadNodeOffset, roadLinkOffset; // PathNode[numRoadNodes], uint16_t[numRoadLinks]
+	uint32_t carGroupOffset; // PedGroup[29], then uint16_t vehicle indices (cargrp.dat)
 };
 struct PedModel {
 	uint16_t modelId;
@@ -367,16 +370,19 @@ struct PedZone {         // CZoneInfo of an info.zon zone
 	uint8_t pad2[2];
 };
 struct PathCell { uint16_t first, count; };
-enum PathNodeFlags : uint8_t { PATHNODE_DONT_WANDER = 1, PATHNODE_SWITCHED_OFF = 2, PATHNODE_DEAD_END = 4 };
+enum PathNodeFlags : uint8_t {
+	PATHNODE_DONT_WANDER = 1, PATHNODE_SWITCHED_OFF = 2, PATHNODE_DEAD_END = 4,
+	ROAD_SWITCHED_OFF = 1, ROAD_BLOCK = 2, ROAD_WATER = 4
+};
 struct PathNode {
 	int16_t x, y, z;         // 1/8 m (CompressedLargeVector)
 	uint16_t firstLink;
 	uint8_t numLinks;
 	uint8_t width;           // 1/16 m
-	uint8_t flags;           // PathNodeFlags | spawn probability << 4
+	uint8_t flags;           // ped: PathNodeFlags; vehicle: ROAD_*; both: spawn probability << 4
 	uint8_t pad;
 };
-static_assert(sizeof(PedHeader) == 76 && sizeof(PedModel) == 12 && sizeof(PedStat) == 12 && sizeof(PedAnimGroup) == 160 &&
+static_assert(sizeof(PedHeader) == 96 && sizeof(PedModel) == 12 && sizeof(PedStat) == 12 && sizeof(PedAnimGroup) == 160 &&
               sizeof(PopRow) == 24 && sizeof(PedZone) == 24 && sizeof(PathNode) == 12);
 
 // ---------------------------------------------------------------- audio

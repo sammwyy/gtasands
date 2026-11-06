@@ -71,6 +71,7 @@ struct Vehicle {
 	uint8_t burst;              // bit per wheel (eCarWheel): tyre burst
 	bool inWater;               // hull / body in water (boats float, the rest drown)
 	int audio;                  // aevehicle entity handle
+	bool npcDriver, playerOwned;
 };
 
 void init();
@@ -140,7 +141,7 @@ void flip(int id);
 void setHealth(int id, float h);
 void burstTyre(int id, int wheel);   // -1 = all
 
-struct Stats { uint16_t active, awake, drawn, polys; uint32_t stepUs, drawUs, queryUs; uint16_t skids, lights; };
+struct Stats { uint16_t active, awake, drawn, polys; uint32_t stepUs, drawUs, queryUs; uint16_t skids, lights, traffic, spawned, removed; };
 const Stats& stats();
 
 }

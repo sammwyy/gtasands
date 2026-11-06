@@ -146,7 +146,8 @@ while tuning. Current total ~413 MB of the 448 MB budget.
    - [ ] Lights: per-light damage, reverse lights, indicator / siren lights, VRAM headlight texture instead of the glow.
    - [ ] Enter/exit: passenger side + passengers, CAR anims for helis / planes with doors, jacking, bike get-off
      while moving, exit point checks against walls.
-   - [ ] AI traffic on paths (nodes*.dat), vehicle LODs (`*_vlo` kept), number plates, carmods / paintjobs.
+   - [ ] Traffic lights, carjacking / passengers, full CCarCtrl path strategies and
+     vehicle LODs (`*_vlo` kept), number plates, carmods / paintjobs. Basic path traffic is in ARCHITECTURE 6d.
 4. Peds (ARCHITECTURE 6e) TODO: ped speech (SPC_* paks are removed), peds driving / traffic, cops arresting
    (busted) and cop cars, carjacking, weapon models in hands, ped vs ped / CJ collision response with ragdoll-ish
    falls, attractors (benches, ATMs), chat pairs, pose cost (0.9 ms per 32-bone pose: compose on the GE or skip

@@ -3,14 +3,22 @@
 #---------------------------------------------------------------------------------
 .SUFFIXES:
 
-ifeq ($(strip $(DEVKITARM)),)
-$(error "Please set DEVKITARM in your environment. export DEVKITARM=<path to>devkitARM")
+ifneq ($(strip $(DEVKITARM)),)
+DEVKITPRO ?= $(abspath $(DEVKITARM)/..)
+else
+ifeq ($(strip $(DEVKITPRO)),)
+$(error "Set DEVKITPRO or DEVKITARM in your environment")
 endif
+endif
+DEVKITARM ?= $(DEVKITPRO)/devkitARM
 
 GAME_TITLE     := GTA: San Andreas DS
 GAME_SUBTITLE1 := Port by Sammwy
 
 include $(DEVKITARM)/ds_rules
+
+export CC := $(DEVKITARM)/bin/arm-none-eabi-gcc
+export CXX := $(DEVKITARM)/bin/arm-none-eabi-g++
 
 # two-line banner (ds_rules always adds a third line, defaulting to devkitpro.org);
 # the icon is icon.bmp (32x32, 16 colours), picked up automatically below

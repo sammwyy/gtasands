@@ -16,13 +16,14 @@ from pathlib import Path
 from .dsfmt import name as fname
 from .world import resolve
 
-VERSION = 1
+VERSION = 4
 CELL = 50                 # path node grid cell (m)
 MARGIN = 60               # nodes kept around the bounds (m)
 ZONE_TYPES = 20           # eZonePopulationType::COUNT
 POP_TIMES = 12            # 2-hour slots
 POP_GROUPS = 18           # ePopcycleGroupPerc
 NUM_PEDGROUPS = 57        # ePopcyclePedGroup (pedgrp.dat lines)
+NUM_CARGROUPS = 29       # 18 civilian groups, 10 gangs, dealers (cargrp.dat)
 
 PED_TYPES = ['PLAYER1', 'PLAYER2', 'PLAYER_NETWORK', 'PLAYER_UNUSED', 'CIVMALE', 'CIVFEMALE', 'COP',
              'GANG1', 'GANG2', 'GANG3', 'GANG4', 'GANG5', 'GANG6', 'GANG7', 'GANG8', 'GANG9', 'GANG10',
@@ -226,10 +227,8 @@ def scm_zone_setup(scm):
     return zones, (lo, hi)
 
 
-def read_ped_nodes(paths_dir, bounds):
-    """CPathFind::LoadPathFindData for the 64 map areas: ped nodes (after the vehicle nodes) inside
-    bounds + MARGIN, with their links to other kept ped nodes. Returns nodes [(x8, y8, z8, width, flags)],
-    links per node [global keys]."""
+def read_path_nodes(paths_dir, bounds, vehicles=False):
+    """CPathFind::LoadPathFindData for nodes inside bounds + MARGIN."""
     x0, y0, x1, y1 = bounds[0] - MARGIN, bounds[1] - MARGIN, bounds[2] + MARGIN, bounds[3] + MARGIN
     nodes = {}      # (area, id) -> (x8, y8, z8, width, flags, [link keys])
     for area in range(64):
@@ -240,7 +239,7 @@ def read_ped_nodes(paths_dir, bounds):
         n, nveh, nped, nnavi, nlinks = struct.unpack_from('<5I', d, 0)
         node_off = 20
         link_off = node_off + n * 28 + nnavi * 14
-        for i in range(nveh, n):
+        for i in range(0, nveh) if vehicles else range(nveh, n):
             o = node_off + i * 28 + 8
             x, y, z, _, base, ar, nid, width, _, flags = struct.unpack_from('<3hhhHHBBI', d, o)
             if not (x0 * 8 <= x <= x1 * 8 and y0 * 8 <= y <= y1 * 8):
@@ -259,12 +258,14 @@ def build(game, sec, world_bounds=None):
     ide = resolve(game, 'data/peds.ide')
     st_path = resolve(game, 'data/pedstats.dat')
     grp_path = resolve(game, 'data/pedgrp.dat')
+    car_path = resolve(game, 'data/cargrp.dat')
+    veh_path = resolve(game, 'data/vehicles.ide')
     pop_path = resolve(game, 'data/popcycle.dat')
     anim_path = resolve(game, 'data/animgrp.dat')
     zon_path = resolve(game, 'data/info.zon')
     paths_dir = resolve(game, 'data/paths')
-    if not all((ide, st_path, grp_path, pop_path, anim_path, zon_path, paths_dir)):
-        raise FileNotFoundError('need data/peds.ide, pedstats.dat, pedgrp.dat, popcycle.dat, animgrp.dat, info.zon, '
+    if not all((ide, st_path, grp_path, car_path, veh_path, pop_path, anim_path, zon_path, paths_dir)):
+        raise FileNotFoundError('need data/peds.ide, pedstats.dat, pedgrp.dat, cargrp.dat, vehicles.ide, popcycle.dat, animgrp.dat, info.zon, '
                                 'paths/nodes*.dat (run: tools/assets.py sync)')
     bounds = sec.get('bounds') or world_bounds or [-3000, -3000, 3000, 3000]
 
@@ -279,6 +280,20 @@ def build(game, sec, world_bounds=None):
     anim_idx = {n: i for i, n in enumerate(used_anims)}
     by_name = {p['model']: i for i, p in enumerate(peds)}
     groups = parse_pedgrp(grp_path, by_name)
+    from .vehicles import parse_ide
+    vehicles = parse_ide(veh_path)
+    car_by_name = {v['model']: i for i, v in enumerate(vehicles) if v['type'] in (0, 1)}
+    car_groups = []
+    for line in car_path.read_text(errors='replace').splitlines():
+        names = line.split('#', 1)[0].strip()
+        if not names or names.startswith('//'):
+            continue
+        car_groups.append([car_by_name[n.lower()] for n in re.split(r'[,\s]+', names)
+                           if n.lower() in car_by_name])
+        if len(car_groups) == NUM_CARGROUPS:
+            break
+    if len(car_groups) != NUM_CARGROUPS:
+        raise ValueError(f'cargrp.dat: expected {NUM_CARGROUPS} groups, got {len(car_groups)}')
     pop = parse_popcycle(pop_path)
 
     # zones: info.zon rects that touch the bounds, with the script's population setup
@@ -295,7 +310,7 @@ def build(game, sec, world_bounds=None):
                       15 if s.get('races') is None else s['races'], s.get('dealer', 0), s.get('gang', [0] * 10), label))
 
     # path nodes: sorted by grid cell, links remapped to local indices
-    raw = read_ped_nodes(paths_dir, bounds)
+    raw = read_path_nodes(paths_dir, bounds)
     gx0, gy0 = int(bounds[0] - MARGIN) // CELL * CELL, int(bounds[1] - MARGIN) // CELL * CELL
     gw = (int(bounds[2] + MARGIN) - gx0) // CELL + 1
     gh = (int(bounds[3] + MARGIN) - gy0) // CELL + 1
@@ -325,6 +340,19 @@ def build(game, sec, world_bounds=None):
     if len(link_blob) % 4:
         link_blob += b'\0\0'
 
+    roads = read_path_nodes(paths_dir, bounds, vehicles=True)
+    road_keys = sorted(roads)
+    road_local = {k: i for i, k in enumerate(road_keys)}
+    road_nodes, road_links = bytearray(), bytearray()
+    for k in road_keys:
+        x, y, z, width, flags, links = roads[k]
+        connected = [road_local[t] for t in links if t in road_local and t != k]
+        road_flags = ((flags >> 5) & 1) | (((flags >> 6) & 1) << 1) | (((flags >> 7) & 1) << 2)
+        road_nodes += struct.pack('<3hHBBBB', x, y, z, len(road_links) // 2, len(connected),
+                                  width, road_flags | (((flags >> 16) & 15) << 4), 0)
+        for t in connected:
+            road_links += struct.pack('<H', t)
+
     # tables
     model_blob, name_blob = bytearray(), bytearray()
     for p in peds:
@@ -350,13 +378,21 @@ def build(game, sec, world_bounds=None):
     grp_blob += members
     if len(grp_blob) % 4:
         grp_blob += b'\0\0'
+    car_blob, car_members = bytearray(), bytearray()
+    first = 0
+    for group in car_groups:
+        car_blob += struct.pack('<HH', first, len(group))
+        car_members += b''.join(struct.pack('<H', i) for i in group)
+        first += len(group)
+    car_blob += car_members
     pop_blob = b''.join(struct.pack('<24B', *[max(0, min(255, x)) for x in r]) for r in pop)
     zone_blob = b''.join(struct.pack('<4hBBBB10B2x', x1, y1, x2, y2, pt, races, dealer, 0, *gang)
                          for x1, y1, x2, y2, pt, races, dealer, gang, _ in zones)
     cell_blob = b''.join(struct.pack('<HH', a, b) for a, b in cells)
 
-    hdr_size = 4 + 2 * 6 + 4 * 2 + 2 * 6 + 4 * 10
-    parts = [model_blob, name_blob, stat_blob, anim_blob, grp_blob, pop_blob, zone_blob, cell_blob, node_blob, link_blob]
+    hdr_size = 4 + 2 * 6 + 4 * 2 + 2 * 6 + 4 * 15
+    parts = [model_blob, name_blob, stat_blob, anim_blob, grp_blob, pop_blob, zone_blob, cell_blob,
+             node_blob, link_blob, road_nodes, road_links, car_blob]
     offs, at = [], hdr_size
     for b in parts:
         offs.append(at)
@@ -365,11 +401,14 @@ def build(game, sec, world_bounds=None):
                                 NUM_PEDGROUPS, len(zones)))
     out += struct.pack('<II', len(keys), nlinks)
     out += struct.pack('<hhHHHH', gx0, gy0, gw, gh, CELL, 0)
-    out += struct.pack('<10I', *offs)
+    out += struct.pack('<10I', *offs[:10])
+    out += struct.pack('<4I', len(road_keys), len(road_links) // 2, offs[10], offs[11])
+    out += struct.pack('<I', offs[12])
     assert len(out) == hdr_size, len(out)
     for b in parts:
         out += b
     st = dict(models=len(peds), stats=len(stats), anim_groups=len(used_anims), groups=sum(1 for g in groups if g),
               zones=len(zones), scripted=sum(1 for z in zones if z[8] in setup), nodes=len(keys), links=nlinks,
+              road_nodes=len(road_keys), road_links=len(road_links) // 2,
               grid=f'{gw}x{gh}', scm=f'{scm_range[0]}..{scm_range[1]}')
     return bytes(out), st

@@ -370,6 +370,25 @@ CDamageManager / CAEVehicleAudioEntity, reduced; every IDE type spawns, pool of 
   plane, train, trailer, rc), spawn / rnd, model id `-10 - + +10 go` (400..611), enter (any type), del all, repair,
   boom, flip, hp250, tyre (burst all), skid on/off, state / susp / damage+burst+lean+rotor / perf rows.
   `GTASADS_VEHTEST` (AGENTS.md; the log line has gas / brake / handbrake / skid and the frame sections).
+- **Street traffic**: `peds.dped` v4 also carries compact vehicle path nodes/links from `data/Paths/nodes*.dat`
+  within the world bounds + 60 m (`tools/gtasa/peds.py`, `peddata::roadNode/roadLink`). Water nodes
+  are excluded; switched-off and roadblock nodes from the PC file are retained in the graph but excluded
+  from random traffic spawn/routes (the SCM mission road switches are not implemented). `cargrp.dat` groups (18 civilian, 10 gang, dealers)
+  are resolved against `vehicles.ide` at build time; each traffic spawn samples its own `info.zon` zone,
+  gang strength and the weekday/time `popcycle.dat` row. Only cars/trucks are eligible (no bike riders yet).
+  `veh::update` attempts an offscreen spawn 22..38 m away every 90 frames, up to two traffic cars and leaving two pool slots free. `veh::step` steers each
+  NPC driver along connected links in the normal fixed-point physics inside the 10 m collision range;
+  outside it moves along the route kinematically. Drivers look ahead to the next link and slow before
+  bends and vehicles ahead; NPC skid audio requires actual wheel slip, not merely a transient wheel state. A driver car
+  despawns after 90 frames offscreen and >32 m away; unseen new spawns have at most 180 frames
+  to enter view. Empty, unclaimed cars despawn only when both offscreen and >45 m away; any car entered by
+  CJ is marked player-owned and never distance-despawned. `peds::initStep` retains an already resident
+  civilian ped model and samples `CAR_sit` / `CAR_Lsit` once during loading. `peds::draw` draws that skinned
+  model at the vehicle's `ped_frontseat` dummy with `veh::attachMatrix` for up to two visible drivers within
+  35 m, charged against the ped polygon budget; no pose evaluation or new model streaming occurs per frame.
+  Drivers have no independent ped AI/collision; carjacking/traffic lights and full CCarCtrl routing are
+  still absent. The DEBUG hudok markers include a `veh:` line with active/traffic/spawned/removed counts
+  and `peds:` reports `drivers`.
 - **Cost** (DEBUG -Og, melonDS, Greenwood + a second awake car): `veh::step` ~2 ms per call (was 3.5 ms in soft
   float), ~1 ms of it collision queries (`step=..us(qN)` in the vehtest log). Still 15-25 fps while driving: see the
   roadmap in AGENTS.md.
@@ -378,7 +397,7 @@ CDamageManager / CAEVehicleAudioEntity, reduced; every IDE type spawns, pool of 
 ## 6e. Peds (`game/peddata.*`, `game/pedmodel.*`, `game/pedanim.*`, `game/peds.*`)
 
 CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, reduced; pool of `budget::MAX_PEDS` 12.
-- **Data** (offline, `tools/gtasa/peds.py`, section `[peds]` -> `data/peds.dped` v1, `ds::Ped*`): peds.ide (12 B
+- **Data** (offline, `tools/gtasa/peds.py`, section `[peds]` -> `data/peds.dped` v4, `ds::Ped*`): peds.ide (12 B
   resident record per model, names read on demand), pedstats, pedgrp.dat (57 ePopcyclePedGroup lines), popcycle.dat
   rows (read on demand), the walkcycle groups of animgrp.dat (index 0 = man; missing clips fall back to it at
   runtime), info.zon zones touching `[world] bounds` with main.scm's new-game zone setup (SET_ZONE_POPULATION_TYPE /
@@ -400,11 +419,14 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   UpdatePercentages -> civ / gang / cop / dealer counts, `dbg::opts.pedDensity`), CStreaming::StreamZoneModels every
   1.5 s (the zone's two strongest gangs, a cop while one may spawn, civilians via PickPedMIToStreamInForCurrentZone,
   one civ swapped every 20 s), FindNewPedType + AddToPopulation every 6 frames (random point on a path link: on screen
-  27.5..33 m, off screen 10..16.5 m = PC distances x0.65; gangs spawn 2-3 with followers), ManagePed (off screen past
-  35.5 m, anything past 48 m, not needed 4 s outside 16 m and off screen, dead after 30 s). Loading job `jobPeds`: tables,
+  27.5..33 m, off screen 10..16.5 m = PC distances x0.65; spawn points with a different population/race/gang
+  zone are rejected; gangs spawn 2-3 with followers), ManagePed (off screen past
+  35.5 m, not needed 4 s outside 16 m and off screen, dead after 30 s offscreen). Visible peds are retained
+  even at longer distances; the camera-frustum check is shared with vehicle population. Loading job `jobPeds`: tables,
   the first models, GeneratePedsAtStartOfGame.
-- **Tasks**: wander (path graph, lane offset, pauses, side-steps peds / CJ), follow (gang formation), flee (panic sprint,
-  walls near CJ), attack (melee FightA_1..3 combo + FIGHTIDLE, or gang / cop guns: Gun_stand, aim chance by distance,
+- **Tasks**: wander (path graph, lane offset, pauses, side-steps peds / CJ), follow (gang formation), flee (panic sprint
+  along nearby links selected away from the threat, walls near CJ), attack (melee FightA_1..3 combo + FIGHTIDLE,
+  or gang / cop guns: Gun_stand, aim chance by distance,
   map line of sight), HIT_* reactions, KO_* knock-downs + getup / getup_front, death (KO_shot_* / KO_skid_* / KO_spin_*),
   EV_dive / EV_step out of a car's way, DUCK_cower, handsup. Events: CJ's gunshots (civilians flee / cower, hostile gangs
   attack, a cop nearby gives a star), aimed at (hands up / flee / attack), acquaintances (Ballas + Vagos hate CJ, Grove

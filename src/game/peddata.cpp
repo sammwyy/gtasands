@@ -19,6 +19,10 @@ static ds::PedZone* s_zones;
 static ds::PathCell* s_cells;
 static ds::PathNode* s_nodes;
 static uint16_t* s_links;
+static ds::PathNode* s_roads;
+static uint16_t* s_roadLinks;
+static ds::PedGroup* s_carGroups;
+static uint16_t* s_carMembers;
 static int s_step;
 static Stats s_st;
 static int s_rowKey = -1;
@@ -40,13 +44,13 @@ template <typename T> static bool table(T*& out, uint32_t off, uint32_t count) {
 bool ready() { return s_nodes != nullptr; }
 
 bool initStep() {
-	if (s_nodes || s_step >= 99) return true;   // a second new game: the tables are still there
+	if (s_step >= 6) return true;   // a second new game: the tables are still there
 	bool ok = true;
 	switch (s_step++) {
 	case 0:
 		s_file = fopen("nitro:/data/peds.dped", "rb");
 		if (!s_file || fread(&s_hdr, sizeof s_hdr, 1, s_file) != 1 || s_hdr.magic != DS_FOURCC('D', 'P', 'E', 'D') ||
-		    s_hdr.version != 1) {
+		    s_hdr.version != 4) {
 			hud::log("\x1b[33mpeds.dped missing/old (make assets)\x1b[39m");
 			if (s_file) fclose(s_file);
 			s_file = nullptr;
@@ -66,16 +70,28 @@ bool initStep() {
 	case 3: ok = table(s_zones, s_hdr.zoneOffset, s_hdr.numZones) &&
 	             table(s_cells, s_hdr.cellOffset, (uint32_t)s_hdr.gridW * s_hdr.gridH); break;
 	case 4: ok = table(s_links, s_hdr.linkOffset, s_hdr.numLinks) && table(s_nodes, s_hdr.nodeOffset, s_hdr.numNodes); break;
+	case 5: {
+		ok = table(s_roads, s_hdr.roadNodeOffset, s_hdr.numRoadNodes) &&
+		     table(s_roadLinks, s_hdr.roadLinkOffset, s_hdr.numRoadLinks) &&
+		     table(s_carGroups, s_hdr.carGroupOffset, 29);
+		uint32_t count = 0;
+		for (int g = 0; ok && g < 29; g++)
+			if (s_carGroups[g].first + s_carGroups[g].count > count) count = s_carGroups[g].first + s_carGroups[g].count;
+		ok = ok && table(s_carMembers, s_hdr.carGroupOffset + 29 * sizeof(ds::PedGroup), count);
+		break;
+	}
 	default: return true;
 	}
 	if (!ok) {
 		hud::log("\x1b[31mpeds.dped: read failed\x1b[39m");
 		mem::free(s_nodes);
 		s_nodes = nullptr;
+		mem::free(s_roads);
+		s_roads = nullptr;
 		s_step = 99;
 		return true;
 	}
-	if (s_step == 5) {
+	if (s_step == 6) {
 		s_st.models = s_hdr.numModels;
 		s_st.nodes = (uint16_t)s_hdr.numNodes;
 		s_st.zones = s_hdr.numZones;
@@ -150,6 +166,11 @@ const ds::PedZone* zoneAt(float x, float y) {
 int numNodes() { return s_nodes ? (int)s_hdr.numNodes : 0; }
 const ds::PathNode* node(int i) { return (unsigned)i < (unsigned)numNodes() ? &s_nodes[i] : nullptr; }
 int link(const ds::PathNode* n, int k) { return k < n->numLinks ? s_links[n->firstLink + k] : -1; }
+int numRoadNodes() { return s_roads ? (int)s_hdr.numRoadNodes : 0; }
+const ds::PathNode* roadNode(int i) { return (unsigned)i < (unsigned)numRoadNodes() ? &s_roads[i] : nullptr; }
+int roadLink(const ds::PathNode* n, int k) { return n && k >= 0 && k < n->numLinks ? s_roadLinks[n->firstLink + k] : -1; }
+int carGroupSize(int g) { return s_carGroups && (unsigned)g < 29 ? s_carGroups[g].count : 0; }
+int carGroupMember(int g, int k) { return (unsigned)k < (unsigned)carGroupSize(g) ? s_carMembers[s_carGroups[g].first + k] : -1; }
 
 bool cellRange(float x, float y, float r, int& cx0, int& cy0, int& cx1, int& cy1) {
 	if (!s_nodes) return false;

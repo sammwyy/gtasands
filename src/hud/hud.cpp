@@ -390,11 +390,15 @@ void draw() {
 				char ab[320];
 				audio::statsLine(ab, sizeof ab);
 				fprintf(f, "%s\n", ab);
+				const veh::Stats& vs = veh::stats();
+				fprintf(f, "veh: active=%u traffic=%u spawned=%u removed=%u drawn=%u step=%luus draw=%luus\n",
+				        vs.active, vs.traffic, vs.spawned, vs.removed, vs.drawn,
+				        (unsigned long)vs.stepUs, (unsigned long)vs.drawUs);
 				const peds::Stats& ps = peds::stats();
 				const pedmodel::Stats& pm = pedmodel::stats();
-				fprintf(f, "peds: live=%u max=%u civ=%u gang=%u cops=%u drawn=%u posed=%u polys=%u spawned=%u removed=%u "
+				fprintf(f, "peds: live=%u max=%u civ=%u gang=%u cops=%u drawn=%u drivers=%u posed=%u polys=%u spawned=%u removed=%u "
 				        "zone=%u slot=%u models=%u/%u lists=%luK texvram=%luK upd=%luus(task %lu phys %lu) draw=%luus(pose %lu peak %lu avg %lu) wanted=%u\n",
-				        ps.live, ps.maxPeds, ps.civ, ps.gang, ps.cops, ps.drawn, ps.posed, ps.polys, ps.spawned, ps.removed,
+				        ps.live, ps.maxPeds, ps.civ, ps.gang, ps.cops, ps.drawn, ps.drivers, ps.posed, ps.polys, ps.spawned, ps.removed,
 				        ps.zoneType, ps.slot, pm.ready, pm.models, (unsigned long)(pm.listBytes >> 10),
 				        (unsigned long)(pm.texVram >> 10), (unsigned long)ps.updateUs, (unsigned long)ps.taskUs, (unsigned long)ps.physUs,
 				        (unsigned long)ps.drawUs, (unsigned long)ps.poseUs, (unsigned long)ps.posePeakUs,

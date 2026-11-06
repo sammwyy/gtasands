@@ -39,6 +39,7 @@ struct Info {
 	int8_t target;   // -2 CJ, -1 none, else ped
 };
 bool info(int i, Info& out);
+bool visible(float x, float y, float z, float radius);
 
 // New game: empty pool, ped model streaming reset. Loading job: tables, the
 // first models (synchronous) and CPopulation::GeneratePedsAtStartOfGame.
@@ -80,6 +81,7 @@ void removeAll();
 void debugPlace(int i, float x, float y, float z, float heading);   // headless tests
 struct Stats {
 	uint16_t live, drawn, posed, polys, spawned, removed, models, wanted;
+	uint16_t drivers;
 	uint16_t maxPeds, civ, gang, cops, dealers;
 	uint8_t zoneType, weekend, slot;
 	uint32_t updateUs, drawUs;

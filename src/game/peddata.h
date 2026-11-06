@@ -51,6 +51,11 @@ inline float nodeZ(const ds::PathNode* n) { return n->z * 0.125f; }
 int link(const ds::PathNode* n, int k);   // node index of the k-th link
 // CPathFind::FindNodeClosestToCoors over the ped nodes within `range` m (-1 if none).
 int nearestNode(float x, float y, float z, float range);
+int numRoadNodes();
+const ds::PathNode* roadNode(int i);
+int roadLink(const ds::PathNode* n, int k);
+int carGroupSize(int group);
+int carGroupMember(int group, int k); // vehicle index in vehicles.dveh
 // Calls fn(index) for every node in the grid cells overlapping the square
 // [x - r, x + r] x [y - r, y + r]. Stops when fn returns false.
 template <typename F> void forNodesNear(float x, float y, float r, F fn);

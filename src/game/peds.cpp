@@ -83,6 +83,9 @@ static mem::Pool<Ped> s_pool;
 static Stats s_stats;
 static uint32_t s_frame;
 static bool s_inited;
+static int s_driverModel = -1;
+static bool s_driverLow;
+static s32 s_driverWorld[2][MAX_BONES * 12];
 
 
 // last frame's camera (spawn / removal visibility, CPed::GetIsOnScreen)
@@ -194,6 +197,7 @@ static bool onScreen(float x, float y, float z, float r) {
 	const float yu = dx * s_cam.u[0] + dy * s_cam.u[1] + dz * s_cam.u[2];
 	return fabsf(yu) <= zf * video::TAN_HALF_FOV_Y + r * 1.16f;
 }
+bool visible(float x, float y, float z, float radius) { return !s_cam.valid || onScreen(x, y, z, radius); }
 
 // ----------------------------------------------------------------------------
 // CPopCycle
@@ -237,7 +241,7 @@ static void updatePopCycle() {
 	s_pop.nDealers = maxPeds * (r.percDealers / 100.0f * pDealers);
 	s_pop.nGang = maxPeds * (r.percGang / 100.0f * pGangs);
 	s_pop.nCops = maxPeds * (r.percCops / 100.0f * pCops);
-	s_pop.nOther = maxPeds * (r.percOther / 100.0f * (pOther * otherRain / 100.0f));
+	s_pop.nOther = maxPeds * (pOther * otherRain / 100.0f);
 	s_pop.maxPeds = (int)(maxPeds + 0.5f);
 	if (s_pop.maxPeds > MAX) s_pop.maxPeds = MAX;
 	// IsPedAppropriateForCurrentZone: members of the active groups, race allowed
@@ -469,6 +473,8 @@ static void fleeNow(Ped& p, float fx, float fy, int32_t dur) {
 	p.leader = -1;
 	const bool already = p.task == TASK_FLEE;
 	setTask(p, TASK_FLEE, dur);
+	p.from = (int16_t)peddata::nearestNode(p.x, p.y, p.z, 10.0f);
+	p.to = -1;
 	if (!already && p.voiceCd <= 0 && irand(2)) {
 		aeped::sayPedPain(p.female, aeped::PAIN_PED_PANIC, voicePos(p));
 		p.voiceCd = 240;
@@ -721,10 +727,36 @@ static void taskStep(Ped& p, int dt) {
 		break;
 	}
 	case TASK_FLEE: {
-		// CTaskComplexSmartFleeEntity: run directly away (panic sprint)
 		const float ax = p.x - p.thx, ay = p.y - p.thy;
 		float want = headingTo(ax, ay);
-		if (p.sub) want += p.sub == 1 ? 1.4f : -1.4f;   // walled in: run along it for a moment
+		const ds::PathNode* target = peddata::node(p.to);
+		if (target && (p.x - p.tx) * (p.x - p.tx) + (p.y - p.ty) * (p.y - p.ty) < 2.0f * 2.0f) {
+			p.from = p.to;
+			p.to = -1;
+			target = nullptr;
+		}
+		if (!target && p.from >= 0) {
+			const ds::PathNode* n = peddata::node(p.from);
+			int best = -1;
+			float score = -1e10f;
+			for (int k = 0; n && k < n->numLinks; k++) {
+				const int to = peddata::link(n, k);
+				const ds::PathNode* next = peddata::node(to);
+				if (!next || (next->flags & ds::PATHNODE_SWITCHED_OFF)) continue;
+				const float dx = peddata::nodeX(next) - p.x, dy = peddata::nodeY(next) - p.y;
+				const float length = sqrtf(dx * dx + dy * dy);
+				if (length < 1.0f) continue;
+				const float heading = (dx * ax + dy * ay) / (length * fmaxf(1.0f, sqrtf(ax * ax + ay * ay)));
+				const float forward = (-fsin(p.heading) * dx + fcos(p.heading) * dy) / length;
+				const float rank = heading * 2.0f + forward + frand() * 0.3f;
+				if (rank > score) { score = rank; best = to; }
+			}
+			p.to = (int16_t)best;
+			if (best >= 0) setTarget(p);
+			target = peddata::node(best);
+		}
+		if (target) want = headingTo(p.tx - p.x, p.ty - p.y);
+		if (p.sub) want += p.sub == 1 ? 0.8f : -0.8f;
 		locomote(p, avoid(p, want, dt), 2.0f, true, dt);
 		const float flee = p.stat ? (float)p.stat->fleeDistance : 15.0f;
 		if (p.t >= p.dur || ax * ax + ay * ay > (flee + 20.0f) * (flee + 20.0f)) resumeWander(p);
@@ -990,7 +1022,7 @@ static void physics(Ped& p, int dt) {
 		}
 		return;
 	}
-	if (p.task == TASK_WANDER || p.task == TASK_FOLLOW) {
+	if (p.task == TASK_WANDER || p.task == TASK_FOLLOW || p.task == TASK_FLEE) {
 		const float z = pathZ(p);
 		p.z += (z - p.z) * 0.25f;
 	}
@@ -1180,6 +1212,9 @@ static bool creationCoors(bool start, float& x, float& y, float& z, int& from, i
 		const bool ok = start ? d >= 10.0f && d <= SPAWN_ON_MAX
 		                      : vis ? d >= SPAWN_ON_MIN && d <= SPAWN_ON_MAX : d >= SPAWN_OFF_MIN && d <= SPAWN_OFF_MAX;
 		if (!ok) continue;
+		const ds::PedZone* zone = peddata::zoneAt(x, y);
+		if (zone != s_pop.zone && (!zone || !s_pop.zone || zone->popType != s_pop.zone->popType ||
+		                            zone->races != s_pop.zone->races || memcmp(zone->gang, s_pop.zone->gang, 10))) continue;
 		bool clear = true;
 		for (int i = 0; i < MAX && clear; i++) {
 			const Ped* o = pedAt(i);
@@ -1320,10 +1355,10 @@ static void manage(Ped& p) {
 	const float dx = p.x - player::g.x, dy = p.y - player::g.y, d2 = dx * dx + dy * dy;
 	if (p.task == TASK_DEAD || (p.health <= 0.0f && p.deathFrame)) {
 		const uint32_t age = s_frame - p.deathFrame;
-		if ((age > 30 * 60 && !p.onScreen) || age > 60 * 60 || d2 > REMOVE_FAR * REMOVE_FAR) removePed(p);
+		if (!visible(p.x, p.y, p.z + 1.0f, 1.2f) && (age > 30 * 60 || d2 > REMOVE_FAR * REMOVE_FAR)) removePed(p);
 		return;
 	}
-	if (d2 > REMOVE_FAR * REMOVE_FAR || (d2 > REMOVE_DIST * REMOVE_DIST && !p.onScreen)) { removePed(p); return; }
+	if (d2 > REMOVE_DIST * REMOVE_DIST && !visible(p.x, p.y, p.z + 1.0f, 1.2f)) { removePed(p); return; }
 	const bool chasing = p.task == TASK_ATTACK && p.target == TARGET_PLAYER;
 	if (d2 <= NEED_DIST * NEED_DIST || p.onScreen || chasing) p.needUntil = s_frame + (isCop(p) ? 600 : 240);
 	else if (s_frame > p.needUntil) removePed(p);
@@ -1333,6 +1368,8 @@ static void manage(Ped& p) {
 // Public
 // ----------------------------------------------------------------------------
 void init() {
+	if (s_driverModel >= 0) pedmodel::release(s_driverModel);
+	s_driverModel = -1;
 	if (s_pool.capacity()) {
 		for (int i = 0; i < MAX; i++)
 			if (Ped* p = pedAt(i)) removePed(*p);
@@ -1380,6 +1417,35 @@ bool initStep() {
 		for (int i = 0; i < 40 && s_live < s_pop.maxPeds; i++) {
 			addToPopulation(true);
 			countPeds();
+		}
+		int driver = -1;
+		for (int k = 0; k < pedmodel::MAX; k++) {
+			const pedmodel::Model* m = pedmodel::get(s_held[k]);
+			if (!m || !pedmodel::ready(s_held[k])) continue;
+			if (driver < 0 || catOf(m->pedIndex) == CAT_CIV) driver = m->pedIndex;
+			if (catOf(m->pedIndex) == CAT_CIV) break;
+		}
+		if (driver >= 0) {
+			const int h = pedmodel::request(driver);
+			const pedmodel::Model* m = pedmodel::get(h);
+			if (m && m->skel && m->skel->numBones <= MAX_BONES) {
+				pedanim::Set anim = {};
+				const cj::Clip sit = { "CAR_sit", 1.0f, true, false, false, false, 0.0f };
+				pedanim::pose(anim, m->skel, &sit, 1);
+				if (pedanim::playing(anim, sit.name)) {
+					pedanim::evaluate(anim, m->skel, s_driverWorld[0]);
+					s_driverModel = h;
+				}
+				pedanim::reset(anim);
+				if (s_driverModel >= 0) {
+					const cj::Clip low = { "CAR_Lsit", 1.0f, true, false, false, false, 0.0f };
+					pedanim::pose(anim, m->skel, &low, 1);
+					s_driverLow = pedanim::playing(anim, low.name);
+					if (s_driverLow) pedanim::evaluate(anim, m->skel, s_driverWorld[1]);
+					pedanim::reset(anim);
+				}
+			}
+			if (s_driverModel < 0 && h >= 0) pedmodel::release(h);
 		}
 		hud::log("peds: %d spawned, %u models, zone %d max %d", s_live, pedmodel::stats().ready, s_pop.zoneType, s_pop.maxPeds);
 	}
@@ -1480,6 +1546,27 @@ void draw(const View& v) {
 	int polys = 0, drawn = 0, posed = 0;
 	u32 poseUs = 0;
 	MATRIX_STORE = pedmodel::SLOT_VIEW;
+	int drivers = 0;
+	if (s_driverModel >= 0 && pedmodel::ready(s_driverModel)) {
+		const pedmodel::Model& m = *pedmodel::get(s_driverModel);
+		const int est = m.tris / 2 + 8;
+		for (int i = 0; i < veh::MAX && drivers < 2; i++) {
+			const veh::Vehicle* car = veh::get(i);
+			if (!car || !car->npcDriver || !vehmdl::ready(car->model) ||
+			    !onScreen(car->pos[0], car->pos[1], car->pos[2] + 1.0f, 2.0f)) continue;
+			const float dx = car->pos[0] - v.eyeX, dy = car->pos[1] - v.eyeY;
+			if (dx * dx + dy * dy > 35.0f * 35.0f || polys + est > dbg::opts.pedPolys) continue;
+			const vehmdl::Model* carModel = vehmdl::get(car->model);
+			s32 attached[12];
+			veh::attachMatrix(*car, carModel->seat, v.originX, v.originY, v.originZ, attached);
+			MATRIX_RESTORE = pedmodel::SLOT_VIEW;
+			for (s32 x : attached) MATRIX_MULT4x3 = x;
+			MATRIX_STORE = pedmodel::SLOT_ENTITY;
+			pedmodel::draw(m, s_driverWorld[s_driverLow && (carModel->info.modelFlags & 4) ? 1 : 0]);
+			polys += est;
+			drivers++;
+		}
+	}
 	for (int k = 0; k < n; k++) {
 		Ped& p = *vis[k].p;
 		const pedmodel::Model& m = *pedmodel::get(p.model);
@@ -1511,6 +1598,7 @@ void draw(const View& v) {
 	MATRIX_RESTORE = pedmodel::SLOT_VIEW;
 	pedmodel::endDraw();
 	s_stats.drawn = (uint16_t)drawn;
+	s_stats.drivers = (uint16_t)drivers;
 	s_stats.posed = (uint16_t)posed;
 	s_stats.polys = (uint16_t)polys;
 	s_stats.drawUs = timing::usSince(t0);

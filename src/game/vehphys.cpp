@@ -1001,12 +1001,12 @@ void physStep(Car& c) {
 	Vehicle& v = c.v;
 	c.impactJ = 0;
 	if (v.cls == CLS_TRAIN) {
-		if (v.status == STATUS_PLAYER) controlInputs(c);
+		if (v.status == STATUS_PLAYER || v.npcDriver) controlInputs(c);
 		trainStep(c);
 		publish(c);
 		return;
 	}
-	if (v.status == STATUS_PLAYER) controlInputs(c);
+	if (v.status == STATUS_PLAYER || v.npcDriver) controlInputs(c);
 	else controlsIdle(c);
 	if (!v.engineOn) c.gas = 0;
 	// broad phase once for the whole step: the box swept by the body this step
@@ -1082,7 +1082,8 @@ void physStep(Car& c) {
 			if (c.wheelRot[i] > F(6.2831853)) c.wheelRot[i] -= F(6.2831853);
 			if (c.wheelRot[i] < -F(6.2831853)) c.wheelRot[i] += F(6.2831853);
 			const bool skidding = c.susp[i] < ONE && c.wheelState[i] != WHEEL_NORMAL;
-			if (c.wheelCounts[i] > 0 && c.wheelState[i] != WHEEL_NORMAL)
+			if (c.wheelCounts[i] > 0 && c.wheelState[i] != WHEEL_NORMAL &&
+			    (v.status == STATUS_PLAYER || (c.slip[i] > F(0.2) && fx::abs(c.speedFwd) > F(0.03))))
 				v.skid += fminf(fx::toFloat(c.slip[i]) + 0.3f, 1.5f);
 			// CVehicle::AddSingleWheelParticles -> CSkidmarks::RegisterOne
 			if (skidding && (c.wheelState[i] == WHEEL_FIXED || c.slip[i] > F(0.2)) && fx::abs(c.speedFwd) > F(0.03)) {
@@ -1152,7 +1153,7 @@ void physStep(Car& c) {
 	const int64_t vs = fx::dot48(c.move, c.move), ws = fx::dot48(c.turn, c.turn);
 	const int64_t vsLim = (int64_t)F(0.005) * F(0.005), wsLim = (int64_t)F(0.0015) * F(0.0015);
 	const bool resting = v.cls == CLS_BOAT ? v.inWater : c.numContact >= 3;
-	if (v.status != STATUS_PLAYER && vs < vsLim && ws < wsLim && resting && c.impactJ <= 0 && c.rotorSpeed <= 0) {
+	if (v.status != STATUS_PLAYER && !v.npcDriver && vs < vsLim && ws < wsLim && resting && c.impactJ <= 0 && c.rotorSpeed <= 0) {
 		if (++c.fakePhysics > 10 && v.cls != CLS_BOAT) {
 			v.asleep = true;
 			c.move = c.turn = V{ 0, 0, 0 };
