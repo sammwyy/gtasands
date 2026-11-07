@@ -101,6 +101,7 @@ int main() {
 			hud::setGameActive(true);
 			audio::setGameActive(true);
 			s_state = AppState::INGAME;
+			if (missions::newGame()) cutscene::startOriginal();
 		}
 		// SELECT toggles the bottom screen: debug UI <-> real game HUD (any state)
 		if ((in.down & KEY_SELECT) && !FrontEndMenuManager.m_bMenuActive && !cutscene::active()) hud::toggleScreen();

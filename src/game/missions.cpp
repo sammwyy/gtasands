@@ -31,7 +31,7 @@ struct Save {
 };
 
 static uint8_t s_passed, s_objective;
-static bool s_ready, s_warping, s_active, s_failed;
+static bool s_ready, s_warping, s_active, s_failed, s_newGame;
 static int s_bike = -1;
 static uint32_t s_retryAt, s_warpAt;
 static const cutscene::Shot FUNERAL[] = {
@@ -116,6 +116,7 @@ void init() {
 	s_passed = s_objective = 0;
 	s_bike = -1;
 	s_warping = s_active = s_failed = false;
+	s_newGame = false;
 	s_ready = checkScripts();
 	if (!s_ready) {
 		hud::log("missions: stock INTRO/INTRO1 SCM missing");
@@ -123,6 +124,7 @@ void init() {
 		return;
 	}
 	FILE* f = openSave("rb");
+	bool loaded = false;
 	if (f) {
 		Save s{};
 		const bool valid = fread(&s, sizeof s, 1, f) == 1 && fgetc(f) == EOF &&
@@ -131,10 +133,15 @@ void init() {
 		                   s.check == checksum(s);
 		fclose(f);
 		if (valid) {
+			loaded = true;
 			s_passed = s.passed;
 			player::g.money = s.money;
-		} else hud::log("missions: invalid save; starting prologue");
-	} else {
+		} else {
+			hud::log("missions: invalid save; starting prologue");
+		}
+	}
+	if (!loaded) {
+		s_newGame = true;
 		player::g.money = 350;
 #ifndef GTASADS_QUICKTEST
 		player::teleport(2239.367f, -1261.939f, 23.9f, 4.76f);
@@ -146,6 +153,7 @@ void init() {
 }
 
 uint8_t completed() { return s_passed; }
+bool newGame() { return s_newGame; }
 uint8_t objective() { return s_objective; }
 const char* title() {
 	if (!s_ready) return "SCM NOT AVAILABLE";

@@ -7,6 +7,7 @@ namespace missions {
 void init();
 void update();
 uint8_t completed();
+bool newGame();
 uint8_t objective();
 const char* title();
 const char* instruction();

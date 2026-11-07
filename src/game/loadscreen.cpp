@@ -131,6 +131,10 @@ static bool jobCol() {                                 // collision index + reco
 	return true;
 }
 static bool jobMissions() { missions::init(); return true; }
+static bool jobCutscene() {
+	if (missions::newGame() && cutscene::preloadOriginal("prolog3")) cutscene::placeOriginal();
+	return true;
+}
 static bool jobVehicles() { veh::init(); return vehdata::initStep(); }   // vehicles.dveh tables
 static bool jobPeds() { return peds::initStep(); }        // peds.dped, first ped models, start-of-game crowd
 static bool jobAudio() { return audio::initGameStep(); }   // surfaces, audio zones, in-game sounds
@@ -161,6 +165,7 @@ static bool (*const s_jobs[])() = {
 	jobZones,
 	jobEntryExits,
 	jobMissions,
+	jobCutscene,
 	jobRadar,
 	jobWorld,
 	jobCol,

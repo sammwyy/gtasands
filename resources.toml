@@ -197,6 +197,14 @@ kind = "files"
 src = ["anim/ped.ifp"]
 out = ""
 
+[cutscene_files]
+kind = "files"
+src = ["anim/cuts/*.ifp", "anim/cuts/*.dat", "anim/cuts/*.cut"]
+from_img = "anim/cuts.img"
+names = ["prolog1", "prolog3", "intro1a", "intro1b"]
+out = ""
+anim = { keep_every = 4 }
+
 [models_loose]            # HUD, fonts, frontend, particles, generic, grass, base collisions
 kind = "files"
 src = ["models/*.txd", "models/generic/*", "models/grass/*", "models/coll/*.col", "models/txd/*.txd", "models/effects.fxp"]

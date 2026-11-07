@@ -535,6 +535,9 @@ def sync(cfg, dry=False):
             want |= {p.relative_to(src) for p in src.glob('data/paths/nodes*.dat', case_sensitive=False)}
             want |= {p.relative_to(src) for p in src.glob('data/script/main.scm', case_sensitive=False)}
         elif k in ('files', 'copy', 'intro'):
+            if sec.get('from_img'):
+                want |= {p.relative_to(src) for p in src.glob(sec['from_img'], case_sensitive=False)
+                         if p.is_file()}
             rm = sec.get('remove', [])
             for pat in sec['src']:
                 want |= {r for p in src.glob(pat, case_sensitive=False) if p.is_file()
@@ -561,6 +564,24 @@ def sync(cfg, dry=False):
         if not dry:
             d.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(s, d)
+    for sec in cfg.sections.values():
+        if not sec.get('enabled', True) or not sec.get('from_img'):
+            continue
+        archive = next((p for p in cfg.game.glob(sec['from_img'], case_sensitive=False) if p.is_file()), None)
+        if archive is None:
+            continue
+        names = {n.lower() for n in sec.get('names', [])}
+        for name, off, size in img.read_toc(archive):
+            if (Path(name).name != name or Path(name).stem.lower() not in names
+                    or Path(name).suffix.lower() not in ('.ifp', '.dat', '.cut')):
+                continue
+            dst = cfg.game / 'anim/cuts' / name.lower()
+            if dst.is_file() and dst.stat().st_mtime >= archive.stat().st_mtime:
+                continue
+            print(f'  extract {name} from {sec["from_img"]}')
+            if not dry:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_bytes(img.read_entry(archive, off, size))
     print(f'sync: {len(want)} files, {_mb(total)} needed in {cfg.game}')
 
 

@@ -256,12 +256,28 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
   camera, HUD and controls return automatically when the shots finish or skip.
   `missions.cpp` starts a short funeral-area camera sequence after the
   Jefferson preload for `INTRO1`, before allowing the BMX objective.
-- This is a reusable scene controller, **not** a `CUTS.IMG` decoder, a
-  cutscene-actor system, original animation/audio playback or the full
-  `CCutsceneMgr`. `CUTS.IMG` and its `.DAT` camera splines / `.IFP` animations
-  are not among the synchronized assets. Port those formats and script
-  opcodes (`load_cutscene_data`, `start_cutscene`, skip, end) before claiming
-  original cinematic parity or automatic playback for every mission.
+- This is a reusable scene controller, **not** the full `CCutsceneMgr` or
+  an SCM VM. The original actors, cutscene objects, voice/audio and script
+  opcodes (`load_cutscene_data`, `start_cutscene`, skip, end) remain unported;
+  do not claim complete original cinematic parity or automatic playback for
+  every mission.
+- On a new game, the loading-screen `jobCutscene` reads `PROLOG3.cut`'s original
+  world offset, `PROLOG3.dat` camera eye/target keyframes (up to 64 per track)
+  and the converted `PROLOG3.ifp` `csplay` animation. The world loads around
+  its Grove Street position before gameplay; after the original 80-second
+  camera/animation track or a skip, CJ is restored to the authored Jefferson
+  spawn. The camera uses linear interpolation between original keys rather
+  than the PC spline handles. Without these optional assets, the game starts
+  normally. This does not replace the rest of the original INTRO script.
+- `tools/gtasa/ifp.py` converts the original cutscene ANPK container to the
+  same per-clip DANM format as the ANP3 gameplay animations. The `cutscene_files`
+  asset section includes PROLOG1, PROLOG3, INTRO1a and INTRO1b, with only
+  PROLOG3 currently played. `tools/assets.py sync` extracts just those
+  `.cut/.dat/.ifp` entries from the PC `anim/cuts.img` into the ignored
+  `game/anim/cuts/` directory; converted clips stream through `animstore`.
+  The installed PC path must be mounted when syncing. Original cutscene
+  character models, actor timelines, subtitled dialogue and voice tracks are
+  not implemented yet.
 
 ## 6b. Streamed map (`game/world.*`)
 

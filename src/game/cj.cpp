@@ -435,6 +435,9 @@ static int extraBlock(int which) {
 // Vehicle anim blocks (IDE anim group: bikes.ifp, bmx.ifp, quad.ifp ...):
 // directories opened on first use, the current one searched first.
 static int s_vehBlock = animstore::NO_BLOCK;
+static int s_cutsceneBlock = animstore::NO_BLOCK;
+
+void setCutsceneBlock(int block) { s_cutsceneBlock = block; }
 
 void setVehicleBlock(const char* ifp) {
 	s_vehBlock = animstore::NO_BLOCK;
@@ -450,7 +453,7 @@ void setVehicleBlock(const char* ifp) {
 static bool playName(Slot& sl, const char* name) {
 	if (!s_skel || !name) return false;
 	const int g = groupId();
-	const int blocks[3] = { s_vehBlock, g != 0 ? extraBlock(g) : animstore::NO_BLOCK, s_pedBlock };
+	const int blocks[4] = { s_cutsceneBlock, s_vehBlock, g != 0 ? extraBlock(g) : animstore::NO_BLOCK, s_pedBlock };
 	for (int b : blocks) {
 		if (!animstore::hasClip(b, name)) continue;
 		animstore::Clip* c = animstore::acquire(b, name);
