@@ -12,5 +12,7 @@ const char* title();
 const char* instruction();
 bool entryAllowed(const char* name, float x, float y);
 bool pointAllowed(float x, float y);
+bool busy();
+void drawFade();
 
 }

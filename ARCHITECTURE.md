@@ -48,7 +48,7 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `game/streaming.*` | open packs (`g_models` gta3, `g_player`, `g_anim`) |
 | `game/world.*` | streamed map: DWLD sector window, map model/texture streaming, GX list compile, culling + draw (section 6b) |
 | `game/entryexits.*` | IPL entry/exit table (DENX v3), marker, session-only unlock bit and area transitions with fade/preload |
-| `game/missions.*` | Three-mission standalone progression slice, objective radar blip, IPL access gates and versioned SD progress |
+| `game/missions.*` | Limited translation of stock SCM mission IDs 2 (`INTRO`) and 11 (`INTRO1`), objective radar blip, authored house gate, versioned SD progress |
 | `game/vehicledata.*`, `game/vehiclemodel.*`, `game/vehicle.*`, `game/vehphys.cpp`, `game/vehicleint.h`, `game/fx.*` | vehicles (section 6d): DVEH tables, model streaming + per-atomic lit GX lists (animated parts), fixed-point physics for every type, damage / fire / explosion / debris / lights / draw |
 | `game/peddata.*`, `game/pedmodel.*`, `game/pedanim.*`, `game/peds.*` | random peds (section 6e): DPED tables + ped path graph, skinned ped model streaming (bone segments), per-ped anim slots, CPopulation / CPopCycle / ped tasks / interactions |
 | `game/waterlevel.*`, `game/skidmarks.*` | CWaterLevel (water.dat polygons, level query, flat surfaces), CSkidmarks |
@@ -215,26 +215,29 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
   textured with player_torso + clothing composite (PlaceTextureOnTopOfTexture); hands share it.
   Outfit presets `cj::setOutfit`, fat/muscle scale bones and pick the motion group.
 
-## 6a. Mission progression slice (`game/missions.*`)
+## 6a. Script mission translation (`game/missions.*`)
 
-- No SCM VM yet: three original-inspired **standalone objectives**, not the PC missions or
-  their cutscenes/scripts. Grove Street: walk to CJ's house; Ryder's Errand: get into a
-  vehicle, reach the Cluckin' Bell in LS, drive back to Grove Street; Los Santos: reach
-  the Ganton gym and return home. The mission HUD is on the bottom screen (x=124, y=119),
-  with one objective blip (radar slot 15). The vehicle objective requires `player::driving()`;
-  objectives pause inside interiors and failed missions restart at their first objective
-  after death/respawn, without awarding the reward twice.
-- Completion 1 unlocks Carl's IPL house, completion 2 unlocks IPL interiors in the
-  LS region (1800..3000 x, -2300..-950 y), completion 3 unlocks all IPL entrances.
-  Radar map icons follow the same regional gates; `CHTS > WORLD` still overrides every
-  gate **for this session only**. This does not restrict travel through the streamed
-  exterior world; SF/LV bridges and SCM-created interiors remain future work.
-- On each objective and completion, `sd:/gtasads_missions.dat` (or `fat:`) records a
-  16-byte, versioned, checksummed snapshot: completed mission count, current objective,
-  cash. Invalid saves start fresh; if no writable SD is present, progression remains
-  session-only. The loading-screen job restores it after CJ/HUD/world/collision initialization.
-  This is deliberately not a complete GTA save: player position, interior stack,
-  inventory, SCM globals and script-created entrances are not persisted.
+- The prior invented three-mission chain is removed. The loading job validates the
+  actual `data/script/main.scm` SA header/mission table and script names at mission
+  offsets 2 (`INTRO`) and 11 (`INTRO1`) before enabling gameplay. No generic opcode VM
+  exists yet: this is a **partial native translation**, not execution of the original
+  mission bytecode and not the complete campaign. Unsupported mission 12 (`INTRO2`,
+  Ryder) is explicitly marked as such and cannot be completed.
+- New games start from the original `INTRO` police drop at Jefferson (2239,-1262)
+  at 06:30 with $350, and spawn its BMX at (2246,-1263). The authored Johnson house
+  destination advances the prologue. `INTRO1` (Big Smoke) starts at the Johnson house,
+  skips unavailable cutscenes to the original funeral bicycle segment at (970,-1108),
+  and uses the script's actual bike route via East LS (1644,-1051), Idlewood (1891,-1348),
+  back to Grove Street (2494,-1670). Bike destruction/death fails and permits retry;
+  after completion, CJ's IPL house and its map icon unlock, as in `INTRO1_18188`.
+  NPC companions, enemy pursuit, scripted cutscenes/animation, voice lines, respect
+  and all later missions remain unported; the route is **not** full mission parity.
+  `QUICKTEST=1` keeps the existing Grove spawn for performance test compatibility.
+- `sd:/gtasads_missions.dat` (or `fat:`) stores a 16-byte version-2 checksummed
+  snapshot (0..2 completed scripts, cash). Invalid and old prototype saves reset
+  progression. Active missions restart from their trigger after reboot; no position,
+  interior stack, inventory, SCM globals or script-created entrances are saved.
+  `CHTS > WORLD` still overrides access for the current session only.
 
 ## 6b. Streamed map (`game/world.*`)
 

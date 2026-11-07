@@ -138,6 +138,7 @@ int main() {
 		} else {
 			renderer::draw();
 			entryexits::drawFade();
+			missions::drawFade();
 		}
 		timing::setSection(timing::SEC_3D, timing::usSince(t));
 		t = timing::ticks();
@@ -147,7 +148,7 @@ int main() {
 			if (playing) {
 				peddata::update(player::g.x, player::g.y);
 				col::update(player::g.x, player::g.y, player::g.z);        // collision near list + streaming
-				player::update();
+				if (!missions::busy()) player::update();
 				missions::update();
 				weather::update(player::g.x, player::g.y, player::g.z);     // CWeather::Update
 				timecycle::update(player::g.x, player::g.y, player::g.z);   // CTimeCycle::Update
