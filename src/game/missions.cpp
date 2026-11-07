@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "game/collision.h"
+#include "game/cutscene.h"
 #include "game/hud/radar.h"
 #include "game/player.h"
 #include "game/vehicle.h"
@@ -33,6 +34,11 @@ static uint8_t s_passed, s_objective;
 static bool s_ready, s_warping, s_active, s_failed;
 static int s_bike = -1;
 static uint32_t s_retryAt, s_warpAt;
+static const cutscene::Shot FUNERAL[] = {
+	{ { 947.9119f, -1103.912f, 23.4476f }, { 946.9478f, -1103.822f, 23.6977f }, 90, "SWEET & KENDL" },
+	{ { 952.0f, -1110.0f, 29.0f }, { 970.0f, -1108.0f, 23.0f }, 150, "GET BACK TO GROVE STREET" },
+	{ { 967.0f, -1114.0f, 25.5f }, { 971.0f, -1108.0f, 23.0f }, 60, "GET ON THE BIKE" }
+};
 
 static uint32_t checksum(const Save& s) {
 	return s.magic ^ ((uint32_t)s.version << 16 | (uint32_t)s.passed << 8 | s.reserved) ^
@@ -221,7 +227,9 @@ void update() {
 		}
 		player::placeOnGround();
 		s_warping = false;
+		cutscene::start(FUNERAL, sizeof FUNERAL / sizeof FUNERAL[0]);
 		target();
+		return;
 	}
 	if (world::area() != 0) return;
 	const float dx = player::g.x - HOUSE_X, dy = player::g.y - HOUSE_Y;

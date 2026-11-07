@@ -49,6 +49,7 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `game/world.*` | streamed map: DWLD sector window, map model/texture streaming, GX list compile, culling + draw (section 6b) |
 | `game/entryexits.*` | IPL entry/exit table (DENX v3), marker, session-only unlock bit and area transitions with fade/preload |
 | `game/missions.*` | Limited translation of stock SCM mission IDs 2 (`INTRO`) and 11 (`INTRO1`), objective radar blip, authored house gate, versioned SD progress |
+| `game/cutscene.*` | In-game cinematic timeline: bounded camera shots, fades, captions, skipping and simulation/audio pause; callable from missions |
 | `game/vehicledata.*`, `game/vehiclemodel.*`, `game/vehicle.*`, `game/vehphys.cpp`, `game/vehicleint.h`, `game/fx.*` | vehicles (section 6d): DVEH tables, model streaming + per-atomic lit GX lists (animated parts), fixed-point physics for every type, damage / fire / explosion / debris / lights / draw |
 | `game/peddata.*`, `game/pedmodel.*`, `game/pedanim.*`, `game/peds.*` | random peds (section 6e): DPED tables + ped path graph, skinned ped model streaming (bone segments), per-ped anim slots, CPopulation / CPopCycle / ped tasks / interactions |
 | `game/waterlevel.*`, `game/skidmarks.*` | CWaterLevel (water.dat polygons, level query, flat surfaces), CSkidmarks |
@@ -73,9 +74,10 @@ files), `nitrofs/` (gitignored output), `build/` (objects, `assets_cache/`, repo
 timing::frameStart; input::poll
 state transitions (title -> menu -> loading -> ingame), SELECT = toggle bottom screen, START = pause menu
 video::beginFrame()                 // resets render env: no fog, default clear, auto sort
-  menu | loadscreen::draw | renderer::draw      -> SEC_3D
-INGAME && !menu: col::update; player::update (60 Hz steps: on foot / car task, veh::step);
+  menu | loadscreen::draw | renderer::draw (+ cutscene overlay)      -> SEC_3D
+INGAME && !menu: cutscene::update; col::update; player::update (60 Hz steps: on foot / car task, veh::step);
                  weather::update; timecycle::update; world::update; veh::update      -> SEC_SIM
+                 (while a cutscene plays, only timeline, streaming, weather and timecycle advance)
 hud::draw()  (CPU framebuffer in RAM / debug console)                  -> SEC_HUD
 timing::frameEnd
 video::endFrame()   // glFlush(manual sort?) ; swiWaitForVBlank ; apply fog/clear registers
@@ -238,6 +240,28 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
   progression. Active missions restart from their trigger after reboot; no position,
   interior stack, inventory, SCM globals or script-created entrances are saved.
   `CHTS > WORLD` still overrides access for the current session only.
+
+## 6aa. In-game cinematics (`game/cutscene.*`)
+
+- `cutscene::start` accepts a caller-owned, static array of at most 16 timed
+  camera shots (eye, look-at, caption). The bounded timeline interpolates
+  both camera vectors per frame and exposes `view()` to `renderer::draw`;
+  it uses player-local GL coordinates so world-space SA positions cannot
+  overflow DS geometry registers. Top-screen letterbox bars and short fades
+  use `sprite2d`; bottom-screen captions use `hudfont` on the RAM framebuffer.
+- While active, `main.cpp` advances the timeline but suspends player, vehicle,
+  population and mission simulation; world and collision streaming keep
+  running. Ambient game audio is suspended and restored; A/B/START skips after
+  a short guard period without triggering the pause menu. The normal chase
+  camera, HUD and controls return automatically when the shots finish or skip.
+  `missions.cpp` starts a short funeral-area camera sequence after the
+  Jefferson preload for `INTRO1`, before allowing the BMX objective.
+- This is a reusable scene controller, **not** a `CUTS.IMG` decoder, a
+  cutscene-actor system, original animation/audio playback or the full
+  `CCutsceneMgr`. `CUTS.IMG` and its `.DAT` camera splines / `.IFP` animations
+  are not among the synchronized assets. Port those formats and script
+  opcodes (`load_cutscene_data`, `start_cutscene`, skip, end) before claiming
+  original cinematic parity or automatic playback for every mission.
 
 ## 6b. Streamed map (`game/world.*`)
 

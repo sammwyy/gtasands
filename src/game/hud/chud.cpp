@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "assets/txdfile.h"
+#include "game/cutscene.h"
 #include "game/hud/hudfont.h"
 #include "game/hud/hudtex.h"
 #include "game/hud/radar.h"
@@ -344,6 +345,15 @@ void invalidate() {
 }
 
 void draw() {
+	if (cutscene::active()) {
+		subfb::clear(c_black);
+		const char* text = cutscene::caption();
+		if (text) hudfont::print(hudfont::STYLE_MENU, 128, 147, (const GxtChar*)text,
+		                         0.48f, 0.8f, c_lightGray, hudfont::CENTER, 2, c_black);
+		hudfont::print(hudfont::STYLE_MENU, 128, 178, (const GxtChar*)"A / B / START: SKIP",
+		               0.32f, 0.55f, c_gold, hudfont::CENTER, 1, c_black);
+		return;
+	}
 	// radar: map + rim + sprites, cleared and redrawn every frame
 	subfb::rect(s_radarBox.x, s_radarBox.y, s_radarBox.w, s_radarBox.h, c_bg);
 	radar::draw();

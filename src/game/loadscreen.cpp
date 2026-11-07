@@ -12,6 +12,7 @@
 #include "game/animstore.h"
 #include "game/cj.h"
 #include "game/collision.h"
+#include "game/cutscene.h"
 #include "game/entryexits.h"
 #include "game/hud/chud.h"
 #include "game/hud/radar.h"
@@ -114,7 +115,7 @@ static bool jobEntryExits() {
 	return true;
 }
 static bool jobCj() { return cj::initStep(); }
-static bool jobPlayer() { world::setArea(0); col::resetScene(); player::init(); return true; }
+static bool jobPlayer() { cutscene::reset(); world::setArea(0); col::resetScene(); player::init(); return true; }
 static bool jobRadar() { radar::prefetch(); return true; }
 static bool jobTimeCycle() { return timecycle::loadStep(); }   // one weather (8 lines) per slice
 static bool jobSky() {

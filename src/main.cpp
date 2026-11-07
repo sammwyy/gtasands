@@ -3,6 +3,7 @@
 
 #include "audio/audioengine.h"
 #include "game/collision.h"
+#include "game/cutscene.h"
 #include "game/entryexits.h"
 #include "game/intro.h"
 #include "game/loadscreen.h"
@@ -102,9 +103,9 @@ int main() {
 			s_state = AppState::INGAME;
 		}
 		// SELECT toggles the bottom screen: debug UI <-> real game HUD (any state)
-		if ((in.down & KEY_SELECT) && !FrontEndMenuManager.m_bMenuActive) hud::toggleScreen();
+		if ((in.down & KEY_SELECT) && !FrontEndMenuManager.m_bMenuActive && !cutscene::active()) hud::toggleScreen();
 		if (s_state == AppState::INGAME) {
-			if ((in.down & KEY_START) && !entryexits::busy()) {
+			if ((in.down & KEY_START) && !entryexits::busy() && !cutscene::active()) {
 				sfx::start(); // AE_FRONTEND_START: whoosh on menu open/close
 				if (FrontEndMenuManager.m_bMenuActive) {
 					closePauseMenu();
@@ -139,6 +140,7 @@ int main() {
 			renderer::draw();
 			entryexits::drawFade();
 			missions::drawFade();
+			cutscene::drawOverlay();
 		}
 		timing::setSection(timing::SEC_3D, timing::usSince(t));
 		t = timing::ticks();
@@ -146,16 +148,18 @@ int main() {
 			const bool playing = entryexits::update();
 			static u32 s_pedVbl;
 			if (playing) {
-				peddata::update(player::g.x, player::g.y);
+				const bool scene = cutscene::active();
+				if (scene) cutscene::update(in.down);
+				if (!scene) peddata::update(player::g.x, player::g.y);
 				col::update(player::g.x, player::g.y, player::g.z);        // collision near list + streaming
-				if (!missions::busy()) player::update();
-				missions::update();
+				if (!scene && !missions::busy()) player::update();
+				if (!scene) missions::update();
 				weather::update(player::g.x, player::g.y, player::g.z);     // CWeather::Update
 				timecycle::update(player::g.x, player::g.y, player::g.z);   // CTimeCycle::Update
 				world::update(player::g.x, player::g.y);                    // sectors + model streaming
-				if (world::area() == 0) veh::update();                       // vehicle models, timers, audio
+				if (!scene && world::area() == 0) veh::update();             // vehicle models, timers, audio
 				const u32 vb = timing::vblanks();
-				if (world::area() == 0) peds::update(s_pedVbl ? (int)(vb - s_pedVbl) : 1); // CPopulation + ped tasks
+				if (!scene && world::area() == 0) peds::update(s_pedVbl ? (int)(vb - s_pedVbl) : 1); // CPopulation + ped tasks
 				s_pedVbl = vb;
 			} else s_pedVbl = timing::vblanks();
 		}

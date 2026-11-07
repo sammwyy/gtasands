@@ -1,3 +1,8 @@
+# Cinematics
+
+- [ ] Convert original `CUTS.IMG` `.DAT` camera splines and `.IFP` animation tracks into bounded DS-native streamed assets, and provide a loading-screen/mission preload interface. The in-game `cutscene` timeline currently supports only explicit camera shots, fades, captions and skip.
+- [ ] Add script-driven cutscene actors, synchronized animation and dialogue/audio, and wire the original SCM cutscene opcodes to the timeline with correct skip/cleanup behavior.
+
 # Interior and entry/exit integration
 
 ## Further IPL fidelity and verification

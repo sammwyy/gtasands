@@ -5,6 +5,7 @@
 
 #include "game/cj.h"
 #include "game/collision.h"
+#include "game/cutscene.h"
 #include "game/entryexits.h"
 #include "game/debugopts.h"
 #include "game/pedmodel.h"
@@ -71,8 +72,8 @@ void init() {
 
 void draw() {
 	const float px = player::g.x, py = player::g.y;
-	const float yaw = player::camYaw();
-	const float pitch = player::camPitch();
+	float yaw = player::camYaw();
+	float pitch = player::camPitch();
 
 	// Cam-on-a-string: the eye sits on a sphere around CJ's chest. yaw 0 looks
 	// north, so the eye is south of him (behind a north-facing ped). pitch is
@@ -81,9 +82,18 @@ void draw() {
 	const float dist = player::camDist(), lookH = player::camLookH();
 	const float vz = player::viewZ();
 	const float horiz = cosf(pitch) * dist;
-	const float eyeH = lookH + sinf(pitch) * dist;
-	const float elx = sinf(yaw) * horiz;
-	const float ely = -cosf(yaw) * horiz;
+	float elx = sinf(yaw) * horiz;
+	float ely = -cosf(yaw) * horiz;
+	float eyeH = lookH + sinf(pitch) * dist;
+	float eye[3], target[3];
+	if (cutscene::view(eye, target)) {
+		elx = eye[0] - px;
+		ely = eye[1] - py;
+		eyeH = eye[2] - vz;
+		const float dx = target[0] - eye[0], dy = target[1] - eye[1];
+		yaw = atan2f(-dx, dy);
+		pitch = atan2f(eye[2] - target[2], sqrtf(dx * dx + dy * dy));
+	}
 
 	// sky first (constant far depth), it also latches the frame's fog/clear
 	const sky::View view{ px + elx, py + ely, vz + eyeH, yaw, pitch };
