@@ -56,24 +56,90 @@ bool CText::load(const char* path) {
 	return true;
 }
 
+bool CText::loadMission(const char* path, const char* table) {
+	mem::free(m_missionKeys);
+	mem::free(m_missionData);
+	m_missionKeys = nullptr;
+	m_missionData = nullptr;
+	m_missionKeyCount = m_missionDataSize = 0;
+	FILE* f = fopen(path, "rb");
+	if (!f || fseek(f, 4, SEEK_SET) != 0) {
+		if (f) fclose(f);
+		return false;
+	}
+	char tag[4];
+	uint32_t bytes = 0;
+	if (fread(tag, 1, 4, f) != 4 || memcmp(tag, "TABL", 4) ||
+	    fread(&bytes, sizeof bytes, 1, f) != 1 || bytes > 4096 || bytes % 12) {
+		fclose(f);
+		return false;
+	}
+	uint32_t offset = 0;
+	for (uint32_t i = 0; i < bytes / 12; i++) {
+		char name[8];
+		uint32_t at;
+		if (fread(name, 1, sizeof name, f) != sizeof name || fread(&at, 4, 1, f) != 1) break;
+		if (!strncmp(name, table, sizeof name)) { offset = at; break; }
+	}
+	bool ok = offset && fseek(f, offset + 8, SEEK_SET) == 0;
+	for (int i = 0; ok && i < 2; i++) {
+		uint32_t size;
+		if (fread(tag, 1, 4, f) != 4 || fread(&size, 4, 1, f) != 1 || !size || size > 65536) {
+			ok = false;
+			break;
+		}
+		if (!memcmp(tag, "TKEY", 4) && size % 8 == 0) {
+			m_missionKeys = (KeyEntry*)mem::alloc(size, mem::TAG_TEXT);
+			m_missionKeyCount = size / 8;
+			ok = m_missionKeys && fread(m_missionKeys, 1, size, f) == size;
+		} else if (!memcmp(tag, "TDAT", 4)) {
+			m_missionData = (char*)mem::alloc(size, mem::TAG_TEXT);
+			m_missionDataSize = size;
+			ok = m_missionData && fread(m_missionData, 1, size, f) == size;
+		} else ok = false;
+	}
+	fclose(f);
+	if (ok) ok = m_missionKeys && m_missionData;
+	if (!ok) {
+		mem::free(m_missionKeys);
+		mem::free(m_missionData);
+		m_missionKeys = nullptr;
+		m_missionData = nullptr;
+		m_missionKeyCount = m_missionDataSize = 0;
+	}
+	return ok;
+}
+
 void CText::unload() {
 	mem::free(m_keys);
 	mem::free(m_data);
+	mem::free(m_missionKeys);
+	mem::free(m_missionData);
 	m_keys = nullptr;
 	m_data = nullptr;
 	m_keyCount = m_dataSize = 0;
+	m_missionKeys = nullptr;
+	m_missionData = nullptr;
+	m_missionKeyCount = m_missionDataSize = 0;
 }
 
 const GxtChar* CText::get(const char* key) const {
 	static const GxtChar missing[] = { 'M', 'I', 'S', 'S', 'I', 'N', 'G', 0 };
 	uint32_t h = gxtKey(key);
-	int lo = 0, hi = (int)m_keyCount - 1;
-	while (lo <= hi) {
-		int mid = (lo + hi) >> 1;
-		if (m_keys[mid].hash == h)
-			return m_keys[mid].offset < m_dataSize ? (const GxtChar*)m_data + m_keys[mid].offset : missing;
-		if (h > m_keys[mid].hash) lo = mid + 1;
-		else hi = mid - 1;
-	}
-	return missing;
+	auto lookup = [&](const KeyEntry* keys, uint32_t count, const char* data, uint32_t size) -> const GxtChar* {
+		int lo = 0, hi = (int)count - 1;
+		while (lo <= hi) {
+			int mid = (lo + hi) >> 1;
+			if (keys[mid].hash == h)
+				return keys[mid].offset < size ? (const GxtChar*)data + keys[mid].offset : nullptr;
+			if (h > keys[mid].hash) lo = mid + 1;
+			else hi = mid - 1;
+		}
+		return nullptr;
+	};
+	if (m_missionKeys)
+		if (const GxtChar* s = lookup(m_missionKeys, m_missionKeyCount, m_missionData, m_missionDataSize))
+			return s;
+	const GxtChar* s = m_keys ? lookup(m_keys, m_keyCount, m_data, m_dataSize) : nullptr;
+	return s ? s : missing;
 }

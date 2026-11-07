@@ -203,7 +203,27 @@ src = ["anim/cuts/*.ifp", "anim/cuts/*.dat", "anim/cuts/*.cut"]
 from_img = "anim/cuts.img"
 names = ["prolog1", "prolog3", "intro1a", "intro1b"]
 out = ""
-anim = { keep_every = 4 }
+anim = { keep_every = 4, rigid_clips = ["csgizmo", "cshandcuff", "csmoneystck"] }
+
+[cutscene_models]
+kind = "files"
+src = ["models/cutscene/*.dff", "models/cutscene/*.txd"]
+from_img = "models/cutscene.img"
+extract_to = "models/cutscene"
+names = ["csbogman", "csstew", "cssuitcase", "cstaxi92", "cspulaski", "cshernandez", "cstenpenny", "cs9mm", "cscopcarla92", "csgizmo", "cshandcuff", "csmoneystck"]
+suffixes = [".dff", ".txd"]
+keep_paths = false
+pack = "models/cutscene.dspk"
+model = { ratio = 0.28, max_tris = 440, normals = false }
+texture = { max_size = 64 }
+
+[[cutscene_models.rule]]
+match = ["*/csgizmo.dff", "*/cshandcuff.dff", "*/csmoneystck.dff"]
+model = { rigid_skin = true }
+
+[[cutscene_models.rule]]
+match = ["*/cstaxi92.dff", "*/cscopcarla92.dff"]
+model = { ratio = 0.24, min_tris = 16, max_tris = 96 }
 
 [models_loose]            # HUD, fonts, frontend, particles, generic, grass, base collisions
 kind = "files"
@@ -285,8 +305,12 @@ out = ""
 kind = "streams"
 src = "audio"
 out = "audio/streams"
-remove = ["ADVERTS", "BEATS", "CUTSCENE", "CH", "CO", "CR", "DS", "HC", "MH", "MR", "NJ", "RE", "RG", "TK"]
+remove = ["ADVERTS", "BEATS", "CH", "CO", "CR", "DS", "HC", "MH", "MR", "NJ", "RE", "RG", "TK"]
 audio = { sample_rate = 16000, format = "adpcm" }
+
+[[audio_streams.rule]]
+match = "CUTSCENE"
+audio = { sample_rate = 11025, track_ids = [706, 708] }
 
 # Example: enable one radio with a few tracks at lower quality
 # [[audio_streams.rule]]

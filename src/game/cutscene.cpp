@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "audio/audioengine.h"
+#include "audio/aestream.h"
 #include "game/anim.h"
 #include "game/animstore.h"
 #include "game/cj.h"
@@ -15,6 +16,9 @@
 #include "game/peds.h"
 #include "game/pedmodel.h"
 #include "game/player.h"
+#include "game/text/gxt.h"
+#include "game/vehicle.h"
+#include "game/vehicledata.h"
 #include "hud/hud.h"
 #include "mem/mem.h"
 #include "platform/timing.h"
@@ -25,23 +29,72 @@ namespace cutscene {
 static const Shot* s_shots;
 static uint8_t s_count;
 static uint32_t s_start, s_total;
-static bool s_original, s_ready, s_placed;
+static bool s_original, s_ready, s_placed, s_haveReturn, s_next;
+static uint8_t s_stage;
 static int s_animBlock;
 static float s_offset[3], s_root[3], s_return[4];
 static uint32_t s_animTick;
 struct CamKey { uint16_t time; float xyz[3]; };
 static CamKey s_camera[2][64];
 static uint8_t s_camCount[2];
+struct Subtitle { uint16_t from, to; char key[16]; };
+static Subtitle s_subtitles[32];
+static uint8_t s_subCount;
+struct ActorDef { const char* model; const char* animation; bool cutsceneModel; };
+static const ActorDef s_airportActors[] = {
+	{ "csstew", "csstew", true }, { "csbogman", "csbogman", true },
+	{ "cssuitcase", "cssuitcase-1", true }, { "cssuitcase", "cssuitcase-2", true }
+};
+static const ActorDef s_groveActors[] = {
+	{ "tenpen", "cstenpenny", false }, { "hern", "cshernandez", false },
+	{ "pulaski", "cspulaski", false }, { "cs9mm", "cs9mm-1", true },
+	{ "cs9mm", "cs9mm-2", true }, { "cshandcuff", "cshandcuff", true },
+	{ "csmoneystck", "csmoneystck", true }, { "csgizmo", "csgizmo", true }
+};
 struct Actor {
 	const char* model;
 	const char* animation;
+	bool cutsceneModel;
 	int handle = -1;
 	animstore::Clip* clip = nullptr;
 	anim::Player player{};
 	s32 world[anim::MAX_NODES * 12]{};
 };
-static Actor s_actors[] = { { "tenpen", "cstenpenny" }, { "hern", "cshernandez" } };
+static Actor s_actors[8];
+static uint8_t s_numActors;
 static int s_actorStage;
+static uint32_t s_actorWaitAt;
+struct CarActor {
+	const char* model;
+	const char* animation;
+	int id = -1;
+	animstore::Clip* clip = nullptr;
+};
+static CarActor s_cars[2];
+static uint8_t s_numCars;
+static int s_carStage;
+static uint32_t s_carWaitAt;
+
+static void positionCar(CarActor& car, uint32_t time) {
+	if (car.id < 0 || !car.clip) return;
+	s32 pos[3], quat[4];
+	if (!anim::clipRootPose(animstore::entry(car.clip), time, pos, quat)) return;
+	veh::positionCutscene(car.id, s_offset[0] + pos[0] / 4096.0f,
+	                      s_offset[1] + pos[1] / 4096.0f,
+	                      s_offset[2] + pos[2] / 4096.0f,
+	                      2.0f * atan2f((float)quat[2], (float)quat[3]));
+}
+
+static void releaseCars() {
+	for (CarActor& car : s_cars) {
+		if (car.id >= 0) veh::remove(car.id);
+		animstore::release(car.clip);
+		car.id = -1;
+		car.clip = nullptr;
+	}
+	s_carStage = 0;
+	s_numCars = 0;
+}
 
 static void releaseActors() {
 	for (Actor& a : s_actors) {
@@ -53,11 +106,15 @@ static void releaseActors() {
 }
 
 void reset() {
+	releaseCars();
 	releaseActors();
 	s_shots = nullptr;
 	s_count = 0;
 	s_start = s_total = 0;
 	s_original = s_ready = s_placed = false;
+	s_haveReturn = s_next = false;
+	s_stage = s_subCount = 0;
+	s_numActors = 0;
 	s_animBlock = animstore::NO_BLOCK;
 	s_actorStage = 0;
 }
@@ -67,6 +124,7 @@ static void begin(uint32_t total) {
 	s_total = total;
 	chud::invalidate();
 	audio::setGameActive(false);
+	if (s_original) aestream::play(s_stage == 0 ? 706 : 708, 0.0f, false, false);
 	hud::log("cutscene: start %lu frames", (unsigned long)total);
 }
 
@@ -87,15 +145,21 @@ bool start(const Shot* shots, uint8_t count) {
 void stop() {
 	if (active()) {
 		const bool original = s_original;
+		const bool follow = original && s_stage == 0 && timing::vblanks() - s_start >= s_total;
 		s_original = false;
 		s_shots = nullptr;
 		s_count = 0;
 		s_total = 0;
 		if (original) {
+			aestream::stop();
+			releaseCars();
 			releaseActors();
+			s_actorStage = 0;
 			cj::setCutsceneBlock(animstore::NO_BLOCK);
 			player::teleport(s_return[0], s_return[1], s_return[2], s_return[3]);
 			col::resetScene();
+			s_ready = s_placed = false;
+			s_next = follow;
 		}
 		chud::invalidate();
 		audio::setGameActive(true);
@@ -103,6 +167,8 @@ void stop() {
 	}
 }
 bool active() { return s_shots || s_original; }
+bool takeNextOriginal() { const bool next = s_next; s_next = false; return next; }
+bool originalReady() { return s_ready && s_placed; }
 
 void update(uint32_t keysDown) {
 	if (!active()) return;
@@ -113,6 +179,7 @@ void update(uint32_t keysDown) {
 			cj::advance(dt);
 			for (Actor& a : s_actors)
 				if (a.clip) anim::advance(a.player, dt);
+			for (int i = 0; i < s_numCars; i++) positionCar(s_cars[i], elapsed);
 			float x, y;
 			cj::rootDelta(x, y);
 			player::g.x += x;
@@ -137,8 +204,13 @@ static uint8_t shotAt(uint32_t& elapsed) {
 
 const char* caption() {
 	if (!active()) return nullptr;
-	if (s_original) return nullptr;
 	uint32_t elapsed = timing::vblanks() - s_start;
+	if (s_original) {
+		for (int i = 0; i < s_subCount; i++)
+			if (elapsed >= s_subtitles[i].from && elapsed < s_subtitles[i].to)
+				return (const char*)TheText.get(s_subtitles[i].key);
+		return nullptr;
+	}
 	return s_shots[shotAt(elapsed)].caption;
 }
 
@@ -205,17 +277,31 @@ static bool readTrack(FILE* f, int section) {
 
 bool preloadOriginal(const char* name) {
 	s_ready = false;
+	s_camCount[0] = s_camCount[1] = s_subCount = 0;
 	if (!name || strlen(name) > 16) return false;
 	for (const char* p = name; *p; p++)
 		if (!(*p >= 'a' && *p <= 'z') && !(*p >= '0' && *p <= '9')) return false;
 	char path[64], line[256];
+	s_stage = strcmp(name, "prolog1") == 0 ? 0 : 1;
 	snprintf(path, sizeof path, "nitro:/anim/cuts/%s.cut", name);
 	FILE* f = fopen(path, "rb");
 	bool offset = false;
+	bool inText = false;
 	while (f && fgets(line, sizeof line, f)) {
-		if (sscanf(line, "offset %f %f %f", &s_offset[0], &s_offset[1], &s_offset[2]) == 3) {
+		if (sscanf(line, "offset %f %f %f", &s_offset[0], &s_offset[1], &s_offset[2]) == 3)
 			offset = true;
-			break;
+		if (!strncmp(line, "text", 4)) inText = true;
+		else if (inText && !strncmp(line, "end", 3)) inText = false;
+		else if (inText && s_subCount < 32) {
+			unsigned from, duration;
+			char key[16];
+			if (sscanf(line, "%u,%u,%15[A-Za-z0-9@_]", &from, &duration, key) == 3 &&
+			    from < 120000 && duration < 120000 && from + duration <= 120000) {
+				Subtitle& sub = s_subtitles[s_subCount++];
+				sub.from = (uint16_t)(from * 60 / 1000);
+				sub.to = (uint16_t)((from + duration) * 60 / 1000);
+				snprintf(sub.key, sizeof sub.key, "%s", key);
+			}
 		}
 	}
 	if (f) fclose(f);
@@ -238,7 +324,7 @@ bool preloadOriginal(const char* name) {
 	const bool valid = anim->numSeqs && root->boneTag == 0 && root->hasTrans && root->numFrames;
 	if (valid) {
 		const int16_t* first = (const int16_t*)(root + 1);
-		for (int i = 0; i < 3; i++) s_root[i] = first[5 + i] / 1024.0f;
+		for (int i = 0; i < 3; i++) s_root[i] = ((int32_t)first[5 + i] << root->transShift) / 1024.0f;
 	}
 	animstore::release(clip);
 	s_ready = valid;
@@ -250,25 +336,37 @@ bool preloadActorsStep() {
 	if (!s_ready || !s_placed) return true;
 	if (!s_actorStage) {
 		peds::suspendForCutscene();
-		for (Actor& a : s_actors) a.handle = pedmodel::requestCutscene(a.model);
+		const ActorDef* defs = s_stage == 0 ? s_airportActors : s_groveActors;
+		s_numActors = s_stage == 0 ? 4 : 8;
+		for (int i = 0; i < s_numActors; i++) {
+			Actor& a = s_actors[i];
+			a.model = defs[i].model;
+			a.animation = defs[i].animation;
+			a.cutsceneModel = defs[i].cutsceneModel;
+			a.handle = pedmodel::requestCutscene(a.model, a.cutsceneModel);
+		}
 		s_actorStage = 1;
+		s_actorWaitAt = timing::vblanks();
 		return false;
 	}
 	pedmodel::update();
 	bool waiting = false;
-	for (const Actor& a : s_actors) {
+	for (int i = 0; i < s_numActors; i++) {
+		const Actor& a = s_actors[i];
 		const pedmodel::Model* m = pedmodel::get(a.handle);
 		waiting |= m && (m->state == pedmodel::STATE_PENDING || m->state == pedmodel::STATE_TEXTURES);
 	}
-	if (waiting && ++s_actorStage < 180) return false;
-	for (Actor& a : s_actors) {
+	if (waiting && timing::vblanks() - s_actorWaitAt < 180) return false;
+	for (int i = 0; i < s_numActors; i++) {
+		Actor& a = s_actors[i];
 		const pedmodel::Model* m = pedmodel::get(a.handle);
 		a.clip = m && pedmodel::ready(a.handle) ? animstore::acquire(s_animBlock, a.animation) : nullptr;
 		if (a.clip && anim::play(a.player, m->skel, animstore::entry(a.clip))) {
 			a.player.loop = 0;
 			hud::log("cutscene actor %s: ready", a.model);
 		} else {
-			hud::log("cutscene actor %s: missing", a.model);
+			hud::log("cutscene actor %s: missing h=%d state=%d clip=%d",
+			         a.model, a.handle, m ? m->state : -1, a.clip != nullptr);
 			animstore::release(a.clip);
 			pedmodel::release(a.handle);
 			a.clip = nullptr;
@@ -278,12 +376,68 @@ bool preloadActorsStep() {
 	return true;
 }
 
+bool preloadVehiclesStep() {
+	if (!s_ready || !s_placed) return true;
+	if (!s_carStage) {
+		static const CarActor airport[] = { { "cstaxi92", "cstaxi92" } };
+		static const CarActor grove[] = {
+			{ "cstaxi92", "cstaxi92" }, { "cscopcarla92", "cscopcarla92" }
+		};
+		const CarActor* defs = s_stage == 0 ? airport : grove;
+		s_numCars = s_stage == 0 ? 1 : 2;
+		for (int i = 0; i < s_numCars; i++) {
+			CarActor& car = s_cars[i];
+			car.model = defs[i].model;
+			car.animation = defs[i].animation;
+			car.clip = animstore::acquire(s_animBlock, car.animation);
+			const int model = !strcmp(car.model, "cstaxi92") ? 420 : 596;
+			const int index = vehdata::findModel(model);
+			if (car.clip && index >= 0)
+				car.id = veh::spawn(index, s_offset[0], s_offset[1], s_offset[2], 0.0f, -1, car.model);
+			positionCar(car, 0);
+		}
+		s_carStage = 1;
+		s_carWaitAt = timing::vblanks();
+		return false;
+	}
+	vehmdl::update();
+	bool waiting = false;
+	for (int i = 0; i < s_numCars; i++) {
+		CarActor& car = s_cars[i];
+		if (car.id < 0) continue;
+		const veh::Vehicle* v = veh::get(car.id);
+		const vehmdl::Model* m = v ? vehmdl::get(v->model) : nullptr;
+		if (m && (m->state == vehmdl::STATE_PENDING || m->state == vehmdl::STATE_TEXTURES)) waiting = true;
+		else if (!veh::prepareCutscene(car.id)) {
+			hud::log("cutscene car %s: missing", car.model);
+			veh::remove(car.id);
+			car.id = -1;
+		}
+	}
+	if (waiting && timing::vblanks() - s_carWaitAt < 180) return false;
+	if (waiting)
+		for (int i = 0; i < s_numCars; i++) {
+			CarActor& car = s_cars[i];
+			const veh::Vehicle* v = veh::get(car.id);
+			if (!v || vehmdl::ready(v->model)) continue;
+			hud::log("cutscene car %s: timed out", car.model);
+			veh::remove(car.id);
+			car.id = -1;
+		}
+	for (int i = 0; i < s_numCars; i++)
+		if (s_cars[i].id >= 0) hud::log("cutscene car %s: ready", s_cars[i].model);
+	return true;
+}
+
 bool placeOriginal() {
 	if (!s_ready || s_placed) return false;
-	s_return[0] = player::g.x;
-	s_return[1] = player::g.y;
-	s_return[2] = player::g.z;
-	s_return[3] = player::g.heading;
+	if (!s_haveReturn) {
+		s_return[0] = player::g.x;
+		s_return[1] = player::g.y;
+		s_return[2] = player::g.z;
+		s_return[3] = player::g.heading;
+		s_haveReturn = true;
+	}
 	player::teleport(s_offset[0] + s_root[0], s_offset[1] + s_root[1],
 	                 s_offset[2] + s_root[2], 0.0f);
 	s_placed = true;
@@ -304,10 +458,24 @@ bool startOriginal() {
 
 void drawActors(float x, float y, float z) {
 	if (!s_original) return;
+	float eye[3], target[3];
+	if (!view(eye, target)) return;
+	const float dir[3] = { target[0] - eye[0], target[1] - eye[1], target[2] - eye[2] };
+	const float dirLength = sqrtf(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
 	MATRIX_STORE = pedmodel::SLOT_VIEW;
 	for (Actor& a : s_actors) {
 		const pedmodel::Model* m = pedmodel::get(a.handle);
 		if (!a.clip || !m || !pedmodel::ready(a.handle)) continue;
+		s32 root[3];
+		if (dirLength > 0.001f && anim::rootTranslation(a.player, m->skel, a.player.time, root)) {
+			const float dx = s_offset[0] + root[0] / 4096.0f - eye[0];
+			const float dy = s_offset[1] + root[1] / 4096.0f - eye[1];
+			const float dz = s_offset[2] + root[2] / 4096.0f - eye[2];
+			const float forward = (dx * dir[0] + dy * dir[1] + dz * dir[2]) / dirLength;
+			const float radius = forward * 1.4f + 3.0f;
+			if (forward < -3.0f || forward > 100.0f ||
+			    dx * dx + dy * dy + dz * dz - forward * forward > radius * radius) continue;
+		}
 		mem::Scratch scratch;
 		anim::Local* local = (anim::Local*)scratch.alloc(sizeof(anim::Local) * m->skel->numBones);
 		if (!local) continue;

@@ -79,7 +79,10 @@ void init();
 // 0 = north, CCW like peds). The model streams in over a few frames; the
 // vehicle is placed on the ground (boats: the water, trains: the nearest
 // track) once its collision is there. Returns the id or -1.
-int spawn(int vehIndex, float x, float y, float z, float heading, int colour = -1);
+int spawn(int vehIndex, float x, float y, float z, float heading, int colour = -1,
+          const char* cutsceneModel = nullptr);
+bool prepareCutscene(int id);
+void positionCutscene(int id, float x, float y, float z, float heading);
 void remove(int id);
 void removeAll();
 Vehicle* get(int id);

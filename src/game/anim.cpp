@@ -136,10 +136,11 @@ static void seqRot(const ds::AnimSeq* s, uint8_t& cursor, int32_t t, s32* q) {
 }
 
 // trans keys are s16 units of 1/1024 -> s32 20.12 is *4
-static void lerpTrans(const int16_t* ka, const int16_t* kb, int32_t t, s32* out) {
+static void lerpTrans(const ds::AnimSeq* s, const int16_t* ka, const int16_t* kb, int32_t t, s32* out) {
 	const s32 f = keyFrac(t, ka[4], kb[4]);
 	for (int c = 0; c < 3; c++)
-		out[c] = ((s32)ka[5 + c] << 2) + ((((s32)(kb[5 + c] - ka[5 + c]) << 2) * f) >> 12);
+		out[c] = ((s32)ka[5 + c] << (2 + s->transShift)) +
+		         ((((s32)(kb[5 + c] - ka[5 + c]) << (2 + s->transShift)) * f) >> 12);
 }
 
 static void seqTrans(const ds::AnimSeq* s, uint8_t cursor, int32_t t, s32* out) {
@@ -147,7 +148,7 @@ static void seqTrans(const ds::AnimSeq* s, uint8_t cursor, int32_t t, s32* out) 
 	const uint8_t* k = seqKeys(s);
 	const int16_t* ka = (const int16_t*)(k + cursor * stride);
 	const int16_t* kb = (const int16_t*)(k + (cursor + 1 < s->numFrames ? cursor + 1 : cursor) * stride);
-	lerpTrans(ka, kb, t, out);
+	lerpTrans(s, ka, kb, t, out);
 }
 
 // Same interpolation as seqTrans, scanning keys itself (does not touch cursors).
@@ -159,7 +160,7 @@ static bool sampleTrans(const ds::AnimSeq* s, int32_t t, s32* out) {
 	while (i + 1 < s->numFrames && keyTime(k, i + 1, stride) <= t) i++;
 	const int16_t* ka = (const int16_t*)(k + i * stride);
 	const int16_t* kb = (const int16_t*)(k + (i + 1 < s->numFrames ? i + 1 : i) * stride);
-	lerpTrans(ka, kb, t, out);
+	lerpTrans(s, ka, kb, t, out);
 	return true;
 }
 
@@ -169,6 +170,15 @@ static const ds::AnimSeq* rootSeq(const Player& p, const mdl::Model* m) {
 }
 
 // --- public -----------------------------------------------------------------
+
+bool clipRootPose(const ds::AnimEntry* clip, int32_t time, s32 pos[3], s32 quat[4]) {
+	if (!clip || !clip->numSeqs) return false;
+	const ds::AnimSeq* s = (const ds::AnimSeq*)(clip + 1);
+	if (!sampleTrans(s, time, pos)) return false;
+	uint8_t cursor = 0;
+	seqRot(s, cursor, time, quat);
+	return true;
+}
 
 bool prepare(mdl::Model* m) {
 	if (!m || !m->nodes || m->bindQ) return m && m->bindQ;
@@ -230,7 +240,7 @@ bool rootEndTranslation(const Player& p, const mdl::Model* m, s32 out[3]) {
 	const ds::AnimSeq* s = rootSeq(p, m);
 	if (!s || !s->hasTrans || s->numFrames < 1) return false;
 	const int16_t* k = (const int16_t*)(seqKeys(s) + (s->numFrames - 1) * seqKeyStride(s));
-	for (int c = 0; c < 3; c++) out[c] = (s32)k[5 + c] << 2;
+	for (int c = 0; c < 3; c++) out[c] = (s32)k[5 + c] << (2 + s->transShift);
 	return true;
 }
 

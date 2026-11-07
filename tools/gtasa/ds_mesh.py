@@ -11,7 +11,7 @@ MF_SKINNED = 1
 
 DEFAULTS = dict(ratio=1.0, min_tris=64, max_tris=0, decimate='cluster', min_area=0.0, max_shift=0.0, ground_qem=False,
                 uvs=True, normals=False, vertex_colors=True, skin=True, drop_damage=False, drop_vlo=True,
-                drop_frames=[])
+                drop_frames=[], rigid_skin=False)
 
 
 # --- RW skinning (validated against gta-reversed / librw semantics) ----------
@@ -492,6 +492,34 @@ def convert_geometry(g, p):
     return bytes(out), len(g.tris), len(idx) // 3
 
 
+def _synth_rigid_skin(m, atoms):
+    if not m.hanim or len(m.hanim) > 64 or len({g for _, g in atoms}) != len(atoms):
+        raise ValueError('rigid cutscene model needs a unique geometry per atomic and an HAnim hierarchy')
+    world = []
+    for f in m.frames:
+        local = list(f.rot) + list(f.pos)
+        world.append(_mm(local, world[f.parent]) if f.parent >= 0 else local)
+    inv = [_invm(world[frame]) for _, frame, _ in m.hanim]
+    bones = {frame: i for i, (_, frame, _) in enumerate(m.hanim)}
+    for frame, gi in atoms:
+        g = m.geometries[gi]
+        if g.skin:
+            raise ValueError('rigid cutscene model unexpectedly has skin')
+        node = frame
+        while node not in bones and node >= 0:
+            node = m.frames[node].parent
+        if node < 0:
+            raise ValueError('rigid atomic has no HAnim parent')
+        sk = dff.Skin()
+        sk.num_bones = len(m.hanim)
+        sk.inv_matrices = [(a[0], a[1], a[2], 0, a[3], a[4], a[5], 0,
+                            a[6], a[7], a[8], 0, a[9], a[10], a[11], 1) for a in inv]
+        sk.indices = bytes((bones[node], 0, 0, 0)) * len(g.verts)
+        sk.weights = [1.0, 0.0, 0.0, 0.0] * len(g.verts)
+        g.verts = [tuple(_xf(world[frame], v)) for v in g.verts]
+        g.skin = sk
+
+
 def convert_dff(data, p):
     m = dff.parse(data)
     drops = list(p['drop_frames']) + (['*_dam'] if p['drop_damage'] else []) + (['*_vlo'] if p['drop_vlo'] else [])
@@ -504,6 +532,8 @@ def convert_dff(data, p):
         return False
 
     atoms = [(f, g) for f, g in m.atomics if g < len(m.geometries) and not dropped(f)]
+    if p.get('rigid_skin'):
+        _synth_rigid_skin(m, atoms)
     used = sorted({g for _, g in atoms})
     gmap = {g: i for i, g in enumerate(used)}
     geoms, tin, tout = [], 0, 0

@@ -44,6 +44,26 @@ def decrypt(buf, pos):
     k = (KEY * (len(buf) // 16 + 2))[pos & 15:]
     return bytes(a ^ b for a, b in zip(buf, k))
 
+def aligned_track_offset(path, expected, window=32768):
+    start = max(0, expected - window)
+    with open(path, 'rb') as f:
+        f.seek(start)
+        raw = f.read(expected + window + TRACK_HEADER + 4 - start)
+    dec = decrypt(raw, start)
+    signature = b'\xff\xff\xff\xff\x00\x00\x00\x00' * 2
+    found = []
+    pos = 0
+    while True:
+        pos = dec.find(signature, pos)
+        if pos < 0:
+            break
+        if dec[pos + TRACK_HEADER:pos + TRACK_HEADER + 4] == b'OggS':
+            found.append(start + pos)
+        pos += 8
+    if not found:
+        raise ValueError(f'no valid OGG track near offset {expected}')
+    return min(found, key=lambda x: abs(x - expected))
+
 
 def resample(s, sr, dr):
     if dr >= sr or not s:

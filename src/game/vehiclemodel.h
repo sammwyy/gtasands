@@ -74,6 +74,7 @@ enum State : uint8_t { STATE_FREE, STATE_PENDING, STATE_TEXTURES, STATE_READY, S
 struct Model {
 	uint8_t state, refs;
 	int16_t vehIndex;           // vehdata index
+	char cutsceneName[24];
 	ds::VehInfo info;
 	Part parts[MAX_PARTS];
 	int numParts;
@@ -108,7 +109,7 @@ struct Model {
 
 void init();
 // Starts (or references) the model of vehdata record `vehIndex`. -1 if no slot.
-int request(int vehIndex);
+int request(int vehIndex, const char* cutsceneName = nullptr);
 void release(int handle);
 Model* get(int handle);
 bool ready(int handle);

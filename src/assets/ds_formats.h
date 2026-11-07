@@ -155,7 +155,7 @@ struct ColFace { uint16_t a, b, c; uint8_t material, light; };
 // ---------------------------------------------------------------- DANM (animations, from .ifp ANP3)
 struct AnimHeader {
 	uint32_t magic;          // 'DANM'
-	uint16_t version, numAnims;  // version 2
+	uint16_t version, numAnims;  // version 2 or 3
 	char block[24];
 	// AnimDirEntry dir[numAnims]
 	// per anim (at dir[i].offset): AnimEntry, then per sequence: AnimSeq + frames (padded to 4)
@@ -171,10 +171,10 @@ struct AnimEntry {
 struct AnimSeq {
 	char name[24];
 	int16_t boneTag;         // eBoneTag, -1 = match by name
-	uint8_t hasTrans, pad;
+	uint8_t hasTrans, transShift; // v3: translation scaled by (1 << transShift); v2: 0
 	uint16_t numFrames, pad2;
 	// frames: int16 q[4] (x,y,z,w * 4096), int16 time (absolute, 1/60 s)
-	//         [+ int16 t[3] (* 1024) if hasTrans]
+	//         [+ int16 t[3] (* 1024 / (1 << transShift)) if hasTrans]
 };
 
 // ---------------------------------------------------------------- DSRT (radar tiles, models/radar.dsrt)

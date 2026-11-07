@@ -47,6 +47,7 @@ bool rootTranslation(const Player& p, const mdl::Model* m, int32_t time, s32 out
 
 // Translation of the root bone's last key (the pose the cycle leaves on).
 bool rootEndTranslation(const Player& p, const mdl::Model* m, s32 out[3]);
+bool clipRootPose(const ds::AnimEntry* clip, int32_t time, s32 pos[3], s32 quat[4]);
 
 // One node's local pose: quaternion (4.12, xyzw, not necessarily unit: the
 // blend normalizes once) and translation (20.12).

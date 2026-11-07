@@ -47,7 +47,8 @@ static bool readAt(const Block& b, uint32_t off, void* dst, uint32_t size) {
 
 static int addBlock(Block& b) {
 	ds::AnimHeader h;
-	if (!readAt(b, 0, &h, sizeof h) || h.magic != DS_FOURCC('D', 'A', 'N', 'M') || h.version != 2) {
+	if (!readAt(b, 0, &h, sizeof h) || h.magic != DS_FOURCC('D', 'A', 'N', 'M') ||
+	    (h.version != 2 && h.version != 3)) {
 		hud::log("\x1b[31manim block: bad DANM (rebuild assets)\x1b[39m");
 		return NO_BLOCK;
 	}

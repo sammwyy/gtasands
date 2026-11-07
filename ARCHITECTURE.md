@@ -257,37 +257,44 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
   `missions.cpp` starts a short funeral-area camera sequence after the
   Jefferson preload for `INTRO1`, before allowing the BMX objective.
 - This is a reusable scene controller, **not** the full `CCutsceneMgr` or
-  an SCM VM. The full cutscene cast, cutscene objects, voice/audio and script
-  opcodes (`load_cutscene_data`, `start_cutscene`, skip, end) remain unported;
-  do not claim complete original cinematic parity or automatic playback for
-  every mission.
-- On a new game, the loading-screen `jobCutscene` reads `PROLOG3.cut`'s original
-  world offset, `PROLOG3.dat` camera eye/target keyframes (up to 64 per track)
-  and the converted `PROLOG3.ifp` `csplay` animation. The world loads around
-  its Grove Street position before gameplay; after the original 80-second
-  camera/animation track or a skip, CJ is restored to the authored Jefferson
-  spawn. The camera uses linear interpolation between original keys rather
-  than the PC spline handles. Without these optional assets, the game starts
-  normally. This does not replace the rest of the original INTRO script.
-- The loading job also releases the ambient pedestrian population's model
-  references and preloads the stock Tenpenny and Hernandez ped models from
-  `gta3.dspk`. During PROLOG3, their bones follow the original `cstenpenny`
-  and `cshernandez` ANPK tracks, including root position/rotation relative
-  to the `.cut` scene offset. `pedmodel` renders them after CJ; both clips
-  and model references are released on completion or skip, and ambient peds
-  repopulate afterwards. On-screen actors use the original gameplay ped
-  meshes, **not** the higher-detail cutscene-specific DFFs from
-  `models/cutscene.img`. Pulaski, the police car, taxi, props and attachments
-  still need their original scene models and script timing.
-- `tools/gtasa/ifp.py` converts the original cutscene ANPK container to the
-  same per-clip DANM format as the ANP3 gameplay animations. The `cutscene_files`
-  asset section includes PROLOG1, PROLOG3, INTRO1a and INTRO1b, with only
-  PROLOG3 currently played. `tools/assets.py sync` extracts just those
-  `.cut/.dat/.ifp` entries from the PC `anim/cuts.img` into the ignored
-  `game/anim/cuts/` directory; converted clips stream through `animstore`.
-  The installed PC path must be mounted when syncing. Original cutscene
-  cutscene-specific character models, full actor timelines, subtitled
-  dialogue and voice tracks are not implemented yet.
+  an SCM VM. On a new game, `jobCutscene` places CJ in the airport interior
+  (area 14) and preloads the original `PROLOG1` camera, `csplay` animation,
+  cast and taxi. Natural completion returns CJ to the saved spawn, then a
+  separate short black loading job changes to exterior area 0, preloads
+  collision/world/cast/vehicles and starts `PROLOG3` (~80 s). A skip in either
+  scene ends the whole prologue, releases its cast/vehicles and restores the
+  saved CJ spawn, HUD, audio and population. Without the optional original
+  resources, the new game falls back to PROLOG3 or starts gameplay.
+- The eye/target camera tracks (up to 64 keys each) and timed captions come
+  from the original `.dat` and `.cut`; GXT captions use the original `INTRO1`
+  mission table in `american.gxt`. Camera interpolation is still linear, not
+  the original spline handles/FOV/roll. `PROLOG1` loads the cutscene-specific
+  `csstew`, `csbogman` and two `cssuitcase` instances from
+  `models/cutscene.dspk`; `PROLOG3` plays Tenpenny, Hernandez and Pulaski using
+  stock ped meshes, plus original `cs9mm`, `cshandcuff`, `csmoneystck` and
+  `csgizmo` prop meshes. Rigid props are converted to skinned HAnim nodes
+  offline, with their nameless ANPK bone tracks assigned in original node
+  order. Actors follow their original root/body ANPK tracks; an actor outside
+  the camera cone is not posed/submitted, leaving DS polygons for the scene
+  backdrop. The original `cstaxi92` and `cscopcarla92` DFF/TXD models render
+  through the vehicle model streamer and follow their
+  cutscene root position/heading; wheel/door/body sub-tracks are not applied.
+- `tools/gtasa/ifp.py` converts CUTS.IMG ANPK into streamed DANM. For tracks
+  whose root travels farther than the older +/-32 m format, DANM v3 stores
+  a per-sequence `transShift`; v2 remains readable. `tools/assets.py sync`
+  extracts selected `.cut/.dat/.ifp` from `anim/cuts.img` and the selected
+  DFF/TXD files from `models/cutscene.img`, keeping PC binaries out of git.
+  The extracted CUTSCENE audio streams for PROLOG1 (track 706, ~22.37 s) and
+  PROLOG3 (708, 80 s) become mono ADPCM in `cutscene.dsst`; the converter
+  checks the OGG header and realigns offsets when the source CUTSCENE pack
+  differs from `TrakLkup.dat`. Both voices start with their respective scene,
+  and stop on skip/completion. Current assets occupy ~389 MB / 448 MB.
+- Remaining fidelity gaps: `PROLOG1`'s late airport taxi shot lacks the
+  original exterior backdrop in the area-14 map (actors can appear against
+  sky); prop-to-hand attachments, the cutscene-exclusive cop body meshes
+  and secondary vehicle/face animations are not drawn. Scripted
+  dialogue/actions following PROLOG3 and INTRO1a/b are not executed by an
+  SCM VM. No complete original campaign is implied.
 
 ## 6b. Streamed map (`game/world.*`)
 

@@ -43,6 +43,7 @@ struct Model {
 	uint8_t state, refs;
 	int16_t pedIndex;          // peddata model index
 	char cutsceneName[24];
+	bool cutsceneSource;
 	mdl::Model* skel;          // compact skeleton (one STREAM block, never mdl::free'd)
 	Segment segs[MAX_SEGS];
 	uint8_t numSegs;
@@ -61,7 +62,7 @@ struct Model {
 void init();
 // References (or starts loading) peddata model `pedIndex`. -1 if no slot is free.
 int request(int pedIndex);
-int requestCutscene(const char* name);
+int requestCutscene(const char* name, bool source = false);
 void release(int h);
 Model* get(int h);
 bool ready(int h);

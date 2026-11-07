@@ -121,7 +121,8 @@ void draw() {
 	else if (player::attachedMatrix(px, py, vz, attached)) cj::drawBasis(attached);
 	else cj::draw(0.0f, 0.0f, player::g.z - vz, player::g.heading);
 	// vehicles right after CJ (their own light0: the sun), then the map's budget
-	if (world::area() == 0) veh::draw({ px, py, vz, px + elx, py + ely, vz + eyeH, yaw, pitch });
+	if (world::area() == 0 || cutscene::active())
+		veh::draw({ px, py, vz, px + elx, py + ely, vz + eyeH, yaw, pitch });
 	// peds after the vehicles (their own polygon budget, nearest first)
 	if (world::area() == 0) peds::draw({ px, py, vz, px + elx, py + ely, vz + eyeH, yaw, pitch });
 	cutscene::drawActors(px, py, vz);

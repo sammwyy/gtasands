@@ -261,6 +261,7 @@ class Builder:
     def do_files(self, name, sec, st):
         files = self._globs(self.cfg.game, sec['src'])
         tasks, rels = [], {}
+        packed = {} if sec.get('pack') else None
         for rel, p in sorted(files.items())[:self.limit or None]:
             entry = str(rel)
             h = EXT_HANDLER.get(p.suffix.lower(), 'copy')
@@ -270,8 +271,12 @@ class Builder:
                 continue
             out_rel = Path(sec.get('out', '')) / (entry if sec.get('keep_paths', True) else rel.name).lower()
             if h == 'copy':
-                n = self._emit(out_rel, p.read_bytes())
-                st['out'] += n
+                data = p.read_bytes()
+                if packed is not None:
+                    packed[out_rel.name] = data
+                else:
+                    st['out'] += self._emit(out_rel, data)
+                n = len(data)
                 self._account(st, entry, n, n)
                 st['files'] += 1
                 continue
@@ -279,9 +284,17 @@ class Builder:
             tasks.append(self._task(name, entry, h, p, 0, p.stat().st_size, pp, ov))
         sizes = {t[3]: t[7] for t in tasks}
         for entry, (out, stats) in self._run(name, st, tasks).items():
-            st['out'] += self._emit(rels[entry], out)
+            if packed is not None:
+                packed[rels[entry].name] = out
+            else:
+                st['out'] += self._emit(rels[entry], out)
             self._account(st, entry, sizes[entry], len(out), stats)
             st['files'] += 1
+        if packed is not None:
+            dst = Path(sec['pack'])
+            write_pack(self.cfg.out / dst, packed)
+            self.outputs.append(str(dst))
+            st['out'] = (self.cfg.out / dst).stat().st_size
 
     def do_copy(self, name, sec, st):
         for rel, p in sorted(self._globs(self.cfg.game, sec['src']).items()):
@@ -379,13 +392,17 @@ class Builder:
             if not src.exists():
                 src = root / 'streams' / pn
             mx = p.get('max_tracks', 0) or self.limit
-            if removed or not src.exists() or (mx and count.get(pn, 0) >= mx):
+            allowed = p.get('track_ids')
+            if removed or not src.exists() or (allowed is not None and ti not in allowed) or (
+                    mx and count.get(pn, 0) >= mx):
                 st['removed'] += 1
                 continue
             count[pn] = count.get(pn, 0) + 1
             entry = f'{pn}/{ti}'
             where[entry] = (pn, ti)
-            p = {k: v for k, v in p.items() if k != 'max_tracks'}
+            p = {k: v for k, v in p.items() if k not in ('max_tracks', 'track_ids')}
+            if pn.upper() == 'CUTSCENE':
+                off = audio.aligned_track_offset(src, off)
             tasks.append(self._task(name, entry, 'stream', src, off, size + audio.TRACK_HEADER, p))
         per = {}
         for entry, (out, stats) in self._run(name, st, tasks).items():
@@ -573,9 +590,9 @@ def sync(cfg, dry=False):
         names = {n.lower() for n in sec.get('names', [])}
         for name, off, size in img.read_toc(archive):
             if (Path(name).name != name or Path(name).stem.lower() not in names
-                    or Path(name).suffix.lower() not in ('.ifp', '.dat', '.cut')):
+                    or Path(name).suffix.lower() not in sec.get('suffixes', ('.ifp', '.dat', '.cut'))):
                 continue
-            dst = cfg.game / 'anim/cuts' / name.lower()
+            dst = cfg.game / sec.get('extract_to', 'anim/cuts') / name.lower()
             if dst.is_file() and dst.stat().st_mtime >= archive.stat().st_mtime:
                 continue
             print(f'  extract {name} from {sec["from_img"]}')

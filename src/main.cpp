@@ -151,6 +151,12 @@ int main() {
 			if (playing) {
 				const bool scene = cutscene::active();
 				if (scene) cutscene::update(in.down);
+				if (cutscene::takeNextOriginal()) {
+					hud::setGameActive(false);
+					audio::setGameActive(false);
+					loadscreen::beginPrologueTransition();
+					s_state = AppState::LOADING;
+				}
 				if (!scene) peddata::update(player::g.x, player::g.y);
 				col::update(player::g.x, player::g.y, player::g.z);        // collision near list + streaming
 				if (!scene && !missions::busy()) player::update();

@@ -22,6 +22,7 @@
 #include "game/player.h"
 #include "game/sfx.h"
 #include "game/streaming.h"
+#include "game/text/gxt.h"
 #include "game/timecycle.h"
 #include "game/vehicle.h"
 #include "game/vehicledata.h"
@@ -51,7 +52,7 @@ static constexpr u32 WORK_US = 10000;
 static const sprite::RGBA BAR_COLOR{ 225, 225, 225, 255 }; // HUD_COLOUR_LIGHT_GRAY
 
 enum class Phase : uint8_t { FADE_IN, LOADING, HOLD, FADE_OUT };
-enum class Mode : uint8_t { TITLE, LOAD };
+enum class Mode : uint8_t { TITLE, LOAD, PROLOGUE };
 
 static tex::Texture* s_splash;
 static float s_progress;
@@ -90,6 +91,10 @@ static bool jobTune() { return sfx::tuneStep(); }
 static bool jobOpenModels() {
 	const bool ok = streaming::g_models.open("nitro:/models/gta3.dspk");
 	hud::log("gta3.dspk: %u entries", ok ? (unsigned)streaming::g_models.count() : 0u);
+	return true;
+}
+static bool jobOpenCutsceneModels() {
+	streaming::g_cutscene.open("nitro:/models/cutscene.dspk");
 	return true;
 }
 // gta3's TOC is 256 KB: only a sparse index is built, 16 KB per slice
@@ -131,13 +136,26 @@ static bool jobCol() {                                 // collision index + reco
 	return true;
 }
 static bool jobMissions() { missions::init(); return true; }
+static bool jobPrologueText() {
+	if (missions::newGame() && !TheText.loadMission("nitro:/text/american.gxt", "INTRO1"))
+		hud::log("cutscene: INTRO1 text unavailable");
+	return true;
+}
 static bool jobCutscene() {
-	if (missions::newGame() && cutscene::preloadOriginal("prolog3")) cutscene::placeOriginal();
+	if (missions::newGame()) {
+		if (cutscene::preloadOriginal("prolog1")) {
+			world::setArea(14);
+			cutscene::placeOriginal();
+		} else if (cutscene::preloadOriginal("prolog3")) {
+			cutscene::placeOriginal();
+		}
+	}
 	return true;
 }
 static bool jobVehicles() { veh::init(); return vehdata::initStep(); }   // vehicles.dveh tables
 static bool jobPeds() { return peds::initStep(); }        // peds.dped, first ped models, start-of-game crowd
 static bool jobCutsceneActors() { return cutscene::preloadActorsStep(); }
+static bool jobCutsceneVehicles() { return cutscene::preloadVehiclesStep(); }
 static bool jobAudio() { return audio::initGameStep(); }   // surfaces, audio zones, in-game sounds
 static bool jobReport() {
 	char buf[96];
@@ -152,6 +170,7 @@ static bool (*const s_jobs[])() = {
 	jobTune,
 	jobOpenModels,
 	jobIndexModels,
+	jobOpenCutsceneModels,
 	jobOpenInteriors,
 	jobIndexInteriors,
 	jobOpenPlayer,
@@ -166,6 +185,7 @@ static bool (*const s_jobs[])() = {
 	jobZones,
 	jobEntryExits,
 	jobMissions,
+	jobPrologueText,
 	jobCutscene,
 	jobRadar,
 	jobWorld,
@@ -173,10 +193,31 @@ static bool (*const s_jobs[])() = {
 	jobVehicles,
 	jobPeds,
 	jobCutsceneActors,
+	jobCutsceneVehicles,
 	jobAudio,
 	jobReport,
 };
 static constexpr int NUM_JOBS = sizeof(s_jobs) / sizeof(s_jobs[0]);
+static bool jobNextScene() {
+	world::setArea(0);
+	col::resetScene();
+	if (cutscene::preloadOriginal("prolog3")) cutscene::placeOriginal();
+	else hud::log("cutscene: prolog3 unavailable; returning to gameplay");
+	return true;
+}
+static int s_transitionWait;
+static bool jobNextWorld() {
+	if (!cutscene::originalReady()) return true;
+	return world::preloadAreaStep(player::g.x, player::g.y, player::g.z) || ++s_transitionWait > 180;
+}
+static bool jobNextCol() {
+	if (!cutscene::originalReady()) return true;
+	return col::preloadAreaStep(player::g.x, player::g.y, player::g.z) || ++s_transitionWait > 300;
+}
+static bool (*const s_prologueJobs[])() = {
+	jobNextScene, jobNextWorld, jobNextCol, jobCutsceneActors, jobCutsceneVehicles
+};
+static constexpr int NUM_PROLOGUE_JOBS = sizeof(s_prologueJobs) / sizeof(s_prologueJobs[0]);
 
 void beginTitle() {
 	s_mode = Mode::TITLE;
@@ -197,6 +238,15 @@ void begin() {
 	s_t0 = timing::vblanks();
 }
 
+void beginPrologueTransition() {
+	s_mode = Mode::PROLOGUE;
+	s_splash = nullptr;
+	s_phase = Phase::FADE_IN;
+	s_step = s_transitionWait = 0;
+	s_progress = 0.0f;
+	s_t0 = timing::vblanks();
+}
+
 bool update() {
 	const u32 now = timing::vblanks();
 	if (s_mode == Mode::TITLE) {
@@ -211,8 +261,10 @@ bool update() {
 
 	// run jobs until this frame's budget is spent (at least one slice/frame)
 	const u32 start = timing::ticks();
-	while (s_step < NUM_JOBS) {
-		if (s_jobs[s_step]()) s_step++;
+	const bool prologue = s_mode == Mode::PROLOGUE;
+	const int count = prologue ? NUM_PROLOGUE_JOBS : NUM_JOBS;
+	while (s_step < count) {
+		if ((prologue ? s_prologueJobs : s_jobs)[s_step]()) s_step++;
 		if (timing::usSince(start) >= WORK_US) break;
 	}
 	if (s_phase == Phase::FADE_IN && now - s_t0 >= FADE_VBLANKS)
@@ -220,11 +272,11 @@ bool update() {
 
 	// the bar follows whichever is slower: real jobs or the minimum on-screen
 	// time (keeps the artwork up for a moment like a console load would)
-	const float stepF = (float)s_step / NUM_JOBS;
-	const float timeF = std::min((float)(now - s_t0) / MIN_VBLANKS, 1.0f);
+	const float stepF = (float)s_step / count;
+	const float timeF = std::min((float)(now - s_t0) / (prologue ? 20 : MIN_VBLANKS), 1.0f);
 	s_progress = 100.0f * std::min(stepF, timeF);
 
-	if (s_phase != Phase::FADE_OUT && s_step == NUM_JOBS && s_progress >= 100.0f) {
+	if (s_phase != Phase::FADE_OUT && s_step == count && s_progress >= 100.0f) {
 		s_phase = Phase::FADE_OUT;
 		s_fadeT0 = now;
 	}
@@ -248,7 +300,7 @@ void draw() {
 	sprite::beginFrame();
 	if (s_splash) sprite::draw(s_splash, full, { 255, 255, 255, 255 });
 	else sprite::rect(full, { 0, 0, 0, 255 });
-	if (s_progress > 0.0f && s_progress < 100.0f)
+	if (s_mode != Mode::PROLOGUE && s_progress > 0.0f && s_progress < 100.0f)
 		drawBar(s_progress);
 
 	float a = 0.0f;

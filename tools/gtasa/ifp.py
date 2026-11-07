@@ -106,8 +106,8 @@ def _parse_anpk(data):
                     raw = [round(v * (4096 if j == 3 else -4096)) if math.isfinite(v) else 0
                            for j, v in enumerate(q)]
                     raw.append(round(t * 60))
-                    raw.extend(round(v * 1024) if math.isfinite(v) else 0 for v in pos)
-                    s.frames.append(tuple(max(-32768, min(32767, x)) for x in raw))
+                    raw.extend(round(v * 1024) if math.isfinite(v) and abs(v) <= 512 else 0 for v in pos)
+                    s.frames.append(tuple(max(-32768, min(32767, x)) for x in raw[:5]) + tuple(raw[5:]))
             a.seqs.append(s)
         if o > end:
             raise ValueError('animation exceeds DGAN')

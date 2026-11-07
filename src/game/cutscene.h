@@ -20,8 +20,11 @@ bool view(float eye[3], float target[3]);
 void drawOverlay();
 bool preloadOriginal(const char* name);
 bool preloadActorsStep();
+bool preloadVehiclesStep();
 bool placeOriginal();
 bool startOriginal();
+bool takeNextOriginal();
+bool originalReady();
 void drawActors(float x, float y, float z);
 
 }

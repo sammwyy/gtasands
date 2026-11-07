@@ -15,7 +15,7 @@ namespace aestream {
 // Starts trackId (TrakLkup.dat index). Resuming the track that was stopped
 // last continues where it left off (m_PrevAmbiencePlayTimeMs); otherwise
 // it starts at the beginning. Returns false if the track is not in the build.
-bool play(uint32_t trackId, float volumeDb, bool loop);
+bool play(uint32_t trackId, float volumeDb, bool loop, bool resume = true);
 void stop();
 bool playing();
 uint32_t track();                 // current track id (~0u when stopped)

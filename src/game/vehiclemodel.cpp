@@ -42,7 +42,7 @@ struct TexEntry {
 	void* staging;
 };
 
-struct Dir { FILE* file; uint32_t base; int count; ds::TxdEntry* e; };
+struct Dir { FILE* file; const Pack* pack; uint32_t base; int count; ds::TxdEntry* e; };
 
 static Model s_models[MAX_MODELS];
 static TexEntry s_tex[MAX_TEX];
@@ -89,7 +89,7 @@ static void openGeneric() {
 		fclose(f);
 		return;
 	}
-	s_generic = { f, 0, th.count, e };
+	s_generic = { f, nullptr, 0, th.count, e };
 }
 
 static void* readEntry(const Dir& d, const ds::TxdEntry& e) {
@@ -97,7 +97,7 @@ static void* readEntry(const Dir& d, const ds::TxdEntry& e) {
 	if (!buf) return nullptr;
 	bool ok;
 	if (d.file) ok = !fseek(d.file, (long)(d.base + e.offset), SEEK_SET) && fread(buf, 1, e.size, d.file) == e.size;
-	else ok = streaming::g_models.read(d.base + e.offset, buf, e.size);
+	else ok = (d.pack ? *d.pack : streaming::g_models).read(d.base + e.offset, buf, e.size);
 	if (!ok || ((const ds::TexHeader*)buf)->magic != DS_FOURCC('D', 'T', 'E', 'X')) {
 		mem::free(buf);
 		return nullptr;
@@ -365,9 +365,11 @@ static void freeModel(Model& m) {
 static bool startLoad(Model& m) {
 	openGeneric();
 	s_stats.loads++;
+	const Pack& pack = m.cutsceneName[0] ? streaming::g_cutscene : streaming::g_models;
+	const char* const base = m.cutsceneName[0] ? m.cutsceneName : m.info.model;
 	char name[40];
-	snprintf(name, sizeof name, "%.24s.dff", m.info.model);
-	m.blob = streaming::g_models.load(name, mem::TAG_MODEL);
+	snprintf(name, sizeof name, "%.24s.dff", base);
+	m.blob = pack.load(name, mem::TAG_MODEL);
 	mdl::Model* view = mdl::load(m.blob);
 	m.view = view;
 	if (!view) {
@@ -376,17 +378,18 @@ static bool startLoad(Model& m) {
 	}
 	// model TXD directory (entries only)
 	Dir dir = {};
-	snprintf(name, sizeof name, "%.24s.txd", m.info.txd);
+	const char* const txd = m.cutsceneName[0] ? m.cutsceneName : m.info.txd;
+	snprintf(name, sizeof name, "%.24s.txd", txd);
 	ds::PackEntry pe;
 	ds::TxdHeader th;
 	mem::Scratch scratch;
-	if (streaming::g_models.find(name, pe) && streaming::g_models.read(pe.offset, &th, sizeof th) &&
+	if (pack.find(name, pe) && pack.read(pe.offset, &th, sizeof th) &&
 	    th.magic == DS_FOURCC('D', 'T', 'X', 'D') && th.count) {
 		ds::TxdEntry* e = (ds::TxdEntry*)scratch.alloc(sizeof(ds::TxdEntry) * th.count);
-		if (e && streaming::g_models.read(pe.offset + sizeof th, e, sizeof(ds::TxdEntry) * th.count))
-			dir = { nullptr, pe.offset, th.count, e };
+		if (e && pack.read(pe.offset + sizeof th, e, sizeof(ds::TxdEntry) * th.count))
+			dir = { nullptr, &pack, pe.offset, th.count, e };
 	}
-	const uint32_t txdHash = ds::fnv1a(m.info.txd);
+	const uint32_t txdHash = ds::fnv1a(txd);
 	m.numTex = 0;
 	for (int g = 0; g < view->numGeoms; g++) {
 		const mdl::Geometry& geo = view->geoms[g];
@@ -597,9 +600,12 @@ static bool finishLoad(Model& m) {
 	return m.numParts > 0;
 }
 
-int request(int vehIndex) {
+int request(int vehIndex, const char* cutsceneName) {
+	if (cutsceneName && strlen(cutsceneName) >= sizeof s_models[0].cutsceneName) return -1;
+	const char* model = cutsceneName ? cutsceneName : "";
 	for (int i = 0; i < MAX_MODELS; i++)
-		if (s_models[i].state != STATE_FREE && s_models[i].vehIndex == vehIndex && s_models[i].state != STATE_FAILED) {
+		if (s_models[i].state != STATE_FREE && s_models[i].vehIndex == vehIndex &&
+		    !strcmp(s_models[i].cutsceneName, model) && s_models[i].state != STATE_FAILED) {
 			s_models[i].refs++;
 			return i;
 		}
@@ -614,6 +620,7 @@ int request(int vehIndex) {
 	if (m.state != STATE_FREE) freeModel(m);
 	m = {};
 	if (!vehdata::read(vehIndex, m.info)) return -1;
+	snprintf(m.cutsceneName, sizeof m.cutsceneName, "%s", model);
 	m.vehIndex = (int16_t)vehIndex;
 	m.refs = 1;
 	m.state = STATE_PENDING;

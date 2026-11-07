@@ -1,9 +1,11 @@
 # Cinematics
 
-- [x] Extract selected original `CUTS.IMG` scenes and convert ANPK `.IFP` clips into streamed DANM; load the original `PROLOG3` `.DAT` eye/target keyframes and CJ animation in a loading-screen job for the new-game scene.
-- [x] Bind the original Tenpenny and Hernandez PROLOG3 animation tracks to their streamed GTA3 ped models; preload them under the loading screen and release their references on completion/skip.
-- [ ] Reproduce the original camera spline handles, FOV/roll changes and other original cutscene timelines (PROLOG1, INTRO1a/b etc.); the initial runtime reads actual camera keys but linearly interpolates them.
-- [ ] Port the cutscene-specific DFF/TXD character models, vehicles/props (including Pulaski's attachment), full script-driven actor timelines and synchronized subtitles/dialogue/audio; wire the original SCM cutscene opcodes to the timeline with correct skip/cleanup behavior.
+- [x] Extract selected original `CUTS.IMG` scenes and convert ANPK `.IFP` clips to streamed DANM; support the wider cutscene root translations in v3.
+- [x] Chain PROLOG1 (airport/area 14) into PROLOG3 (exterior/area 0) with bounded world/collision/cast/vehicle loading, original camera keys, timed GXT `INTRO1` captions and CUTSCENE audio tracks 706/708; skip and natural completion restore gameplay.
+- [x] Render original PROLOG1 steward/Bogman/suitcase and PROLOG3 gun/handcuff/cash/Gizmo props, stock Tenpenny/Hernandez/Pulaski meshes, and original taxi/cop-car DFFs with root tracks. Release scene references on completion.
+- [ ] Restore the missing backdrop/floor for the late PROLOG1 taxi shot: the current area-14 streamed map does not cover that cutscene camera location, so the cast/vehicle can appear against sky.
+- [ ] Apply original camera spline handles, FOV/roll, vehicle wheel/door/body tracks, and correct prop attachments/visibility; replace stock cop bodies with original cutscene-only models where DS memory allows.
+- [ ] Translate the post-PROLOG3 INTRO scripted dialogue/actions and INTRO1a/b mission scenes faithfully, or execute them through an SCM VM; neither the original prologue script nor the full campaign is complete yet.
 
 # Interior and entry/exit integration
 

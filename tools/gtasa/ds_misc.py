@@ -7,7 +7,7 @@ from .ds_mesh import decimate
 from .dsfmt import fx, name, pad4
 
 COL_DEFAULTS = dict(mode='full', face_ratio=1.0, min_faces=16)
-ANIM_DEFAULTS = dict(keep_every=1, max_frames=0, drop_translation=False, remove=[])
+ANIM_DEFAULTS = dict(keep_every=1, max_frames=0, drop_translation=False, remove=[], rigid_clips=[])
 
 
 def convert_col(data, p):
@@ -52,6 +52,7 @@ def convert_ifp(data, p):
     kin = kout = 0
     step = max(1, int(p['keep_every']))
     recs = []
+    wide = False
     for a in anims:
         out = bytearray()
         recs.append(out)
@@ -65,11 +66,22 @@ def convert_ifp(data, p):
                 k = p['max_frames']
                 fr = [fr[round(i * (len(fr) - 1) / (k - 1))] for i in range(k)] if k > 1 else fr[:1]
             trans = s.has_trans and not (p['drop_translation'] and si > 0)
+            shift = 0
+            if trans:
+                maxpos = max((abs(v) for f in fr for v in f[5:8]), default=0)
+                while maxpos > (32767 << shift) and shift < 12:
+                    shift += 1
+                if shift == 12:
+                    raise ValueError('animation translation out of range')
+                wide |= shift != 0
             kout += len(fr)
-            out += name(s.name, 24) + struct.pack('<hBBHH', s.bone, int(trans), 0, len(fr), 0)
-            body = b''.join(struct.pack('<5h', *f[:5]) + (struct.pack('<3h', *f[5:8]) if trans else b'') for f in fr)
+            bone = si if a.name.lower() in p.get('rigid_clips', ()) and s.bone < 0 else s.bone
+            out += name(s.name, 24) + struct.pack('<hBBHH', bone, int(trans), shift, len(fr), 0)
+            body = b''.join(struct.pack('<5h', *f[:5]) + (
+                struct.pack('<3h', *(max(-32768, min(32767, round(v / (1 << shift)))) for v in f[5:8]))
+                if trans else b'') for f in fr)
             out += pad4(body)
-    hdr = struct.pack('<4sHH', b'DANM', 2, len(anims)) + name(block, 24)
+    hdr = struct.pack('<4sHH', b'DANM', 3 if wide else 2, len(anims)) + name(block, 24)
     off = len(hdr) + 32 * len(anims)
     directory = bytearray()
     for a, rec in zip(anims, recs):

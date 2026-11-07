@@ -19,7 +19,10 @@ static constexpr uint32_t RING_SAMPLES = mem::budget::AUDIO_STREAM_RING / 2;
 static constexpr uint32_t LEAD_SAMPLES = RING_SAMPLES * 3 / 4;   // decoded ahead of the play head
 static constexpr uint32_t BUS_HZ = 33513982;                       // timing::ticks() rate
 
-static const char* const k_packs[] = { "nitro:/audio/streams/ambience.dsst", "nitro:/audio/streams/aa.dsst" };
+static const char* const k_packs[] = {
+	"nitro:/audio/streams/ambience.dsst", "nitro:/audio/streams/aa.dsst",
+	"nitro:/audio/streams/cutscene.dsst"
+};
 static constexpr int NUM_PACKS = sizeof k_packs / sizeof k_packs[0];
 
 struct Pack {
@@ -61,6 +64,7 @@ static uint32_t s_playedBase;        // samples played before the last timer cha
 static uint64_t s_playedTicks;       // CPU ticks since then
 static uint32_t s_lastTick;
 static bool s_loop, s_on;
+static bool s_cutscene;
 static float s_volDb, s_freq = 1.0f, s_musicDb;
 static uint16_t s_hwVol;
 static Stats s_stats = { 0, 0, 0, ~0u };
@@ -167,7 +171,7 @@ static void writeAhead(uint32_t upto) {
 }
 
 static unsigned hwVolume() {
-	return s_freq <= 0.0f ? 0 : aesound::volumeFromDb(s_volDb + s_musicDb);
+	return s_freq <= 0.0f ? 0 : aesound::volumeFromDb(s_volDb + (s_cutscene ? 0.0f : s_musicDb));
 }
 
 static unsigned hwHz() {
@@ -175,9 +179,10 @@ static unsigned hwHz() {
 	return (unsigned)((float)s_rate * f);
 }
 
-bool play(uint32_t trackId, float volumeDb, bool loop) {
+bool play(uint32_t trackId, float volumeDb, bool loop, bool resume) {
 	if (s_on && s_trackId == trackId) return true;
 	stop();
+	if (!resume) s_haveSaved = false;
 	Pack* pack = nullptr;
 	const ds::StreamTrack* t = nullptr;
 	for (int i = 0; i < NUM_PACKS && !t; i++) {
@@ -214,6 +219,7 @@ bool play(uint32_t trackId, float volumeDb, bool loop) {
 		restart(s_dec);
 	}
 	s_loop = loop;
+	s_cutscene = trackId == 706 || trackId == 708;
 	s_rate = h.sampleRate;
 	s_volDb = volumeDb;
 	s_trackId = trackId;

@@ -65,7 +65,7 @@ static void freeTex(uint8_t i) {
 	t = {};
 }
 
-static uint8_t stageTex(const ds::TxdEntry* dir, int count, uint32_t base, const char* name) {
+static uint8_t stageTex(const Pack& pack, const ds::TxdEntry* dir, int count, uint32_t base, const char* name) {
 	int slot = -1;
 	for (int i = 0; i < TEX_SLOTS && slot < 0; i++)
 		if (s_tex[i].state == TEX_FREE) slot = i;
@@ -75,7 +75,7 @@ static uint8_t stageTex(const ds::TxdEntry* dir, int count, uint32_t base, const
 		if (!strcasecmp(dir[j].name, name)) { k = j; break; }   // else the first (one-texture TXDs)
 	void* buf = mem::alloc(dir[k].size, mem::TAG_TEXTURE);
 	if (!buf) return NONE;
-	if (!streaming::g_models.read(base + dir[k].offset, buf, dir[k].size) ||
+	if (!pack.read(base + dir[k].offset, buf, dir[k].size) ||
 	    ((const ds::TexHeader*)buf)->magic != DS_FOURCC('D', 'T', 'E', 'X')) {
 		mem::free(buf);
 		return NONE;
@@ -132,6 +132,7 @@ static void freeModel(Model& m) {
 
 static bool startLoad(Model& m) {
 	s_stats.loads++;
+	const Pack& pack = m.cutsceneSource ? streaming::g_cutscene : streaming::g_models;
 	ds::PedName nm{};
 	if (m.cutsceneName[0]) {
 		snprintf(nm.model, sizeof nm.model, "%s", m.cutsceneName);
@@ -139,7 +140,7 @@ static bool startLoad(Model& m) {
 	} else if (!peddata::name(m.pedIndex, nm)) return false;
 	char file[40];
 	snprintf(file, sizeof file, "%.23s.dff", nm.model);
-	m.blob = streaming::g_models.load(file, mem::TAG_MODEL);
+	m.blob = pack.load(file, mem::TAG_MODEL);
 	m.view = mdl::load(m.blob);
 	if (!m.view || !m.view->nodes || m.view->numBones > anim::MAX_NODES || !anim::prepare(m.view)) {
 		hud::log("\x1b[33mped %s missing\x1b[39m", file);
@@ -148,12 +149,12 @@ static bool startLoad(Model& m) {
 	snprintf(file, sizeof file, "%.23s.txd", nm.txd);
 	ds::PackEntry pe;
 	ds::TxdHeader th;
-	if (!streaming::g_models.find(file, pe) || !streaming::g_models.read(pe.offset, &th, sizeof th) ||
+	if (!pack.find(file, pe) || !pack.read(pe.offset, &th, sizeof th) ||
 	    th.magic != DS_FOURCC('D', 'T', 'X', 'D') || !th.count)
 		return true;   // untextured
 	mem::Scratch scratch;
 	ds::TxdEntry* dir = (ds::TxdEntry*)scratch.alloc(sizeof(ds::TxdEntry) * th.count);
-	if (!dir || !streaming::g_models.read(pe.offset + sizeof th, dir, sizeof(ds::TxdEntry) * th.count)) return true;
+	if (!dir || !pack.read(pe.offset + sizeof th, dir, sizeof(ds::TxdEntry) * th.count)) return true;
 	for (int g = 0; g < m.view->numGeoms; g++) {
 		const mdl::Geometry& geo = m.view->geoms[g];
 		for (int mi = 0; mi < geo.h->numMaterials; mi++) {
@@ -162,7 +163,7 @@ static bool startLoad(Model& m) {
 			const uint32_t h = ds::fnv1a(tn);
 			bool dup = false;
 			for (int k = 0; k < m.numTex && !dup; k++) dup = m.tex[k] != NONE && s_tex[m.tex[k]].nameHash == h;
-			if (!dup) m.tex[m.numTex++] = stageTex(dir, th.count, pe.offset, tn);
+			if (!dup) m.tex[m.numTex++] = stageTex(pack, dir, th.count, pe.offset, tn);
 		}
 	}
 	return true;
@@ -394,11 +395,12 @@ int request(int pedIndex) {
 	return slot;
 }
 
-int requestCutscene(const char* name) {
+int requestCutscene(const char* name, bool source) {
 	if (!name || !name[0] || strlen(name) >= sizeof(s_models[0].cutsceneName)) return -1;
 	for (int i = 0; i < MAX; i++) {
 		Model& m = s_models[i];
-		if (m.state != STATE_FREE && m.state != STATE_FAILED && !strcmp(m.cutsceneName, name)) {
+		if (m.state != STATE_FREE && m.state != STATE_FAILED &&
+		    m.cutsceneSource == source && !strcmp(m.cutsceneName, name)) {
 			m.refs++;
 			return i;
 		}
@@ -414,6 +416,7 @@ int requestCutscene(const char* name) {
 	if (m.state != STATE_FREE) freeModel(m);
 	m = {};
 	memcpy(m.cutsceneName, name, strlen(name) + 1);
+	m.cutsceneSource = source;
 	m.pedIndex = -1;
 	m.refs = 1;
 	m.state = STATE_PENDING;

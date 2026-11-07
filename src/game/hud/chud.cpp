@@ -348,8 +348,27 @@ void draw() {
 	if (cutscene::active()) {
 		subfb::clear(c_black);
 		const char* text = cutscene::caption();
-		if (text) hudfont::print(hudfont::STYLE_MENU, 128, 147, (const GxtChar*)text,
-		                         0.48f, 0.8f, c_lightGray, hudfont::CENTER, 2, c_black);
+		if (text) {
+			char line[112];
+			for (int row = 0; row < 2 && *text; row++) {
+				int n = 0, space = 0;
+				while (text[n] && n < (int)sizeof line - 1) {
+					line[n] = text[n];
+					line[++n] = '\0';
+					if (line[n - 1] == ' ') space = n;
+					if (hudfont::width(hudfont::STYLE_MENU, (const GxtChar*)line, 0.36f) > 226.0f) {
+						n = space ? space : n - 1;
+						break;
+					}
+				}
+				line[n] = '\0';
+				while (n && line[n - 1] == ' ') line[--n] = '\0';
+				hudfont::print(hudfont::STYLE_MENU, 128, 137 + row * 19, (const GxtChar*)line,
+				               0.36f, 0.72f, c_lightGray, hudfont::CENTER, 2, c_black);
+				text += n;
+				while (*text == ' ') text++;
+			}
+		}
 		hudfont::print(hudfont::STYLE_MENU, 128, 178, (const GxtChar*)"A / B / START: SKIP",
 		               0.32f, 0.55f, c_gold, hudfont::CENTER, 1, c_black);
 		return;

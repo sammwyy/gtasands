@@ -125,7 +125,7 @@ void attachMatrix(const Vehicle& v, const float l[3], float ox, float oy, float 
 }
 
 // ---- pool -------------------------------------------------------------------------
-int spawn(int vehIndex, float x, float y, float z, float hdg, int colour) {
+int spawn(int vehIndex, float x, float y, float z, float hdg, int colour, const char* cutsceneModel) {
 	int id = -1;
 	for (int i = 0; i < MAX && id < 0; i++)
 		if (g_cars[i].v.status == STATUS_FREE) id = i;
@@ -134,7 +134,7 @@ int spawn(int vehIndex, float x, float y, float z, float hdg, int colour) {
 	c = {};
 	if (!vehdata::read(vehIndex, c.h)) return -1;
 	Vehicle& v = c.v;
-	v.model = (int8_t)vehmdl::request(vehIndex);
+	v.model = (int8_t)vehmdl::request(vehIndex, cutsceneModel);
 	if (v.model < 0) return -1;
 	v.status = STATUS_PHYSICS;
 	v.type = c.h.type;
@@ -158,7 +158,7 @@ int spawn(int vehIndex, float x, float y, float z, float hdg, int colour) {
 	c.inertia2 = fx::ONE;
 	c.track = -1;
 	c.roadFrom = c.roadTo = c.roadNext = -1;
-	v.audio = aeveh::create(v.modelId);
+	v.audio = cutsceneModel ? -1 : aeveh::create(v.modelId);
 	hud::log("spawn %.12s #%d cls %d", c.h.model, id, v.cls);
 	return id;
 }
@@ -765,6 +765,24 @@ static void setupFromModel(Car& c) {
 	c.fakePhysics = 0;
 }
 
+bool prepareCutscene(int id) {
+	Vehicle* v = get(id);
+	if (!v) return false;
+	Car& c = g_cars[id];
+	if (!c.placed && vehmdl::ready(v->model)) setupFromModel(c);
+	return c.placed;
+}
+
+void positionCutscene(int id, float x, float y, float z, float heading) {
+	Vehicle* v = get(id);
+	if (!v) return;
+	v->pos[0] = x; v->pos[1] = y; v->pos[2] = z;
+	const float s = sinf(heading), c = cosf(heading);
+	v->fwd[0] = -s; v->fwd[1] = c; v->fwd[2] = 0.0f;
+	v->right[0] = c; v->right[1] = s; v->right[2] = 0.0f;
+	pull(g_cars[id]);
+}
+
 void update() {
 	vehmdl::update();
 	if (++s_trafficFrame % 90 == 0) spawnTraffic();
@@ -1092,7 +1110,9 @@ void draw(const View& w) {
 		if (dx * dx + dy * dy > (float)(dbg::opts.fogView * dbg::opts.fogView)) continue;
 		// behind the camera (and not right next to it)
 		const float rad = fx::toFloat(c.radius);
-		if (dx * fx_ + dy * fy_ < -6.0f - rad) continue;
+		const float front = dx * fx_ + dy * fy_;
+		if (front < -6.0f - rad || fabsf(dx * fy_ - dy * fx_) > fmaxf(front, 0.0f) * 1.15f + rad + 5.0f)
+			continue;
 		const bool wreck = v.status == STATUS_WRECKED;
 		if (wreck != wreckLight) {
 			wreckLight = wreck;

@@ -52,7 +52,7 @@ constexpr int WORLD_VISIBLE_MAX = 384;    // instances drawn per frame (after cu
 constexpr int MAX_PEDS = 12;
 // Ped population (game/peds, game/pedmodel): CStreaming::ms_pedsLoaded is 8 on
 // PC; each resident ped model is one ~270-tri skinned list (~12 KB) + skeleton.
-constexpr int PED_MODEL_SLOTS = 6;
+constexpr int PED_MODEL_SLOTS = 10;
 constexpr int MAX_VEHICLES = 8;
 constexpr int MAX_OBJECTS = 48;
 constexpr int MAX_TEX_SLOTS = 384;        // VRAM texture slots (banks A+B+D), mostly map textures
