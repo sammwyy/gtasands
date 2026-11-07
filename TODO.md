@@ -4,7 +4,7 @@
 - [x] Chain PROLOG1 (airport/area 14) into PROLOG3 (exterior/area 0) with bounded world/collision/cast/vehicle loading, original camera keys, timed GXT `INTRO1` captions and CUTSCENE audio tracks 706/708; skip and natural completion restore gameplay.
 - [x] Render original PROLOG1 steward/Bogman/suitcase and PROLOG3 gun/handcuff/cash/Gizmo props, stock Tenpenny/Hernandez/Pulaski meshes, and original taxi/cop-car DFFs with root tracks. Release scene references on completion.
 - [ ] Restore the missing backdrop/floor for the late PROLOG1 taxi shot: the current area-14 streamed map does not cover that cutscene camera location, so the cast/vehicle can appear against sky.
-- [ ] Apply original camera spline handles, FOV/roll, vehicle wheel/door/body tracks, and correct prop attachments/visibility; replace stock cop bodies with original cutscene-only models where DS memory allows.
+- [ ] Apply original camera FOV/roll, vehicle wheel/door/body tracks, and correct prop attachments/visibility; replace stock cop bodies with original cutscene-only models where DS memory allows.
 - [ ] Translate the post-PROLOG3 INTRO scripted dialogue/actions and INTRO1a/b mission scenes faithfully, or execute them through an SCM VM; neither the original prologue script nor the full campaign is complete yet.
 
 # Interior and entry/exit integration

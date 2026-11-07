@@ -34,7 +34,7 @@ static uint8_t s_stage;
 static int s_animBlock;
 static float s_offset[3], s_root[3], s_return[4];
 static uint32_t s_animTick;
-struct CamKey { uint16_t time; float xyz[3]; };
+struct CamKey { uint16_t time; float xyz[3], incoming[3], outgoing[3]; bool inValid, outValid; };
 static CamKey s_camera[2][64];
 static uint8_t s_camCount[2];
 struct Subtitle { uint16_t from, to; char key[16]; };
@@ -226,8 +226,13 @@ bool view(float eye[3], float target[3]) {
 			const int next = k + 1 < s_camCount[track] ? k + 1 : k;
 			const float t = next == k || keys[next].time == keys[k].time ? 0.0f :
 				(float)(elapsed - keys[k].time) / (keys[next].time - keys[k].time);
+			const bool spline = next != k && keys[k].outValid && keys[next].inValid;
+			const float u = 1.0f - t;
 			for (int j = 0; j < 3; j++)
-				out[track][j] = s_offset[j] + keys[k].xyz[j] + (keys[next].xyz[j] - keys[k].xyz[j]) * t;
+				out[track][j] = s_offset[j] + (spline ?
+					u * u * u * keys[k].xyz[j] + 3.0f * u * u * t * keys[k].outgoing[j] +
+					3.0f * u * t * t * keys[next].incoming[j] + t * t * t * keys[next].xyz[j] :
+					keys[k].xyz[j] + (keys[next].xyz[j] - keys[k].xyz[j]) * t);
 		}
 		return true;
 	}
@@ -249,12 +254,12 @@ static bool readTrack(FILE* f, int section) {
 	if (n < 2 || n > 64) return false;
 	for (int i = 0; i < n; i++) {
 		if (!fgets(line, sizeof line, f)) return false;
-		float v[4];
+		float v[10];
 		char* p = line;
-		for (float& value : v) {
+		for (int j = 0; j < (section >= 2 ? 10 : 4); j++) {
 			char* end;
 			char* start = p;
-			value = strtof(start, &end);
+			v[j] = strtof(start, &end);
 			if (end == start) return false;
 			p = strchr(end, ',');
 			if (!p) return false;
@@ -267,6 +272,13 @@ static bool readTrack(FILE* f, int section) {
 			for (int j = 0; j < 3; j++) {
 				if (!isfinite(v[j + 1]) || fabsf(v[j + 1]) > 500.0f) return false;
 				k.xyz[j] = v[j + 1];
+			}
+			k.inValid = k.outValid = true;
+			for (int j = 0; j < 3; j++) {
+				k.incoming[j] = v[j + 4];
+				k.outgoing[j] = v[j + 7];
+				k.inValid &= isfinite(k.incoming[j]) && fabsf(k.incoming[j]) <= 500.0f;
+				k.outValid &= isfinite(k.outgoing[j]) && fabsf(k.outgoing[j]) <= 500.0f;
 			}
 			if (i && k.time < s_camera[section - 2][i - 1].time) return false;
 		}

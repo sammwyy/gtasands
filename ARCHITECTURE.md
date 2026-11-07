@@ -267,9 +267,10 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
   resources, the new game falls back to PROLOG3 or starts gameplay.
 - The eye/target camera tracks (up to 64 keys each) and timed captions come
   from the original `.dat` and `.cut`; GXT captions use the original `INTRO1`
-  mission table in `american.gxt`. Camera interpolation is still linear, not
-  the original spline handles/FOV/roll. `PROLOG1` loads the cutscene-specific
-  `csstew`, `csbogman` and two `cssuitcase` instances from
+  mission table in `american.gxt`. Camera positions interpolate with the
+  original cubic spline handles, falling back to linear interpolation at
+  invalid/discontinuous handles; FOV and roll are still missing. `PROLOG1`
+  loads the cutscene-specific `csstew`, `csbogman` and two `cssuitcase` instances from
   `models/cutscene.dspk`; `PROLOG3` plays Tenpenny, Hernandez and Pulaski using
   stock ped meshes, plus original `cs9mm`, `cshandcuff`, `csmoneystck` and
   `csgizmo` prop meshes. Rigid props are converted to skinned HAnim nodes
