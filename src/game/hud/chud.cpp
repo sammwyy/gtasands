@@ -9,6 +9,7 @@
 #include "game/hud/radar.h"
 #include "game/hud/subfb.h"
 #include "game/menu/menu.h"
+#include "game/missions.h"
 #include "game/player.h"
 #include "game/streaming.h"
 #include "platform/timing.h"
@@ -321,6 +322,7 @@ static const int RADAR_BOX_X1 = 120;                              // radar box: 
 static Region s_radarBox = { 0, 76, RADAR_BOX_X1, subfb::H - 76, 0, false };
 static Region s_statsBox = { 124, 0, subfb::W - 124, 128, 0, false };
 static Region s_weaponBox = { 0, 0, 100, 76, 0, false };
+static Region s_missionBox = { 120, 119, 136, 29, 0, false };
 static Region s_namesBox = { RADAR_BOX_X1, 148, subfb::W - RADAR_BOX_X1, subfb::H - 148, 0, false };
 static bool s_namesShown;
 
@@ -336,7 +338,7 @@ static bool dirty(Region& r, u32 sig) {
 }
 
 void invalidate() {
-	s_radarBox.valid = s_statsBox.valid = s_weaponBox.valid = s_namesBox.valid = false;
+	s_radarBox.valid = s_statsBox.valid = s_weaponBox.valid = s_missionBox.valid = s_namesBox.valid = false;
 	s_namesShown = true;
 	if (s_ok) subfb::clear(c_bg);
 }
@@ -356,7 +358,8 @@ void draw() {
 	sig = mix(sig, (u32)(p.armour * 16.0f)); sig = mix(sig, (u32)p.maxArmour);
 	sig = mix(sig, (u32)(p.breath * 16.0f)); sig = mix(sig, (u32)p.maxBreath);
 	sig = mix(sig, (u32)p.wantedLevel); sig = mix(sig, (u32)flash);
-	if (dirty(s_statsBox, sig)) {
+	const bool statsDirty = dirty(s_statsBox, sig);
+	if (statsDirty) {
 		drawClock();
 		drawMoney();
 		drawWanted(drawBars());
@@ -377,6 +380,16 @@ void draw() {
 		drawNames();
 	}
 	s_namesShown = shown;
+
+	if (statsDirty) s_missionBox.valid = false;
+	sig = mix(missions::completed() * 4 + missions::objective(),
+	          (u32)(uintptr_t)missions::instruction());
+	if (dirty(s_missionBox, sig)) {
+		hudfont::print(hudfont::STYLE_MENU, 124, 119, (const GxtChar*)missions::title(),
+		               0.36f, 0.65f, c_gold, hudfont::LEFT, 1, c_black);
+		hudfont::print(hudfont::STYLE_MENU, 124, 133, (const GxtChar*)missions::instruction(),
+		               0.30f, 0.55f, c_lightGray, hudfont::LEFT, 1, c_black);
+	}
 
 	// fps counter in the empty corner the round radar leaves (radar box)
 	char fb[8];

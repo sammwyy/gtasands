@@ -48,6 +48,7 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `game/streaming.*` | open packs (`g_models` gta3, `g_player`, `g_anim`) |
 | `game/world.*` | streamed map: DWLD sector window, map model/texture streaming, GX list compile, culling + draw (section 6b) |
 | `game/entryexits.*` | IPL entry/exit table (DENX v3), marker, session-only unlock bit and area transitions with fade/preload |
+| `game/missions.*` | Three-mission standalone progression slice, objective radar blip, IPL access gates and versioned SD progress |
 | `game/vehicledata.*`, `game/vehiclemodel.*`, `game/vehicle.*`, `game/vehphys.cpp`, `game/vehicleint.h`, `game/fx.*` | vehicles (section 6d): DVEH tables, model streaming + per-atomic lit GX lists (animated parts), fixed-point physics for every type, damage / fire / explosion / debris / lights / draw |
 | `game/peddata.*`, `game/pedmodel.*`, `game/pedanim.*`, `game/peds.*` | random peds (section 6e): DPED tables + ped path graph, skinned ped model streaming (bone segments), per-ped anim slots, CPopulation / CPopCycle / ped tasks / interactions |
 | `game/waterlevel.*`, `game/skidmarks.*` | CWaterLevel (water.dat polygons, level query, flat surfaces), CSkidmarks |
@@ -213,6 +214,27 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
 - CJ assembly follows CClothesBuilder: torso clothing dff is the whole torso (+arms/neck),
   textured with player_torso + clothing composite (PlaceTextureOnTopOfTexture); hands share it.
   Outfit presets `cj::setOutfit`, fat/muscle scale bones and pick the motion group.
+
+## 6a. Mission progression slice (`game/missions.*`)
+
+- No SCM VM yet: three original-inspired **standalone objectives**, not the PC missions or
+  their cutscenes/scripts. Grove Street: walk to CJ's house; Ryder's Errand: get into a
+  vehicle, reach the Cluckin' Bell in LS, drive back to Grove Street; Los Santos: reach
+  the Ganton gym and return home. The mission HUD is on the bottom screen (x=124, y=119),
+  with one objective blip (radar slot 15). The vehicle objective requires `player::driving()`;
+  objectives pause inside interiors and failed missions restart at their first objective
+  after death/respawn, without awarding the reward twice.
+- Completion 1 unlocks Carl's IPL house, completion 2 unlocks IPL interiors in the
+  LS region (1800..3000 x, -2300..-950 y), completion 3 unlocks all IPL entrances.
+  Radar map icons follow the same regional gates; `CHTS > WORLD` still overrides every
+  gate **for this session only**. This does not restrict travel through the streamed
+  exterior world; SF/LV bridges and SCM-created interiors remain future work.
+- On each objective and completion, `sd:/gtasads_missions.dat` (or `fat:`) records a
+  16-byte, versioned, checksummed snapshot: completed mission count, current objective,
+  cash. Invalid saves start fresh; if no writable SD is present, progression remains
+  session-only. The loading-screen job restores it after CJ/HUD/world/collision initialization.
+  This is deliberately not a complete GTA save: player position, interior stack,
+  inventory, SCM globals and script-created entrances are not persisted.
 
 ## 6b. Streamed map (`game/world.*`)
 

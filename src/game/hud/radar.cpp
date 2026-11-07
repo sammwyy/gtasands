@@ -8,6 +8,7 @@
 #include "game/hud/hudtex.h"
 #include "game/hud/subfb.h"
 #include "game/entryexits.h"
+#include "game/missions.h"
 #include "game/world.h"
 #include "game/player.h"
 #include "mem/pool.h"
@@ -153,8 +154,9 @@ void drawLegendIcon(int type, int x, int y, int size) {
 
 int legendTypes(float centerX, float centerY, bool full, u8* out, int capacity) {
 	bool seen[MAP_TYPE_COUNT] = {};
-	for (int i = 0; entryexits::unlocked() && i < s_pointCount; i++) {
+	for (int i = 0; i < s_pointCount; i++) {
 		const ds::MapPoint& p = s_points[i];
+		if (!entryexits::unlocked() && !missions::pointAllowed(p.x, p.y)) continue;
 		if (p.icon < MAP_TYPE_COUNT - 2 &&
 		    (full || (fabsf(p.x - centerX) < 512 && fabsf(p.y - centerY) < 384)))
 			seen[p.icon] = true;
@@ -176,8 +178,9 @@ int legendTypes(float centerX, float centerY, bool full, u8* out, int capacity) 
 int legendRadarTypes(u8* out, int capacity) {
 	bool seen[MAP_TYPE_COUNT] = {};
 	const float reach = s_range * (R - 9) / R, reach2 = reach * reach;
-	for (int i = 0; entryexits::unlocked() && i < s_pointCount; i++) {
+	for (int i = 0; i < s_pointCount; i++) {
 		const ds::MapPoint& p = s_points[i];
+		if (!entryexits::unlocked() && !missions::pointAllowed(p.x, p.y)) continue;
 		const float dx = p.x - player::g.x, dy = p.y - player::g.y;
 		if (p.icon < MAP_TYPE_COUNT - 2 && dx * dx + dy * dy < reach2) seen[p.icon] = true;
 	}
@@ -357,8 +360,9 @@ void drawPauseMap(float centerX, float centerY) {
 			dst[x] = t ? t[row | ((U >> 12) & 63)] : s_sea;
 		}
 	}
-	for (int i = 0; entryexits::unlocked() && i < s_pointCount; i++) {
+	for (int i = 0; i < s_pointCount; i++) {
 		const ds::MapPoint& p = s_points[i];
+		if (!entryexits::unlocked() && !missions::pointAllowed(p.x, p.y)) continue;
 		if (p.icon >= MAP_TYPE_COUNT - 2) continue;
 		const int x = subfb::W / 2 + (int)((p.x - centerX) / 4.0f);
 		const int y = subfb::H / 2 - (int)((p.y - centerY) / 4.0f);
@@ -383,8 +387,9 @@ void drawPauseMap(float centerX, float centerY) {
 }
 
 void drawFullPoints(int left, int top, int size) {
-	for (int i = 0; entryexits::unlocked() && i < s_pointCount; i++) {
+	for (int i = 0; i < s_pointCount; i++) {
 		const ds::MapPoint& p = s_points[i];
+		if (!entryexits::unlocked() && !missions::pointAllowed(p.x, p.y)) continue;
 		if (p.icon >= MAP_TYPE_COUNT - 2) continue;
 		const int x = left + (p.x + 3000) * size / 6000;
 		const int y = top + (3000 - p.y) * size / 6000;
@@ -437,8 +442,9 @@ static void drawPoints() {
 	const float c = cosf(player::g.heading), s = sinf(player::g.heading);
 	const float k = R / s_range, reach = s_range * (R - 9) / R;
 	const float reach2 = reach * reach;
-	for (int i = 0; entryexits::unlocked() && i < s_pointCount; i++) {
+	for (int i = 0; i < s_pointCount; i++) {
 		const ds::MapPoint& p = s_points[i];
+		if (!entryexits::unlocked() && !missions::pointAllowed(p.x, p.y)) continue;
 		if (p.icon >= MAP_TYPE_COUNT - 2) continue;
 		const float dx = p.x - player::g.x, dy = p.y - player::g.y;
 		if (dx * dx + dy * dy >= reach2) continue;

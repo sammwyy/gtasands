@@ -6,6 +6,7 @@
 #include "game/entryexits.h"
 #include "game/intro.h"
 #include "game/loadscreen.h"
+#include "game/missions.h"
 #include "game/peddata.h"
 #include "game/peds.h"
 #include "game/player.h"
@@ -147,6 +148,7 @@ int main() {
 				peddata::update(player::g.x, player::g.y);
 				col::update(player::g.x, player::g.y, player::g.z);        // collision near list + streaming
 				player::update();
+				missions::update();
 				weather::update(player::g.x, player::g.y, player::g.z);     // CWeather::Update
 				timecycle::update(player::g.x, player::g.y, player::g.z);   // CTimeCycle::Update
 				world::update(player::g.x, player::g.y);                    // sectors + model streaming

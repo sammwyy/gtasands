@@ -8,6 +8,7 @@
 #include "assets/ds_formats.h"
 #include "game/cj.h"
 #include "game/collision.h"
+#include "game/missions.h"
 #include "game/pad.h"
 #include "game/player.h"
 #include "game/streaming.h"
@@ -62,6 +63,7 @@ static int closest(float x, float y, float z, bool inside) {
 	for (int i = 0; i < s_count; i++) {
 		const ds::EntryExit& e = s_entries[i];
 		if (e.sourceArea != world::area() || (s_failed[i >> 3] & (1u << (i & 7)))) continue;
+		if (!s_unlocked && !missions::entryAllowed(e.name, e.entrance[0], e.entrance[1])) continue;
 		if (!inside && !inRange(e, x, y, z)) continue;
 		const float dx = x - e.entrance[0], dy = y - e.entrance[1], dz = z - e.entrance[2];
 		const float d = dx * dx + dy * dy + dz * dz;
@@ -183,7 +185,7 @@ bool busy() { return s_phase != IDLE; }
 
 bool update() {
 	if (s_phase == IDLE) {
-		if (!s_unlocked || !world::ready()) return true;
+		if (!world::ready() || (!s_unlocked && !missions::completed())) return true;
 		const player::State& p = player::g;
 		if (!s_armed) {
 			const float dx = p.x - s_rearmPos[0], dy = p.y - s_rearmPos[1];
@@ -257,7 +259,7 @@ bool update() {
 }
 
 void drawMarker(float originX, float originY, float originZ) {
-	if (!s_unlocked || s_phase != IDLE || !s_armed) return;
+	if ((!s_unlocked && !missions::completed()) || s_phase != IDLE || !s_armed) return;
 	const player::State& p = player::g;
 	const int i = closest(p.x, p.y, p.z, true);
 	if (i < 0) return;

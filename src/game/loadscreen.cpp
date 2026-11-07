@@ -16,6 +16,7 @@
 #include "game/hud/chud.h"
 #include "game/hud/radar.h"
 #include "game/menu/menu.h"
+#include "game/missions.h"
 #include "game/peds.h"
 #include "game/player.h"
 #include "game/sfx.h"
@@ -128,6 +129,7 @@ static bool jobCol() {                                 // collision index + reco
 	player::placeOnGround();
 	return true;
 }
+static bool jobMissions() { missions::init(); return true; }
 static bool jobVehicles() { veh::init(); return vehdata::initStep(); }   // vehicles.dveh tables
 static bool jobPeds() { return peds::initStep(); }        // peds.dped, first ped models, start-of-game crowd
 static bool jobAudio() { return audio::initGameStep(); }   // surfaces, audio zones, in-game sounds
@@ -160,6 +162,7 @@ static bool (*const s_jobs[])() = {
 	jobRadar,
 	jobWorld,
 	jobCol,
+	jobMissions,
 	jobVehicles,
 	jobPeds,
 	jobAudio,
