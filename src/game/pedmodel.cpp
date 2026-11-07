@@ -132,8 +132,11 @@ static void freeModel(Model& m) {
 
 static bool startLoad(Model& m) {
 	s_stats.loads++;
-	ds::PedName nm;
-	if (!peddata::name(m.pedIndex, nm)) return false;
+	ds::PedName nm{};
+	if (m.cutsceneName[0]) {
+		snprintf(nm.model, sizeof nm.model, "%s", m.cutsceneName);
+		snprintf(nm.txd, sizeof nm.txd, "%s", m.cutsceneName);
+	} else if (!peddata::name(m.pedIndex, nm)) return false;
 	char file[40];
 	snprintf(file, sizeof file, "%.23s.dff", nm.model);
 	m.blob = streaming::g_models.load(file, mem::TAG_MODEL);
@@ -384,6 +387,34 @@ int request(int pedIndex) {
 	if (m.state != STATE_FREE) freeModel(m);
 	m = {};
 	m.pedIndex = (int16_t)pedIndex;
+	m.refs = 1;
+	m.state = STATE_PENDING;
+	m.lastUse = s_frame;
+	for (uint8_t& t : m.tex) t = NONE;
+	return slot;
+}
+
+int requestCutscene(const char* name) {
+	if (!name || !name[0] || strlen(name) >= sizeof(s_models[0].cutsceneName)) return -1;
+	for (int i = 0; i < MAX; i++) {
+		Model& m = s_models[i];
+		if (m.state != STATE_FREE && m.state != STATE_FAILED && !strcmp(m.cutsceneName, name)) {
+			m.refs++;
+			return i;
+		}
+	}
+	int slot = -1;
+	for (int i = 0; i < MAX; i++)
+		if (s_models[i].state == STATE_FREE) { slot = i; break; }
+	if (slot < 0)
+		for (int i = 0; i < MAX; i++)
+			if (!s_models[i].refs && (slot < 0 || s_models[i].lastUse < s_models[slot].lastUse)) slot = i;
+	if (slot < 0) return -1;
+	Model& m = s_models[slot];
+	if (m.state != STATE_FREE) freeModel(m);
+	m = {};
+	memcpy(m.cutsceneName, name, strlen(name) + 1);
+	m.pedIndex = -1;
 	m.refs = 1;
 	m.state = STATE_PENDING;
 	m.lastUse = s_frame;

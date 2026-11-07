@@ -7,13 +7,16 @@
 #include <string.h>
 
 #include "audio/audioengine.h"
+#include "game/anim.h"
 #include "game/animstore.h"
 #include "game/cj.h"
 #include "game/collision.h"
 #include "game/hud/chud.h"
 #include "game/peds.h"
+#include "game/pedmodel.h"
 #include "game/player.h"
 #include "hud/hud.h"
+#include "mem/mem.h"
 #include "platform/timing.h"
 #include "render/sprite2d.h"
 
@@ -29,13 +32,34 @@ static uint32_t s_animTick;
 struct CamKey { uint16_t time; float xyz[3]; };
 static CamKey s_camera[2][64];
 static uint8_t s_camCount[2];
+struct Actor {
+	const char* model;
+	const char* animation;
+	int handle = -1;
+	animstore::Clip* clip = nullptr;
+	anim::Player player{};
+	s32 world[anim::MAX_NODES * 12]{};
+};
+static Actor s_actors[] = { { "tenpen", "cstenpenny" }, { "hern", "cshernandez" } };
+static int s_actorStage;
+
+static void releaseActors() {
+	for (Actor& a : s_actors) {
+		animstore::release(a.clip);
+		pedmodel::release(a.handle);
+		a.clip = nullptr;
+		a.handle = -1;
+	}
+}
 
 void reset() {
+	releaseActors();
 	s_shots = nullptr;
 	s_count = 0;
 	s_start = s_total = 0;
 	s_original = s_ready = s_placed = false;
 	s_animBlock = animstore::NO_BLOCK;
+	s_actorStage = 0;
 }
 
 static void begin(uint32_t total) {
@@ -68,6 +92,7 @@ void stop() {
 		s_count = 0;
 		s_total = 0;
 		if (original) {
+			releaseActors();
 			cj::setCutsceneBlock(animstore::NO_BLOCK);
 			player::teleport(s_return[0], s_return[1], s_return[2], s_return[3]);
 			col::resetScene();
@@ -86,6 +111,8 @@ void update(uint32_t keysDown) {
 		const uint32_t dt = elapsed - s_animTick;
 		if (dt) {
 			cj::advance(dt);
+			for (Actor& a : s_actors)
+				if (a.clip) anim::advance(a.player, dt);
 			float x, y;
 			cj::rootDelta(x, y);
 			player::g.x += x;
@@ -219,6 +246,38 @@ bool preloadOriginal(const char* name) {
 	return valid;
 }
 
+bool preloadActorsStep() {
+	if (!s_ready || !s_placed) return true;
+	if (!s_actorStage) {
+		peds::suspendForCutscene();
+		for (Actor& a : s_actors) a.handle = pedmodel::requestCutscene(a.model);
+		s_actorStage = 1;
+		return false;
+	}
+	pedmodel::update();
+	bool waiting = false;
+	for (const Actor& a : s_actors) {
+		const pedmodel::Model* m = pedmodel::get(a.handle);
+		waiting |= m && (m->state == pedmodel::STATE_PENDING || m->state == pedmodel::STATE_TEXTURES);
+	}
+	if (waiting && ++s_actorStage < 180) return false;
+	for (Actor& a : s_actors) {
+		const pedmodel::Model* m = pedmodel::get(a.handle);
+		a.clip = m && pedmodel::ready(a.handle) ? animstore::acquire(s_animBlock, a.animation) : nullptr;
+		if (a.clip && anim::play(a.player, m->skel, animstore::entry(a.clip))) {
+			a.player.loop = 0;
+			hud::log("cutscene actor %s: ready", a.model);
+		} else {
+			hud::log("cutscene actor %s: missing", a.model);
+			animstore::release(a.clip);
+			pedmodel::release(a.handle);
+			a.clip = nullptr;
+			a.handle = -1;
+		}
+	}
+	return true;
+}
+
 bool placeOriginal() {
 	if (!s_ready || s_placed) return false;
 	s_return[0] = player::g.x;
@@ -238,9 +297,32 @@ bool startOriginal() {
 	cj::setCutsceneBlock(s_animBlock);
 	const cj::Clip pose{ "csplay", 1.0f, false, true, false, true, 0.0f };
 	cj::pose(&pose, 1);
-	peds::removeAll();
+	peds::suspendForCutscene();
 	begin(s_total);
 	return true;
+}
+
+void drawActors(float x, float y, float z) {
+	if (!s_original) return;
+	MATRIX_STORE = pedmodel::SLOT_VIEW;
+	for (Actor& a : s_actors) {
+		const pedmodel::Model* m = pedmodel::get(a.handle);
+		if (!a.clip || !m || !pedmodel::ready(a.handle)) continue;
+		mem::Scratch scratch;
+		anim::Local* local = (anim::Local*)scratch.alloc(sizeof(anim::Local) * m->skel->numBones);
+		if (!local) continue;
+		anim::sampleLocal(m->skel, a.player, local);
+		const anim::Local* poses = local;
+		const s32 weight = 4096;
+		anim::blendWorld(m->skel, &poses, &weight, 1, a.world);
+		MATRIX_RESTORE = pedmodel::SLOT_VIEW;
+		glTranslatef(s_offset[0] - x, s_offset[2] - z + m->lift, -(s_offset[1] - y));
+		glRotatef(-90.0f, 1.0f, 0.0f, 0.0f);
+		MATRIX_STORE = pedmodel::SLOT_ENTITY;
+		pedmodel::draw(*m, a.world);
+	}
+	MATRIX_RESTORE = pedmodel::SLOT_VIEW;
+	pedmodel::endDraw();
 }
 
 void drawOverlay() {

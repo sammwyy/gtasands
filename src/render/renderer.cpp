@@ -124,6 +124,7 @@ void draw() {
 	if (world::area() == 0) veh::draw({ px, py, vz, px + elx, py + ely, vz + eyeH, yaw, pitch });
 	// peds after the vehicles (their own polygon budget, nearest first)
 	if (world::area() == 0) peds::draw({ px, py, vz, px + elx, py + ely, vz + eyeH, yaw, pitch });
+	cutscene::drawActors(px, py, vz);
 	// debug collision overlay before the map: the map's polygon budget yields to it
 	col::drawDebug(px, py, vz, px, py, player::g.z);
 

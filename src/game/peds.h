@@ -78,6 +78,7 @@ bool copNear(float x, float y, float r);
 int count();
 int spawnNear(float x, float y, float z, int modelId = -1);   // a random / given model on the nearest path
 void removeAll();
+void suspendForCutscene();
 void debugPlace(int i, float x, float y, float z, float heading);   // headless tests
 struct Stats {
 	uint16_t live, drawn, posed, polys, spawned, removed, models, wanted;

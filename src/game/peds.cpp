@@ -1727,6 +1727,14 @@ void removeAll() {
 		if (Ped* p = pedAt(i)) removePed(*p);
 }
 
+void suspendForCutscene() {
+	removeAll();
+	for (int8_t& h : s_held) {
+		if (h >= 0) pedmodel::release(h);
+		h = -1;
+	}
+}
+
 void debugPlace(int i, float x, float y, float z, float heading) {
 	Ped* p = pedAt(i);
 	if (!p) return;

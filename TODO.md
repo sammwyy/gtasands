@@ -1,8 +1,9 @@
 # Cinematics
 
 - [x] Extract selected original `CUTS.IMG` scenes and convert ANPK `.IFP` clips into streamed DANM; load the original `PROLOG3` `.DAT` eye/target keyframes and CJ animation in a loading-screen job for the new-game scene.
+- [x] Bind the original Tenpenny and Hernandez PROLOG3 animation tracks to their streamed GTA3 ped models; preload them under the loading screen and release their references on completion/skip.
 - [ ] Reproduce the original camera spline handles, FOV/roll changes and other original cutscene timelines (PROLOG1, INTRO1a/b etc.); the initial runtime reads actual camera keys but linearly interpolates them.
-- [ ] Add script-driven cutscene actors, synchronized animation and dialogue/audio, and wire the original SCM cutscene opcodes to the timeline with correct skip/cleanup behavior.
+- [ ] Port the cutscene-specific DFF/TXD character models, vehicles/props (including Pulaski's attachment), full script-driven actor timelines and synchronized subtitles/dialogue/audio; wire the original SCM cutscene opcodes to the timeline with correct skip/cleanup behavior.
 
 # Interior and entry/exit integration
 

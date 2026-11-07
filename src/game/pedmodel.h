@@ -42,6 +42,7 @@ enum State : uint8_t { STATE_FREE, STATE_PENDING, STATE_TEXTURES, STATE_READY, S
 struct Model {
 	uint8_t state, refs;
 	int16_t pedIndex;          // peddata model index
+	char cutsceneName[24];
 	mdl::Model* skel;          // compact skeleton (one STREAM block, never mdl::free'd)
 	Segment segs[MAX_SEGS];
 	uint8_t numSegs;
@@ -60,6 +61,7 @@ struct Model {
 void init();
 // References (or starts loading) peddata model `pedIndex`. -1 if no slot is free.
 int request(int pedIndex);
+int requestCutscene(const char* name);
 void release(int h);
 Model* get(int h);
 bool ready(int h);

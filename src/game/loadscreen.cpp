@@ -137,6 +137,7 @@ static bool jobCutscene() {
 }
 static bool jobVehicles() { veh::init(); return vehdata::initStep(); }   // vehicles.dveh tables
 static bool jobPeds() { return peds::initStep(); }        // peds.dped, first ped models, start-of-game crowd
+static bool jobCutsceneActors() { return cutscene::preloadActorsStep(); }
 static bool jobAudio() { return audio::initGameStep(); }   // surfaces, audio zones, in-game sounds
 static bool jobReport() {
 	char buf[96];
@@ -171,6 +172,7 @@ static bool (*const s_jobs[])() = {
 	jobCol,
 	jobVehicles,
 	jobPeds,
+	jobCutsceneActors,
 	jobAudio,
 	jobReport,
 };
