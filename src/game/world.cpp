@@ -114,6 +114,7 @@ static uint32_t s_frame;
 static uint32_t s_listBytes, s_texVram;
 static int s_centerX = -9999, s_centerY = -9999, s_windowR;
 static bool s_windowDirty = true;
+static bool s_nearDirty = true;      // a sector of the 3x3 block around the player is missing
 static int s_preloadStep;
 static u32 s_preloadT0;
 static Stats s_stats;
@@ -152,6 +153,7 @@ bool readAt(uint32_t offset, void* dst, uint32_t bytes) {
 
 uint32_t colOffset() { return s_file ? s_hdr.colOffset : 0; }
 bool sectorsPending() { return s_windowDirty; }
+bool nearSectorsPending() { return s_nearDirty; }
 int numModels() { return s_file ? s_hdr.numModels : 0; }
 
 // ----------------------------------------------------------------------------
@@ -731,10 +733,10 @@ static void updateSectors(float x, float y, int maxLoads) {
 		s_centerX = cx;
 		s_centerY = cy;
 		s_windowR = r;
-		s_windowDirty = true;
+		s_windowDirty = s_nearDirty = true;
 	}
 	if (!s_windowDirty) return;
-	bool missing = false;
+	bool missing = false, nearMissing = false;
 	for (int ring = 0; ring <= r; ring++) {
 		for (int sy = cy - ring; sy <= cy + ring; sy++) {
 			if (sy < 0 || sy >= s_hdr.gridH) continue;
@@ -746,11 +748,15 @@ static void updateSectors(float x, float y, int maxLoads) {
 					if (sc.used && sc.sx == sx && sc.sy == sy) { have = true; break; }
 				if (have) continue;
 				if (maxLoads > 0 && loadSector(sx, sy)) maxLoads--;
-				else missing = true;
+				else {
+					missing = true;
+					if (ring <= 1) nearMissing = true;
+				}
 			}
 		}
 	}
 	s_windowDirty = missing;
+	s_nearDirty = nearMissing;
 	int n = 0, ni = 0;
 	for (const Sector& sc : s_sectors)
 		if (sc.used) { n++; ni += sc.count; }
@@ -1117,7 +1123,7 @@ void setArea(int area) {
 		if (sc.used) freeSector(sc);
 	s_area = area;
 	s_centerX = s_centerY = -9999;
-	s_windowDirty = true;
+	s_windowDirty = s_nearDirty = true;
 	s_stats.drawn = s_stats.modelsReady = s_stats.modelsLoading = 0;
 	memset(s_drawn, 0, sizeof s_drawn);
 }

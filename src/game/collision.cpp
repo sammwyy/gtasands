@@ -77,6 +77,7 @@ static world::SectorView s_sv[WORLD_SECTOR_SLOTS];
 const Stats& stats() { return s_stats; }
 bool available() { return s_index != nullptr; }
 bool pending() { return s_stats.missing != 0 || world::sectorsPending(); }
+bool nearPending() { return s_stats.missing != 0 || world::nearSectorsPending() || s_nearDirty; }
 
 static inline int32_t iabs(int32_t v) { return v < 0 ? -v : v; }
 // 16.16 fraction num / den for 0 <= num <= den, on the hardware divider
@@ -619,6 +620,13 @@ static void step(float x, float y, float z, u32 budgetUs) {
 	// a couple of metres, and whenever the cache changed under it
 	const float mx = x - s_gatherX, my = y - s_gatherY, mz = z - s_gatherZ;
 	if (s_frame - s_gatherFrame >= GATHER_FRAMES || mx * mx + my * my + mz * mz > 4.0f) s_nearDirty = true;
+	// a sector that just streamed in may hold the floor / walls around CJ
+	static uint32_t s_worldSig;
+	const uint32_t ws = (uint32_t)world::stats().sectors << 16 | world::stats().instances;
+	if (ws != s_worldSig) {
+		s_worldSig = ws;
+		s_nearDirty = true;
+	}
 	if (s_nearDirty) {
 		gather(x, y, z);
 		s_gatherFrame = s_frame;

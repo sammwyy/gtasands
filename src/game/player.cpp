@@ -974,7 +974,7 @@ static void collide() {
 		g.z = z > g.z + 0.02f ? g.z + (z - g.z) * 0.5f : z;
 		return;
 	}
-	if (physics() && col::pending()) return;   // the floor may still be streaming: hold
+	if (physics() && col::nearPending()) return;   // the floor may still be streaming: hold
 	if (floorAt(g.z + STEP_UP, g.z - FALL_PROBE, z)) {
 		startFall();
 		return;
@@ -1551,7 +1551,9 @@ void update() {
 
 	if (s_teleportWait) {
 		col::Hit hit;
-		if (s_teleportWait == 300 || (col::available() && (col::pending() ||
+		// only what CJ stands in has to be there: waiting for the whole
+		// ~180 m sector window held him for up to 300 frames after a warp
+		if (s_teleportWait == 300 || (col::available() && (col::nearPending() ||
 		    !col::groundAt(g.x, g.y, g.z + 4.0f, g.z - 30.0f, hit)))) {
 			if (--s_teleportWait) {
 				input::consumeEdges();

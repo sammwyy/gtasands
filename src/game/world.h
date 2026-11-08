@@ -46,6 +46,7 @@ int sectors(SectorView* out, int max);
 bool readAt(uint32_t offset, void* dst, uint32_t bytes);
 uint32_t colOffset();         // ds::WorldHeader::colOffset (0 = no file)
 bool sectorsPending();        // the window around the player is still loading sectors
+bool nearSectorsPending();    // ... one of the 3x3 sectors around the player (>= 25 m of it)
 int numModels();
 
 struct Stats {

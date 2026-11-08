@@ -47,6 +47,9 @@ bool preloadAreaStep(float x, float y, float z);
 // True while a collision record needed near the player is still streaming:
 // the player must not start falling through it.
 bool pending();
+// The same for what CJ can touch now: the near list's records and the 3x3
+// sectors around him (the rest of the ~180 m window may still be loading).
+bool nearPending();
 
 // First front-facing hit from a to b (SA world).
 bool castSegment(const float a[3], const float b[3], Hit& hit);
