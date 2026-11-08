@@ -32,38 +32,57 @@ at the spawn (~15-25 while driving).
   e.g. `timecyc.dat`).
 
 ## Build / run
-- `make -j16` -> `gtasads.nds`. Runs the asset build first if `resources.toml` or `tools/**.py`
+- `make build -j16` -> `build/fat-gtasads.nds`, `build/fat-gtasads.dsi`,
+  `build/gtasads.nds`, `build/gtasads.dsi`, `build/gtasads/` (SD assets).
+  `fat-` means assets embedded in the ROM; the unprefixed variants need `build/gtasads/`
+  copied to the SD root. `.dsi` boots DSi mode and gets ~16 MB RAM (the existing
+  heap manager uses the extra RAM) and the faster ARM9 clock. Runs the asset build
+  first if `resources.toml` or `tools/**.py`
   changed. **Must stay warning-free** (`-Wall -Wextra`, libnds headers are `-isystem`).
-- `make ASSETS=0` skip the asset pipeline (fast code iteration). `DEBUG=1` = `-Og -DGTASADS_DEBUG`.
+- `make ASSETS=0 build` skips the asset pipeline (fast code iteration).
+  `make ASSETS=0 build-sd-dsi` builds one variant; other targets are `build-ds`,
+  `build-dsi`, `build-sd-ds`. `DEBUG=1` = `-Og -DGTASADS_DEBUG`.
 - `make build-quick` (= `QUICKTEST=1`): skips intro movies, auto-starts the game, forces the GAME
-  HUD screen. `build/.optsig` forces recompilation when flags change (no `make clean` needed).
+  HUD screen. Per-variant `build/tmp/*/.optsig` forces recompilation when flags change (no `make clean` needed).
   Note: every make invocation must repeat the same flags, or it rebuilds with the default ones.
-- `make FAT=1`: assets not embedded, read from `sd:/gtasads/` (`nitro:` -> `fat:` redirect);
+- `STORAGE=sd`: assets not embedded, read from `sd:/gtasads/` (`nitro:` -> `fat:` redirect);
   ~450 KB .nds that boots under TWiLight Menu++ (the ~400 MB NitroFS build crashes nds-bootstrap).
-- `make sdcard` stages `sdcard/gtasads/` + `sdcard/gtasads.nds`; `make dldi` patches the ROM with
-  `tools/dldi/r4tfv2.dldi` for melonDS's virtual SD. `make sd` = clean FAT build + both.
+- SD ROMs are DLDI-patched automatically. `make sdcard` builds both SD ROMs and stages
+  `build/gtasads/`. `make run` launches DSi embedded; `make run-ds` DS embedded;
+  `make run-sd` DSi SD; `make run-sd-ds` DS SD. Run profiles live in
+  `build/emulator/`; DSi emulation reads locally provided `biosdsi9.bin`,
+  `biosdsi7.bin`, `dsifirmware.bin` and `dsinand.bin` from
+  `build/emulator/firmware/` (or configured `[DSi]` paths from
+  `~/.config/melonDS/melonDS.toml`, overridable via `MELONDS_CONFIG`).
+  The profiles copy the writable NAND and firmware; source dumps remain untouched.
+  Keep melonDS's DSi SD emulation enabled for both DSi variants: without it,
+  `run` stalls on a black/blue screen even when all assets are embedded in the ROM.
+  The embedded variant uses an empty SD root and reads assets from NitroFS.
 - `make sync` / `make assets` wrap `tools/assets.py sync|build`. `make compdb`, `make clean`,
   `make distclean` (also removes `nitrofs/`).
 
 ## Verification
-- Smoke: `timeout -s INT 8 melonds gtasads.nds` must not crash (exit 124 = still running).
+- Smoke: `timeout -s INT 8 melonds build/fat-gtasads.nds` must not crash (exit 124 = still running).
   You can't see the screen: ask the user for screenshots when visuals matter.
 - Headless numbers (preferred): DEBUG builds write `fat:/gtasads_hudok.txt` after 120 in-game
   frames: hud stats, mem summary, fps/cpu per section, per-tag bytes, VRAM, a `sky:` line
   (weather, sky colours, far/fog, sun z, polys) and the last log lines.
   ```
-  F="ASSETS=0 QUICKTEST=1 FAT=1 DEBUG=1"
-  make $F -j16 && make $F sdcard && make $F dldi
-  XDG_CONFIG_HOME=/tmp/melcfg timeout -s INT 35 melonds gtasads.nds
-  strings /tmp/melcfg/dldi.bin | grep -E "hudok|^sky:|fps=|^log:" | grep -v %
+  F="ASSETS=0 QUICKTEST=1 DEBUG=1"
+  make $F -j16 build-sd-ds && make $F stage-sd
+  timeout -s INT 35 make $F run-sd-ds
+  strings build/emulator/ds-sd/dldi.bin | grep -E "hudok|^sky:|fps=|^log:" | grep -v %
   ```
-  `/tmp/melcfg/melonDS` is a copy of `~/.config/melonDS` with `[DLDI] Enable=true,
-  FolderSync=true, FolderPath=<repo>/sdcard, ImagePath=/tmp/melcfg/dldi.bin` (SIGINT, not TERM:
+  `tools/run.py` creates an isolated melonDS profile with `[DLDI] Enable=true,
+  FolderSync=true, FolderPath=<repo>/build/emulator/ds-sd/sd-root, ImagePath=<repo>/build/emulator/ds-sd/dldi.bin` (SIGINT, not TERM:
   melonDS only writes the image on a clean exit). Recreate it if /tmp was wiped.
+  For DSi use `build-sd-dsi` / `run-sd`; a verified DSi DEBUG run reported
+  `str 2134/14782K ... heapok=1` in
+  `build/emulator/dsi-sd/sd-root/gtasads_hudok.txt`.
 - Headless screenshots (DEBUG): the hudok block captures the 3D screen at frames 120 + k*90
-  (`sdcard/gtasads_shot0..5.dscr`: N, W, S, E, bird's eye, 150 m west after a teleport) and writes
+  (`build/emulator/ds-sd/sd-root/gtasads_shot0..5.dscr`: N, W, S, E, bird's eye, 150 m west after a teleport) and writes
   `gtasads_hudok2.txt` after the teleport. Convert + look at them: `python3 tools/dsshot.py
-  sdcard/gtasads_shot0.dscr /tmp/shot0.png`, then read the PNG. Needs ~100 s of emulator time
+  build/emulator/ds-sd/sd-root/gtasads_shot0.dscr /tmp/shot0.png`, then read the PNG. Needs ~100 s of emulator time
   (`timeout -s INT 100`). The capture borrows VRAM D (textures there are garbage afterwards).
 - To test a specific state headless (time, weather...), add a temporary `#ifdef` hook in a loading
   job and pass it through `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DMYHOOK=..."`;
@@ -77,7 +96,7 @@ at the spawn (~15-25 while driving).
 - Audio test (DEBUG): `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DGTASADS_AUDTEST"`
   runs, jumps, punches, rain + lightning, M4 bursts, sandstorm after the screenshot sequence;
   `gtasads_audtest.txt` = `aud:` stats per phase, `gtasads_aud_<phase>.wav` = the real mixer output
-  (capture units). `python3 tools/audwav.py sdcard/gtasads_aud_run.wav [--png out.png]` prints
+  (capture units). `python3 tools/audwav.py build/emulator/ds-sd/sd-root/gtasads_aud_run.wav [--png out.png]` prints
   peak/RMS/clipping. Needs `timeout -s INT 170`; don't rebuild the ROM while it runs, and keep the
   melonDS window unfocused (key presses there move CJ and skew the numbers).
 - Vehicle test (DEBUG): `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DGTASADS_VEHTEST"` spawns a

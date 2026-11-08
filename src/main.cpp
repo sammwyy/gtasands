@@ -41,11 +41,21 @@ static void closePauseMenu() {
 }
 
 static void boot() {
+#ifdef GTASADS_DSI
+	if (isDSiMode()) setCpuClock(true);
+#endif
 	mem::init();   // carve the RAM regions before anything allocates
 	video::init();
 	hud::init();
 	timing::init();
 	renderer::init();
+#ifdef GTASADS_DSI
+	if (!isDSiMode()) {
+		hud::log("DSi mode required (16 MB RAM)");
+		return;
+	}
+#endif
+	hud::log("RAM heap: %u KB", (unsigned)(mem::totalBytes() >> 10));
 
 	if (!fs::init()) {
 		hud::log("\x1b[31mfs init failed (no nitrofs, no SD)\x1b[39m");

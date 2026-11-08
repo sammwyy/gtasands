@@ -7,13 +7,21 @@ Build/run/test commands and working rules live in `AGENTS.md`; this file is the
 ## 1. Big picture
 
 ```
-PC install --tools/assets.py sync--> game/ --tools/assets.py build--> nitrofs/ --ndstool--> gtasads.nds
-                                                                         |  (or sd:/gtasads/ with FAT=1)
+PC install --tools/assets.py sync--> game/ --tools/assets.py build--> nitrofs/ --ndstool--> build/fat-gtasads.{nds,dsi}
+                                                                         |                 build/gtasads.{nds,dsi} + build/gtasads/ (SD)
 ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading jobs -> INGAME loop
 ```
 
 - Top screen = main engine, 3D (`render/`). Bottom screen = sub engine, 2D: either the
   software-rendered GTA HUD (`game/hud/`) or the text debug console (`hud/debugui`), SELECT toggles.
+- `make build` produces four ROMs: `fat-` embeds NitroFS, unprefixed ROMs use
+  `build/gtasads/` on SD. `.nds` is DS, `.dsi` boots DSi mode (16 MB RAM,
+  134 MHz ARM9). `tools/run.py` creates isolated melonDS profiles per variant,
+  with separate SD roots containing only `gtasads/` (not the asset cache);
+  DSi emulation reads DSi BIOS, firmware and NAND dumps from
+  `build/emulator/firmware/` or the local melonDS configuration. melonDS needs
+  DSi SD emulation enabled even for the embedded NitroFS DSi ROM (`run`); that
+  profile has an empty SD root, and its assets still come from the ROM.
 - Code is a port of gta-reversed (`third_party/gta-reversed/source/game_sa/`, reference only,
   never compiled). Same class/function names in comments (`CTimeCycle::CalcColoursForPoint`) so
   the original can be found by grep. RenderWare calls are replaced by our GX code + DS formats.
@@ -25,7 +33,7 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `main.cpp` | AppState machine (TITLE/MENU/LOADING/INGAME), per-frame order (see 3.) |
 | `platform/video.*` | screen/VRAM setup, projection constants (`FOV_Y`, `NEAR_PLANE`, `FAR_PLANE`, `TAN_HALF_FOV_*`), per-frame render environment (fog, clear colour, manual translucent sort) applied in vblank, `depth15()` z-buffer helpers, DEBUG `requestCapture()` screenshots |
 | `platform/input.*` | key/touch polling, edges (`consumeEdges`) |
-| `platform/fs.*` | NitroFS or `nitro:`->`fat:` redirect (FAT=1), debug `fsok` marker |
+| `platform/fs.*` | NitroFS or `nitro:`->SD redirect (STORAGE=sd), debug `fsok` marker |
 | `platform/timing.*` | timers 0+1, `vblanks()`, `ticks()`, `usSince()`, per-section CPU (`SEC_3D/SIM/HUD`) |
 | `mem/` | memory manager (budget.h regions, TLSF, scratch stack, perm arena, `Pool<T>`) |
 | `assets/ds_formats.h` | every binary layout (mirrors the Python writers, static_asserts) |
@@ -66,7 +74,8 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `hud/debugui.*` | touch tabs LOG / PERF / MEM / GAME / REND / SKY / CHTS |
 
 Other dirs: `tools/` (pipeline, `hosthud/` host HUD harness, `dldi/`, `dsshot.py` DEBUG screenshot -> PNG), `game/` (gitignored PC
-files), `nitrofs/` (gitignored output), `build/` (objects, `assets_cache/`, reports, previews).
+files), `nitrofs/` (gitignored output), `build/` (ROMs, SD directory, `tmp/` per-variant objects,
+isolated emulator profiles, `assets_cache/`, reports, previews).
 
 ## 3. Frame loop (`main.cpp`)
 
