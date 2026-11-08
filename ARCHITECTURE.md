@@ -674,17 +674,20 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
 - `chud::initStep()` is a loading job; `hud::setGameActive()` gates drawing to INGAME;
   `chud::invalidate()` forces a full repaint. `hud::log` keeps a 32-line ring (14 replayed when
   the console is re-initialised on switching back to DEBUG).
-- `hud/debugui.*`: tabs (4 chars each, active in yellow): LOG, PERF (fps/cpu/sections/
-  polys/loco), MEM (regions, tags, VRAM, anim cache), GAME (wanted/health/money/weapons/body/
-  clock/outfit/respawn), REND (`dbg::opts` render/sim switches), SKY (section 5).
-- CHTS: bottom category selector PLAYER / VEH / PEDS / TIME / WORLD / WARP, per-category page arrows
-  and touch actions (vehicle picker by type/model, wanted 0..5, money, movement speed, weather,
+- `hud/debugui.*`: tabs LOG PRF MEM GME RND SKY CHT (3 letters + gap, active in yellow): LOG, PRF (fps/cpu/
+  sections/polys/loco/map/col/audio/ped/vehicle cost), MEM (regions, tags, VRAM, caches, vehicle/ped models), GME
+  (read-only CJ / current vehicle / population state), RND (`dbg::opts` render/sim switches, poly budgets), SKY
+  (section 5 state + sky switches). Every action lives in CHT only (no duplicates across tabs). Pages are composed
+  into a RAM text buffer every 3rd frame (or on a tap / tab change) and only changed cells are printed: the old
+  direct printing blanked and reprinted rows every frame (flicker) and left another tab's text in rows a page
+  skipped. `GTASADS_DBGUITEST` dumps every tab / category to `gtasads_dbgui.txt`.
+- CHT: bottom category selector CJ / VEH / PEDS / TIME / WRLD / WARP; each category is one list filling rows
+  1..21 (`item()` assigns rows; the page arrows on row 22 appear only when a list overflows), touch actions (vehicle picker by type/model, wanted 0..5, money, movement speed, weather,
   clock, population, simulation switches). WARP lists 14 direct-tap exterior locations across
   Los Santos, San Fierro, Las Venturas, countryside and desert; coordinates were checked against
   the baked world collision. `player::teleport` detaches CJ from vehicles, resets motion and camera
   position, then holds simulation until the collision around CJ (`col::nearPending`) has streamed and the
-  ground can be probed (300-frame fallback). The seven top tabs use four console columns each;
-  active tabs are yellow. `dbg::opts.playerSpeedQ` scales CJ's on-foot root displacement
+  ground can be probed (300-frame fallback). `dbg::opts.playerSpeedQ` scales CJ's on-foot root displacement
   in quarters (default 4 = x1), without changing vehicle or ped motion.
 
 ## 8. Frontend, loading, intro, audio

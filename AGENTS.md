@@ -147,6 +147,8 @@ at the spawn (~15-25 while driving).
 - Pause-menu regression (DEBUG): `-DGTASADS_MENUAUDTEST` opens the pause menu, scrolls (beeps), records
   `gtasads_menu.wav` (check with `tools/audwav.py`) and `gtasads_menutest.txt` (frame cost, world models ready after
   resuming). Needs `timeout -s INT 90`.
+- Debug console layout (DEBUG): `-DGTASADS_DBGUITEST` shows every tab and CHT category and dumps the console text
+  to `gtasads_dbgui.txt` (rows must not be clipped at column 31). Needs `timeout -s INT 70`.
 - What stopped CJ there? `python3 tools/colnear.py X Y Z [R]` lists the baked collision
   (faces with world n.z, boxes) around a point.
 

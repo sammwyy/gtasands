@@ -359,6 +359,31 @@ static void menuAudTest(int f) {
 }
 #endif
 
+#if defined(GTASADS_DEBUG) && defined(GTASADS_DBGUITEST)
+// Headless debug-console layout: every tab and CHTS category is shown for a
+// few frames and the console text is dumped to gtasads_dbgui.txt.
+static void dbguiTest(int f) {
+	static FILE* out;
+	if (f == 500) {
+		out = fopen("fat:/gtasads_dbgui.txt", "w");
+		setScreen(Screen::DEBUG);
+	}
+	if (f < 500 || !out) return;
+	const int k = (f - 500) / 20, t = (f - 500) % 20;   // 7 tabs + 5 more CHTS categories
+	if (k >= 12) {
+		fclose(out);
+		out = nullptr;
+		setScreen(Screen::GAME);
+		return;
+	}
+	if (t == 0) dbgui::debugShow(k < 7 ? k : 6, k < 7 ? 0 : k - 6);
+	if (t == 19) {
+		fprintf(out, "== view %d hud %luus\n", k, (unsigned long)timing::sectionUs(timing::SEC_HUD));
+		dbgui::debugDump(out);
+	}
+}
+#endif
+
 #if defined(GTASADS_DEBUG) && defined(GTASADS_RADIOTEST)
 static void radioTest(int f) {
 	static FILE* out;
@@ -604,6 +629,10 @@ static void pedTest(int f) {
 #endif
 
 void draw() {
+#if defined(GTASADS_DEBUG) && defined(GTASADS_DBGUITEST)
+	static int s_uiFrames;
+	if (s_gameActive) dbguiTest(++s_uiFrames);
+#endif
 #if defined(GTASADS_DEBUG) && defined(GTASADS_MENUAUDTEST)
 	static int s_testFrames;   // counts menu frames too (the in-game hooks stop in the menu)
 	if (s_gameActive || FrontEndMenuManager.m_bMenuActive) menuAudTest(++s_testFrames);

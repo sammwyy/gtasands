@@ -4,6 +4,7 @@
 #include <nds.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "assets/texture.h"
@@ -36,37 +37,95 @@
 namespace dbgui {
 
 enum Tab { TAB_LOG, TAB_PERF, TAB_MEM, TAB_GAME, TAB_REND, TAB_SKY, TAB_CHTS, TAB_COUNT };
-static const char* const k_tabs[TAB_COUNT] = { "LOG", "PERF", "MEM", "GAME", "REND", "SKY", "CHTS" };
+static const char* const k_tabs[TAB_COUNT] = { "LOG", "PRF", "MEM", "GME", "RND", "SKY", "CHT" };   // 3 letters + a gap
 static constexpr int TAB_W = 4;
 static constexpr int COLS = 31;          // last column left empty: writing it wraps (and row 23 would scroll)
 static constexpr int ROWS = 24;
+static constexpr int REFRESH = 3;        // pages are rebuilt every 3rd frame (or on a tap / tab change)
+static constexpr uint8_t DEFAULT_COL = 9;
 
 static int s_tab = TAB_PERF;
 static bool s_repaint = true;
-static unsigned s_logSeq = ~0u;
 static int s_tapRow = -1, s_tapCol = -1;
 static int s_heapCheck = -1;
 static u16 s_cpuHist[COLS];
 static int s_histPos;
 static int s_weaponIdx = 1;
 static int s_cheatCat, s_cheatPage[6], s_cheatWeather = weather::EXTRASUNNY_LA;
+static uint32_t s_frameNo;
+
+// ---- text buffer ----------------------------------------------------------------
+// The page is composed in RAM and only the cells that differ from what the
+// console shows are written out. Printing straight to the console blanked a
+// row and then reprinted it (and the buttons over it) every frame, which
+// flickered, and a page that skipped a row left the previous tab's text there.
+static char s_ch[ROWS][COLS];
+static uint8_t s_col[ROWS][COLS];
+static char s_shownCh[ROWS][COLS];
+static uint8_t s_shownCol[ROWS][COLS];
+
+static void clearBuffer() {
+	memset(s_ch, ' ', sizeof s_ch);
+	memset(s_col, DEFAULT_COL, sizeof s_col);
+}
+
+static void invalidateShown() { memset(s_shownCh, 0, sizeof s_shownCh); }
+
+// Writes `text` (with \x1b[3Nm / \x1b[39m colour codes) at (row, col).
+// wrap: continue on the next rows (log lines), else clip at the row end.
+// Returns the number of rows used.
+static int write(int row, int col, const char* text, bool wrap = false) {
+	uint8_t colour = DEFAULT_COL;
+	const int startRow = row;
+	for (const char* s = text; *s; s++) {
+		if (*s == '\x1b') {
+			if (s[1] == '[') {
+				int v = 0;
+				s += 2;
+				while (*s >= '0' && *s <= '9') v = v * 10 + (*s++ - '0');
+				if (*s == 'm') colour = v >= 30 && v <= 37 ? (uint8_t)(v - 30) : DEFAULT_COL;
+				if (!*s) break;
+			}
+			continue;
+		}
+		if (col >= COLS) {
+			if (!wrap) break;
+			col = 0;
+			row++;
+		}
+		if ((unsigned)row >= (unsigned)ROWS) break;
+		s_ch[row][col] = *s == '\n' ? ' ' : *s;
+		s_col[row][col] = colour;
+		col++;
+	}
+	return row - startRow + 1;
+}
+
+static void flush() {
+	for (int r = 0; r < ROWS; r++) {
+		int c = 0;
+		while (c < COLS) {
+			if (s_ch[r][c] == s_shownCh[r][c] && s_col[r][c] == s_shownCol[r][c]) { c++; continue; }
+			int e = c;
+			while (e < COLS && (s_ch[r][e] != s_shownCh[r][e] || s_col[r][e] != s_shownCol[r][e])) e++;
+			printf("\x1b[%d;%dH", r, c);
+			int cur = -1;
+			for (int k = c; k < e; k++) {
+				if (s_col[r][k] != cur) {
+					cur = s_col[r][k];
+					printf("\x1b[%dm", cur == DEFAULT_COL ? 39 : 30 + cur);
+				}
+				putchar(s_ch[r][k]);
+				s_shownCh[r][k] = s_ch[r][k];
+				s_shownCol[r][k] = s_col[r][k];
+			}
+			printf("\x1b[39m");
+			c = e;
+		}
+	}
+}
 
 // ---- text helpers -------------------------------------------------------------
-
-static int visibleLen(const char* s) {
-	int n = 0;
-	for (; *s; s++) {
-		if (*s == '\x1b') { while (*s && *s != 'm' && *s != 'H' && *s != 'J') s++; if (!*s) break; continue; }
-		n++;
-	}
-	return n;
-}
-
-// Prints `text` at (row, col) and blanks the rest of the row up to COLS.
-static void put(int row, int col, const char* text) {
-	printf("\x1b[%d;%dH%s", row, col, text);
-	for (int n = col + visibleLen(text); n < COLS; n++) putchar(' ');
-}
 
 static void line(int row, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 static void line(int row, const char* fmt, ...) {
@@ -75,17 +134,25 @@ static void line(int row, const char* fmt, ...) {
 	va_start(ap, fmt);
 	vsnprintf(buf, sizeof buf, fmt, ap);
 	va_end(ap);
-	put(row, 0, buf);
+	write(row, 0, buf);
 }
 
-// "[label]" at (row, col); true when tapped this frame. Returns the column
-// after the button through `next` so rows of buttons chain.
-static bool button(int row, int& col, const char* label) {
+// "[label]" at (row, col); true when tapped this frame. Advances `col` so
+// rows of buttons chain.
+static bool button(int row, int& col, const char* label, bool selected = false) {
 	const int w = (int)strlen(label) + 2;
-	printf("\x1b[%d;%dH\x1b[36m[%s]\x1b[39m", row, col, label);
+	char buf[40];
+	snprintf(buf, sizeof buf, "%s[%s]\x1b[39m", selected ? "\x1b[33m" : "\x1b[36m", label);
+	write(row, col, buf);
 	const bool hit = s_tapRow == row && s_tapCol >= col && s_tapCol < col + w;
 	col += w + 1;
 	return hit;
+}
+
+static bool toggle(int row, int col, bool& v) {
+	if (!button(row, col, v ? "ON " : "OFF")) return false;
+	v = !v;
+	return true;
 }
 
 static void bar(char* out, int n, u32 v, u32 full) {
@@ -94,137 +161,10 @@ static void bar(char* out, int n, u32 v, u32 full) {
 	out[n] = 0;
 }
 
-static void blank(int from, int to) {
-	for (int r = from; r <= to; r++) put(r, 0, "");
-}
-
-// ---- pages --------------------------------------------------------------------
-
-static void pageLog() {
-	line(1, "\x1b[33m%d lines\x1b[39m", hud::logCount());
-	int c = 22;
-	const bool clear = button(1, c, "clear");
-	if (clear) hud::logClear();
-	const unsigned seq = hud::logSeq();
-	if (!s_repaint && seq == s_logSeq && !clear) return;
-	s_logSeq = hud::logSeq();
-	// newest at the bottom: walk back until the 21 rows (2..22) are full
-	const int top = 2, bottom = 22, avail = bottom - top + 1;
-	int used = 0, n = 0;
-	while (n < hud::logCount()) {
-		const int rows = visibleLen(hud::logLine(n)) / 32 + 1;
-		if (used + rows > avail) break;
-		used += rows;
-		n++;
-	}
-	blank(top, bottom);
-	int row = bottom - used + 1;
-	for (int i = n - 1; i >= 0; i--) {
-		const char* l = hud::logLine(i);
-		printf("\x1b[%d;0H%s\x1b[39m", row, l);
-		row += visibleLen(l) / 32 + 1;
-	}
-}
-
-static void pagePerf() {
-	const u32 frame = 16715;  // one 60 Hz frame, us
-	const u32 cpu = timing::frameUs();
-	s_cpuHist[s_histPos] = (u16)(cpu > 65535 ? 65535 : cpu);
-	s_histPos = (s_histPos + 1) % COLS;
-	char b[24];
-	bar(b, 16, cpu, frame);
-	line(1, "fps \x1b[33m%2lu\x1b[39m cpu %5lu us %3lu%%", timing::fps(), cpu, cpu * 100 / frame);
-	line(2, "     [%s]", b);
-	static const char* const k_sec[] = { "3d ", "sim", "hud" };
-	for (int s = 0; s < timing::SEC_COUNT; s++) {
-		const u32 us = timing::sectionUs((timing::Section)s);
-		bar(b, 16, us, frame);
-		line(3 + s, "%s %5lu [%s]", k_sec[s], us, b);
-	}
-	// cpu history, one column per frame (height = share of a 60 Hz frame)
-	static const char k_lv[] = " .:-=+*#%";
-	char h[COLS + 1];
-	u32 mn = 0xFFFF, mx = 0;
-	for (int i = 0; i < COLS; i++) {
-		const u32 v = s_cpuHist[(s_histPos + i) % COLS];
-		if (v < mn) mn = v;
-		if (v > mx) mx = v;
-		const u32 k = v * 8 / frame;
-		h[i] = k_lv[k > 8 ? 8 : k];
-	}
-	h[COLS] = 0;
-	line(6, "hist min %5lu max %5lu us", mn, mx);
-	line(7, "%s", h);
-	line(8, "polys %4d/2048 verts %4d/6144", renderer::polyCount(), renderer::vertCount());
-	line(9, "cj verts %d  clip %.14s", cj::vertCount(), cj::animName());
-	const player::State& p = player::g;
-	line(10, "pos %7.1f %7.1f %5.1f", p.x, p.y, p.z);
-	line(11, "hdg %5.2f spd %5.1f aim %d", p.heading, p.speed, (int)p.aiming);
-	char loco[40];
-	player::locoDebug(loco, sizeof loco);
-	line(12, "%s", loco);
-	line(14, "radar rng %3d tiles %2d", (int)radar::range(), radar::tilesCached());
-	line(13, "sim x%d.%02d %s  vbl %lu", dbg::opts.simSpeedQ / 4, dbg::opts.simSpeedQ % 4 * 25,
-	     dbg::opts.fixedStep ? "fixed" : "frame", timing::vblanks());
-	const world::Stats& w = world::stats();
-	line(15, "map %3u/%3u cull f%3u b%3u", w.drawn, w.candidates, w.culledFrustum, w.culledBudget);
-	line(16, "polys %4u>%4u us u%4u d%4u", w.polysBefore, w.polysAfter, w.updateUs, w.drawUs);
-	line(17, "mdl %3u+%2u %3luK sec%2u i%4u", w.modelsReady, w.modelsLoading,
-	     (unsigned long)(w.listBytes >> 10), w.sectors, w.instances);
-	line(18, "tex %3u fail %2u vram %3luK", w.textures, w.texFailed, (unsigned long)(w.texVram >> 10));
-	const col::Stats& cs = col::stats();
-	line(19, "col %3u %3luK near %2u miss %2u", cs.models, (unsigned long)(cs.bytes >> 10), cs.nearCount, cs.missing);
-	line(20, "col us u%4u q%4u loads %lu", cs.updateUs, cs.queryUs, (unsigned long)cs.loads);
-	const aesound::Stats& as = aesound::stats();
-	line(21, "snd %2u/%2u ch steal %lu us %4lu", as.active, as.physical, (unsigned long)as.stolen,
-	     (unsigned long)audio::stats().serviceUs);
-	line(22, "steps %lu land %lu shots %lu", (unsigned long)audio::stats().footsteps,
-	     (unsigned long)audio::stats().landings, (unsigned long)audio::stats().shots);
-	blank(23, 23);
-}
-
-static void regionRow(int row, const char* name, mem::Region r) {
-	const mem::RegionStats s = mem::stats(r);
-	line(row, "%-5s%5u%5u%5u%5u%4lu", name, (unsigned)(s.used >> 10), (unsigned)(s.capacity >> 10),
-	     (unsigned)(s.peak >> 10), (unsigned)(s.largestFree >> 10), (unsigned long)s.failures);
-}
-
-static void pageMem() {
-	line(1, "\x1b[33mKB   used  cap peak   lf  err\x1b[39m");
-	regionRow(2, "STRM", mem::REGION_STREAM);
-	regionRow(3, "PERM", mem::REGION_PERM);
-	regionRow(4, "SYS", mem::REGION_SYS);
-	regionRow(5, "SCR", mem::REGION_SCRATCH);
-	line(6, "blocks %lu  total %uK", (unsigned long)mem::stats(mem::REGION_STREAM).blocks,
-	     (unsigned)(mem::totalBytes() >> 10));
-	for (int t = 0, row = 7; t < mem::TAG_COUNT; t += 2, row++) {
-		char a[16], b[20] = "";
-		snprintf(a, sizeof a, "%-6s%5uK", mem::tagName((mem::Tag)t), (unsigned)(mem::tagBytes((mem::Tag)t) >> 10));
-		if (t + 1 < mem::TAG_COUNT)
-			snprintf(b, sizeof b, "%-6s%5uK", mem::tagName((mem::Tag)(t + 1)),
-			         (unsigned)(mem::tagBytes((mem::Tag)(t + 1)) >> 10));
-		else   // odd tag count: VRAM shares the last row
-			snprintf(b, sizeof b, "vram%4uK/%3d", (unsigned)(tex::vramBytes() >> 10), tex::loadedCount());
-		line(row, "%s   %s", a, b);
-	}
-	line(14, "anim %2d clips %3uK (budget %uK)", animstore::residentClips(),
-	     (unsigned)(animstore::residentBytes() >> 10), (unsigned)(mem::budget::ANIM_CACHE_BYTES >> 10));
-	line(15, "heap check: %s", s_heapCheck < 0 ? "-" : s_heapCheck ? "\x1b[32mOK\x1b[39m" : "\x1b[31mCORRUPT\x1b[39m");
-	put(16, 0, "");
-	int c = 0;
-	if (button(16, c, "check heap")) s_heapCheck = mem::check() ? 1 : 0;
-	if (button(16, c, "trim anims")) animstore::trim(0);
-	const aebank::Stats& ab = aebank::stats();
-	line(17, "audio %3u snd %3luK/%uK q%u f%u", ab.resident, (unsigned long)(ab.bytes >> 10),
-	     (unsigned)(mem::budget::AUDIO_CACHE_BYTES >> 10), ab.queued, ab.failed);
-	line(18, "audio loads %lu evict %lu trk %ld", (unsigned long)ab.loads, (unsigned long)ab.evictions,
-	     aestream::stats().trackId == ~0u ? -1L : (long)aestream::stats().trackId);
-	blank(19, 23);
-}
-
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 
-// GAME tab, rows 15..23: vehicles (spawn from vehicles.dveh by type or model id, enter, damage)
+// ---- vehicles (shared by CHTS > VEH and the GAME status) ----------------------
+
 enum VCat { VC_CAR, VC_BIKE, VC_BMX, VC_QUAD, VC_BOAT, VC_HELI, VC_PLANE, VC_TRAIN, VC_TRAILER, VC_RC, VC_COUNT };
 static const char* const k_vcat[VC_COUNT] = { "car", "bike", "bmx", "quad", "boat", "heli", "plane", "train", "trailer", "rc" };
 static int s_vehPick = -1;
@@ -263,595 +203,603 @@ static void spawnHere(int index) {
 	if (id >= 0) s_lastCar = id;
 }
 
-static void pageVehicles() {
-	if (!vehdata::ready()) {
-		line(15, "\x1b[33mno vehicles.dveh\x1b[39m");
-		blank(16, 23);
-		return;
-	}
-	if (s_vehPick < 0) s_vehPick = vehdata::findModel(492) >= 0 ? vehdata::findModel(492) : nextOfCat(0, 1, VC_CAR);
-	ds::VehInfo info;
-	const bool have = vehdata::read(s_vehPick, info);
-	line(15, "\x1b[33m%-5s\x1b[39m %-9.9s %d", k_vcat[s_vcat], have ? info.model : "?", have ? info.modelId : 0);
-	int c = 21;
-	if (button(15, c, "<")) s_vehPick = nextOfCat(s_vehPick, -1, s_vcat);
-	if (button(15, c, ">")) s_vehPick = nextOfCat(s_vehPick, 1, s_vcat);
-	put(16, 0, "");
-	c = 0;
-	const bool prev = button(16, c, "type<");
-	const bool next = button(16, c, "type>");
-	if (prev || next) {
-		s_vcat = (s_vcat + (next ? 1 : VC_COUNT - 1)) % VC_COUNT;
-		const int i = nextOfCat(-1, 1, s_vcat);
-		if (i >= 0) s_vehPick = i;
-	}
-	if (button(16, c, "spawn")) spawnHere(s_vehPick);
-	if (button(16, c, "rnd")) {
-		for (int k = rand() % 8 + 1; k > 0; k--) s_vehPick = nextOfCat(s_vehPick, 1, s_vcat);
-		spawnHere(s_vehPick);
-	}
-	line(17, "id %3d", s_spawnId);
-	c = 7;
-	if (button(17, c, "-10")) s_spawnId -= 10;
-	if (button(17, c, "-")) s_spawnId -= 1;
-	if (button(17, c, "+")) s_spawnId += 1;
-	if (button(17, c, "+10")) s_spawnId += 10;
-	if (s_spawnId < 400) s_spawnId = 611;
-	if (s_spawnId > 611) s_spawnId = 400;
-	if (button(17, c, "go")) {
-		const int i = vehdata::findModel(s_spawnId);
-		if (i >= 0) { s_vehPick = i; s_vcat = catOf(i); spawnHere(i); }
-		else hud::log("\x1b[33mno vehicle %d\x1b[39m", s_spawnId);
-	}
+// the vehicle the actions apply to: the one CJ is in, the last spawned, any
+static int currentCar() {
 	int cur = player::vehicleId() >= 0 ? player::vehicleId() : s_lastCar;
 	if (!veh::get(cur)) {
 		cur = -1;
 		for (int i = 0; i < veh::MAX && cur < 0; i++)
 			if (veh::get(i)) cur = i;
 	}
-	put(18, 0, "");
-	c = 0;
-	if (button(18, c, "enter") && cur >= 0) player::enterVehicleNow(cur);
-	if (button(18, c, "del all")) { veh::removeAll(); s_lastCar = -1; }
-	if (button(18, c, "repair")) veh::repair(cur);
-	if (button(18, c, "boom")) veh::blowUp(cur);
+	return cur;
+}
+
+// ---- pages --------------------------------------------------------------------
+
+static void pageLog() {
+	line(1, "\x1b[33m%d lines\x1b[39m", hud::logCount());
+	int c = 22;
+	if (button(1, c, "clear")) hud::logClear();
+	// newest at the bottom: walk back until the 21 rows (2..22) are full
+	const int top = 2, bottom = 22, avail = bottom - top + 1;
+	int used = 0, n = 0;
+	auto rowsOf = [](const char* l) {
+		int len = 0;
+		for (const char* s = l; *s; s++) {
+			if (*s == '\x1b') { while (*s && *s != 'm') s++; if (!*s) break; continue; }
+			len++;
+		}
+		return len / COLS + 1;
+	};
+	while (n < hud::logCount()) {
+		const int rows = rowsOf(hud::logLine(n));
+		if (used + rows > avail) break;
+		used += rows;
+		n++;
+	}
+	int row = bottom - used + 1;
+	for (int i = n - 1; i >= 0; i--) row += write(row, 0, hud::logLine(i), true);
+}
+
+static void pagePerf() {
+	const u32 frame = 16715;  // one 60 Hz frame, us
+	const u32 cpu = timing::frameUs();
+	s_cpuHist[s_histPos] = (u16)(cpu > 65535 ? 65535 : cpu);
+	s_histPos = (s_histPos + 1) % COLS;
+	char b[24];
+	bar(b, 16, cpu, frame);
+	line(1, "fps \x1b[33m%2lu\x1b[39m cpu %5lu us %3lu%%", timing::fps(), cpu, cpu * 100 / frame);
+	line(2, "     [%s]", b);
+	static const char* const k_sec[] = { "3d ", "sim", "hud" };
+	for (int s = 0; s < timing::SEC_COUNT; s++) {
+		const u32 us = timing::sectionUs((timing::Section)s);
+		bar(b, 16, us, frame);
+		line(3 + s, "%s %5lu [%s]", k_sec[s], us, b);
+	}
+	// cpu history, one column per refresh (height = share of a 60 Hz frame)
+	static const char k_lv[] = " .:-=+*#%";
+	char h[COLS + 1];
+	u32 mn = 0xFFFF, mx = 0;
+	for (int i = 0; i < COLS; i++) {
+		const u32 v = s_cpuHist[(s_histPos + i) % COLS];
+		if (v < mn) mn = v;
+		if (v > mx) mx = v;
+		const u32 k = v * 8 / frame;
+		h[i] = k_lv[k > 8 ? 8 : k];
+	}
+	h[COLS] = 0;
+	line(6, "hist min %5lu max %5lu us", mn, mx);
+	line(7, "%s", h);
+	line(8, "polys %4d/2048 verts %4d/6144", renderer::polyCount(), renderer::vertCount());
+	line(9, "cj verts %d  clip %.14s", cj::vertCount(), cj::animName());
+	const player::State& p = player::g;
+	line(10, "pos %7.1f %7.1f %5.1f", p.x, p.y, p.z);
+	line(11, "hdg %5.2f spd %5.1f aim %d", p.heading, p.speed, (int)p.aiming);
+	char loco[40];
+	player::locoDebug(loco, sizeof loco);
+	line(12, "%s", loco);
+	line(13, "sim x%d.%02d %s  vbl %lu", dbg::opts.simSpeedQ / 4, dbg::opts.simSpeedQ % 4 * 25,
+	     dbg::opts.fixedStep ? "fixed" : "frame", timing::vblanks());
+	line(14, "radar rng %3d tiles %2d", (int)radar::range(), radar::tilesCached());
+	const world::Stats& w = world::stats();
+	line(15, "map %3u/%3u cull f%3u b%3u", w.drawn, w.candidates, w.culledFrustum, w.culledBudget);
+	line(16, "polys %4u>%4u us u%4u d%4u", w.polysBefore, w.polysAfter, w.updateUs, w.drawUs);
+	line(17, "mdl %3u+%2u %3luK sec%2u i%4u", w.modelsReady, w.modelsLoading,
+	     (unsigned long)(w.listBytes >> 10), w.sectors, w.instances);
+	line(18, "tex %3u fail %2u vram %3luK", w.textures, w.texFailed, (unsigned long)(w.texVram >> 10));
+	const col::Stats& cs = col::stats();
+	line(19, "col %3u %3luK near %2u miss %2u", cs.models, (unsigned long)(cs.bytes >> 10), cs.nearCount, cs.missing);
+	line(20, "col us u%4u q%4u loads %lu", cs.updateUs, cs.queryUs, (unsigned long)cs.loads);
+	const aesound::Stats& as = aesound::stats();
+	line(21, "snd %2u/%2u ch steal %lu us %4lu", as.active, as.physical, (unsigned long)as.stolen,
+	     (unsigned long)audio::stats().serviceUs);
+	const peds::Stats& ps = peds::stats();
+	line(22, "ped u%4lu d%4lu car %4lu %4lu", (unsigned long)ps.updateUs, (unsigned long)ps.drawUs,
+	     (unsigned long)veh::stats().stepUs, (unsigned long)veh::stats().drawUs);
+}
+
+static void regionRow(int row, const char* name, mem::Region r) {
+	const mem::RegionStats s = mem::stats(r);
+	line(row, "%-5s%5u%5u%5u%5u%4lu", name, (unsigned)(s.used >> 10), (unsigned)(s.capacity >> 10),
+	     (unsigned)(s.peak >> 10), (unsigned)(s.largestFree >> 10), (unsigned long)s.failures);
+}
+
+static void pageMem() {
+	line(1, "\x1b[33mKB   used  cap peak   lf  err\x1b[39m");
+	regionRow(2, "STRM", mem::REGION_STREAM);
+	regionRow(3, "PERM", mem::REGION_PERM);
+	regionRow(4, "SYS", mem::REGION_SYS);
+	regionRow(5, "SCR", mem::REGION_SCRATCH);
+	line(6, "blocks %lu  total %uK", (unsigned long)mem::stats(mem::REGION_STREAM).blocks,
+	     (unsigned)(mem::totalBytes() >> 10));
+	for (int t = 0, row = 7; t < mem::TAG_COUNT; t += 2, row++) {
+		char a[16], b[20] = "";
+		snprintf(a, sizeof a, "%-6s%5uK", mem::tagName((mem::Tag)t), (unsigned)(mem::tagBytes((mem::Tag)t) >> 10));
+		if (t + 1 < mem::TAG_COUNT)
+			snprintf(b, sizeof b, "%-6s%5uK", mem::tagName((mem::Tag)(t + 1)),
+			         (unsigned)(mem::tagBytes((mem::Tag)(t + 1)) >> 10));
+		else   // odd tag count: VRAM shares the last row
+			snprintf(b, sizeof b, "vram%4uK/%3d", (unsigned)(tex::vramBytes() >> 10), tex::loadedCount());
+		line(row, "%s   %s", a, b);
+	}
+	line(14, "anim %2d clips %3uK budget %uK", animstore::residentClips(),
+	     (unsigned)(animstore::residentBytes() >> 10), (unsigned)(mem::budget::ANIM_CACHE_BYTES >> 10));
+	line(15, "heap check: %s", s_heapCheck < 0 ? "-" : s_heapCheck ? "\x1b[32mOK\x1b[39m" : "\x1b[31mCORRUPT\x1b[39m");
+	int c = 0;
+	if (button(16, c, "check heap")) s_heapCheck = mem::check() ? 1 : 0;
+	if (button(16, c, "trim anims")) animstore::trim(0);
+	const aebank::Stats& ab = aebank::stats();
+	line(17, "audio %3u snd %3luK/%uK q%u f%u", ab.resident, (unsigned long)(ab.bytes >> 10),
+	     (unsigned)(mem::budget::AUDIO_CACHE_BYTES >> 10), ab.queued, ab.failed);
+	line(18, "audio loads %lu evict %lu trk %ld", (unsigned long)ab.loads, (unsigned long)ab.evictions,
+	     aestream::stats().trackId == ~0u ? -1L : (long)aestream::stats().trackId);
+	const vehmdl::Stats& vm = vehmdl::stats();
+	const pedmodel::Stats& pm = pedmodel::stats();
+	line(19, "veh mdl %u/%u tex %u %luK", vm.ready, vm.models, vm.textures, (unsigned long)(vm.texVram >> 10));
+	line(20, "ped mdl %u/%u %luK tex %luK", pm.ready, pm.models, (unsigned long)(pm.listBytes >> 10),
+	     (unsigned long)(pm.texVram >> 10));
+}
+
+static void notInGame() { line(2, "\x1b[33m(start a game first)\x1b[39m"); }
+
+// GAME: read-only state (every action lives in CHTS)
+static void pageGame(bool inGame) {
+	if (!inGame) { notInGame(); return; }
+	const player::State& p = player::g;
+	line(1, "\x1b[33mCJ\x1b[39m hp %3d/%3d arm %3d/%3d", (int)p.health, (int)p.maxHealth, (int)p.armour, (int)p.maxArmour);
+	line(2, "$%d  wanted %d  sprint %d%%", p.money, p.wantedLevel, (int)p.sprint);
+	line(3, "weapon %d %.12s %d/%d", p.weaponType, p.weapon.txd ? p.weapon.txd : "fists", p.weapon.clip, p.weapon.total);
+	line(4, "fat %4d muscle %4d %.10s", (int)p.fat, (int)p.muscle, cj::outfitName(cj::outfit()));
+	line(5, "clock %02u:%02u day %u  area %d", player::g_clockH, player::g_clockM, player::g_clockDay, world::area());
+	line(6, "zone %.24s", p.zoneName ? (const char*)p.zoneName : "-");
+	line(7, "car task %d  in vehicle %d", player::vehicleId(), (int)p.inVehicle);
+
+	const int cur = currentCar();
 	const veh::Vehicle* v = veh::get(cur);
 	if (v) {
 		static const char* const k_st[] = { "-", "phys", "PLAYER", "WRECK" };
-		line(19, "#%d %-6s hp%4d %3dkm/h g%d %s", cur, k_st[v->status & 3], (int)v->health,
+		line(9, "\x1b[33mveh\x1b[39m #%d %-6s hp%4d %3dkm/h g%d %s", cur, k_st[v->status & 3], (int)v->health,
 		     (int)(fabsf(v->speedFwd) * 50.0f * 3.6f), v->gear, v->inWater ? "wet" : "");
-		line(20, "susp %.2f %.2f %.2f %.2f %s", v->susp[0], v->susp[1], v->susp[2], v->susp[3], v->asleep ? "zz" : "");
+		line(10, "susp %.2f %.2f %.2f %.2f %s", v->susp[0], v->susp[1], v->susp[2], v->susp[3], v->asleep ? "zz" : "");
+		line(12, "lean %+.2f rotor %.2f", v->lean, v->rotor);
 		char d[vehmdl::COMP_COUNT + 1];
 		for (int k = 0; k < vehmdl::COMP_COUNT; k++) d[k] = "o~x"[v->dmg[k] < 3 ? v->dmg[k] : 0];
 		d[vehmdl::COMP_COUNT] = 0;
-		line(21, "dmg %s t%x l%+.2f r%.2f", d + vehmdl::COMP_DOOR_LF, v->burst, v->lean, v->rotor);
+		line(11, "dmg %s t%x", d + vehmdl::COMP_DOOR_LF, v->burst);
 	} else {
-		line(19, "(no vehicle)");
-		blank(20, 21);
+		line(9, "\x1b[33mveh\x1b[39m (none)");
 	}
-	put(22, 0, "");
-	c = 0;
-	if (button(22, c, "flip")) veh::flip(cur);
-	if (button(22, c, "hp250") && v) veh::setHealth(cur, 249.0f);
-	if (button(22, c, "tyre")) veh::burstTyre(cur, -1);
-	if (button(22, c, dbg::opts.skidmarks ? "skid:on" : "skid:off")) dbg::opts.skidmarks = !dbg::opts.skidmarks;
 	const vehmdl::Stats& ms = vehmdl::stats();
 	const veh::Stats& vs = veh::stats();
-	line(23, "m%u/%u t%u %luK n%u st%lu dr%lu sk%u", ms.ready, ms.models, ms.textures, (unsigned long)(ms.texVram >> 10),
-	     vs.active, (unsigned long)vs.stepUs, (unsigned long)vs.drawUs, vs.skids);
-}
+	line(13, "m%u/%u t%u %luK n%u traffic %u sk%u", ms.ready, ms.models, ms.textures, (unsigned long)(ms.texVram >> 10),
+	     vs.active, vs.traffic, vs.skids);
 
-static void pageGame(bool inGame) {
-	if (!inGame) {
-		line(1, "\x1b[33m(start a game first)\x1b[39m");
-		blank(2, 23);
-		return;
-	}
-	player::State& p = player::g;
-	int c;
-	line(1, "wanted %d", p.wantedLevel);
-	c = 14;
-	if (button(1, c, "-")) player::setWantedLevel(p.wantedLevel - 1);
-	if (button(1, c, "+")) player::setWantedLevel(p.wantedLevel + 1);
-	if (button(1, c, "0")) player::setWantedLevel(0);
-
-	line(2, "health %3d", (int)p.health);
-	c = 14;
-	if (button(2, c, "-")) p.health = clampf(p.health - 25.0f, 0.0f, p.maxHealth);
-	if (button(2, c, "+")) p.health = clampf(p.health + 25.0f, 0.0f, p.maxHealth);
-	if (button(2, c, "max")) p.health = p.maxHealth;
-
-	line(3, "armour %3d", (int)p.armour);
-	c = 14;
-	if (button(3, c, "-")) p.armour = clampf(p.armour - 25.0f, 0.0f, p.maxArmour);
-	if (button(3, c, "+")) p.armour = clampf(p.armour + 25.0f, 0.0f, p.maxArmour);
-	if (button(3, c, "max")) p.armour = p.maxArmour;
-
-	line(4, "money $%d", p.money);
-	c = 0;
-	put(5, 0, "");
-	if (button(5, c, "-1k")) p.money -= 1000;
-	if (button(5, c, "+1k")) p.money += 1000;
-	if (button(5, c, "+100k")) p.money += 100000;
-	if (button(5, c, "0")) p.money = 0;
-
-	const int wt = player::weaponTypeAt(s_weaponIdx);
-	line(6, "weapon in hand: %d %.12s", p.weaponType, p.weapon.txd ? p.weapon.txd : "fists");
-	line(7, "give: id %d", wt);
-	c = 12;
-	if (button(7, c, "<") && --s_weaponIdx < 1) {
-		s_weaponIdx = 1;
-		while (player::weaponTypeAt(s_weaponIdx + 1) >= 0) s_weaponIdx++;
-	}
-	if (button(7, c, ">") && player::weaponTypeAt(++s_weaponIdx) < 0) s_weaponIdx = 1;
-	if (button(7, c, "give")) player::giveWeapon(wt, 200);
-	put(8, 0, "");
-	c = 0;
-	if (button(8, c, "all weapons")) player::giveAllWeapons();
-	if (button(8, c, "remove all")) player::clearWeapons();
-
-	line(9, "fat    %4d", (int)p.fat);
-	c = 12;
-	if (button(9, c, "0")) player::setBodyStats(0.0f, p.muscle);
-	if (button(9, c, "-")) player::setBodyStats(p.fat - 250.0f, p.muscle);
-	if (button(9, c, "+")) player::setBodyStats(p.fat + 250.0f, p.muscle);
-	if (button(9, c, "max")) player::setBodyStats(1000.0f, p.muscle);
-
-	line(10, "muscle %4d", (int)p.muscle);
-	c = 12;
-	if (button(10, c, "0")) player::setBodyStats(p.fat, 0.0f);
-	if (button(10, c, "-")) player::setBodyStats(p.fat, p.muscle - 250.0f);
-	if (button(10, c, "+")) player::setBodyStats(p.fat, p.muscle + 250.0f);
-	if (button(10, c, "max")) player::setBodyStats(p.fat, 1000.0f);
-
-	line(11, "sprint %3d%%", (int)p.sprint);
-	c = 12;
-	if (button(11, c, "refill")) player::refillSprint();
-
-	line(12, "clock %02u:%02u", player::g_clockH, player::g_clockM);
-	c = 12;
-	if (button(12, c, "+1h")) player::g_clockH = (player::g_clockH + 1) % 24;
-	if (button(12, c, "+6h")) player::g_clockH = (player::g_clockH + 6) % 24;
-
-	line(13, "outfit %.10s", cj::outfitName(cj::outfit()));
-	c = 18;
-	const int no = cj::outfitCount();
-	if (button(13, c, "<")) cj::setOutfit((cj::outfit() + no - 1) % no);
-	if (button(13, c, ">")) cj::setOutfit((cj::outfit() + 1) % no);
-
-	put(14, 0, "");
-	c = 0;
-	if (button(14, c, "respawn")) player::respawn();
-	if (button(14, c, "full heal")) { p.health = p.maxHealth; p.armour = p.maxArmour; player::refillSprint(); }
-	pageVehicles();
-}
-
-static void toggle2(int row, const char* a, bool& va, const char* b, bool& vb);
-
-static void toggleRow(int row, const char* name, bool& v) {
-	line(row, "%s", name);
-	int c = 18;
-	if (button(row, c, v ? "ON " : "OFF")) v = !v;
-}
-
-// REND tab rows 15..23: the ped population (game/peds)
-static void pagePeds() {
-	dbg::Options& o = dbg::opts;
 	const peds::Stats& ps = peds::stats();
 	line(15, "\x1b[33mpeds\x1b[39m %2u/%-2u c%u g%u p%u d%u", ps.live, ps.maxPeds, ps.civ, ps.gang, ps.cops, ps.dealers);
-	int c = 24;
-	if (button(15, c, o.peds ? "ON " : "OFF")) o.peds = !o.peds;
-	line(16, "density %3d%%  polys %3d", o.pedDensity, o.pedPolys);
-	put(17, 0, "");
-	c = 0;
-	if (button(17, c, "d-") && o.pedDensity > 0) o.pedDensity -= 25;
-	if (button(17, c, "d+") && o.pedDensity < 200) o.pedDensity += 25;
-	if (button(17, c, "p-") && o.pedPolys > 100) o.pedPolys -= 100;
-	if (button(17, c, "p+") && o.pedPolys < 1200) o.pedPolys += 100;
-	put(18, 0, "");
-	c = 0;
-	if (button(18, c, "spawn")) peds::spawnNear(player::g.x, player::g.y, player::g.z);
-	if (button(18, c, "kill all")) peds::removeAll();
-	const pedmodel::Stats& ms = pedmodel::stats();
-	line(19, "zone t%u %s slot%u mdl %u/%u %luK", ps.zoneType, ps.weekend ? "wkend" : "wkday", ps.slot, ms.ready,
-	     ms.models, (unsigned long)(ms.listBytes >> 10));
-	line(20, "drawn %u posed %u polys %u", ps.drawn, ps.posed, ps.polys);
-	line(21, "upd %luus draw %luus +%u -%u", (unsigned long)ps.updateUs, (unsigned long)ps.drawUs, ps.spawned, ps.removed);
-	// nearest ped
+	line(16, "zone t%u %s slot%u mdl %u", ps.zoneType, ps.weekend ? "wkend" : "wkday", ps.slot, ps.models);
+	line(17, "drawn %u posed %u polys %u", ps.drawn, ps.posed, ps.polys);
+	line(18, "spawned %u removed %u", ps.spawned, ps.removed);
 	int best = -1;
 	float bestD = 1e9f;
 	peds::Info in;
 	for (int i = 0; i < peds::MAX; i++)
 		if (peds::info(i, in)) {
-			const float dx = in.x - player::g.x, dy = in.y - player::g.y;
+			const float dx = in.x - p.x, dy = in.y - p.y;
 			if (dx * dx + dy * dy < bestD) { bestD = dx * dx + dy * dy; best = i; }
 		}
 	if (best >= 0 && peds::info(best, in))
-		line(22, "#%d id%d %-7s hp%3d %.0fm t%d", best, in.modelId, peds::taskName(in.task), (int)in.health, sqrtf(bestD), in.target);
+		line(19, "#%d id%d %-7s hp%3d %.0fm t%d", best, in.modelId, peds::taskName(in.task), (int)in.health, sqrtf(bestD), in.target);
 	else
-		line(22, "(no peds)");
-	blank(23, 23);
+		line(19, "(no peds)");
 }
 
-static void pageRend() {
-	dbg::Options& o = dbg::opts;
-	toggleRow(1, "CJ mesh", o.drawCj);
-	toggleRow(2, "skeleton", o.skeleton);
-	toggleRow(3, "ground", o.ground);
-	toggleRow(4, "fixed 60Hz step", o.fixedStep);
-	line(5, "sim speed x%d.%02d", o.simSpeedQ / 4, o.simSpeedQ % 4 * 25);
-	int c = 18;
-	if (button(5, c, "-") && o.simSpeedQ > 0) o.simSpeedQ--;
-	if (button(5, c, "+") && o.simSpeedQ < 8) o.simSpeedQ++;
-	put(6, 0, "");
-	c = 0;
-	if (button(6, c, o.simSpeedQ ? "pause" : "resume")) o.simSpeedQ = o.simSpeedQ ? 0 : 4;
-	if (button(6, c, "x1")) o.simSpeedQ = 4;
-	line(7, "camera dist %.1f", o.camDist);
-	c = 18;
-	if (button(7, c, "-")) o.camDist = clampf(o.camDist - 0.4f, 1.2f, 12.0f);
-	if (button(7, c, "+")) o.camDist = clampf(o.camDist + 0.4f, 1.2f, 12.0f);
-	put(8, 0, "");
-	c = 0;
-	if (button(8, c, "repaint HUD")) chud::invalidate();
-	if (button(8, c, "defaults")) o = dbg::Options();
-	toggleRow(9, "map (world)", o.world);
-	line(10, "map poly budget %4d", o.worldPolys);
-	c = 22;
-	if (button(10, c, "-") && o.worldPolys > 400) o.worldPolys -= 100;
-	if (button(10, c, "+") && o.worldPolys < 2048) o.worldPolys += 100;
-	toggle2(11, "colls", o.collision, "outline", o.colOutline);
-	line(12, "col range %2dm  polys %4d", o.colRange, o.colPolys);
-	c = 0;
-	put(13, 0, "");
-	if (button(13, c, "r-") && o.colRange > 2) o.colRange -= 2;
-	if (button(13, c, "r+") && o.colRange < 40) o.colRange += 2;
-	if (button(13, c, "p-") && o.colPolys > 100) o.colPolys -= 100;
-	if (button(13, c, "p+") && o.colPolys < 1800) o.colPolys += 100;
-	toggleRow(14, "physics (col)", o.physics);
-	pagePeds();
+static void toggleRow(int row, const char* name, bool& v) {
+	line(row, "%s", name);
+	toggle(row, 18, v);
 }
 
 // Two toggles on one row: name at col 0 / 13, buttons at col 7 / 24.
 static void toggle2(int row, const char* a, bool& va, const char* b, bool& vb) {
-	char buf[40];
-	snprintf(buf, sizeof buf, "%-6.6s        %-10.10s", a, b);
-	put(row, 0, buf);
-	int c = 7;
-	if (button(row, c, va ? "ON " : "OFF")) va = !va;
-	c = 24;
-	if (button(row, c, vb ? "ON " : "OFF")) vb = !vb;
+	line(row, "%-6.6s        %-10.10s", a, b);
+	toggle(row, 7, va);
+	toggle(row, 24, vb);
 }
 
-static int s_pickWeather = weather::EXTRASUNNY_LA;
-
-static void pageSky(bool inGame) {
-	if (!inGame) {
-		line(1, "\x1b[33m(start a game first)\x1b[39m");
-		blank(2, 23);
-		return;
-	}
+// REND: render / simulation switches
+static void pageRend() {
 	dbg::Options& o = dbg::opts;
-	weather::State& w = weather::g;
+	toggle2(1, "CJ", o.drawCj, "skeleton", o.skeleton);
+	toggle2(2, "ground", o.ground, "fixed 60Hz", o.fixedStep);
+	line(3, "sim speed x%d.%02d", o.simSpeedQ / 4, o.simSpeedQ % 4 * 25);
+	int c = 17;
+	if (button(3, c, "-") && o.simSpeedQ > 0) o.simSpeedQ--;
+	if (button(3, c, "+") && o.simSpeedQ < 8) o.simSpeedQ++;
+	if (button(3, c, o.simSpeedQ ? "||" : ">")) o.simSpeedQ = o.simSpeedQ ? 0 : 4;
+	line(4, "camera dist %.1f", o.camDist);
+	c = 18;
+	if (button(4, c, "-")) o.camDist = clampf(o.camDist - 0.4f, 1.2f, 12.0f);
+	if (button(4, c, "+")) o.camDist = clampf(o.camDist + 0.4f, 1.2f, 12.0f);
+	toggle2(5, "map", o.world, "water", o.water);
+	line(6, "map poly budget %4d", o.worldPolys);
+	c = 22;
+	if (button(6, c, "-") && o.worldPolys > 400) o.worldPolys -= 100;
+	if (button(6, c, "+") && o.worldPolys < 2048) o.worldPolys += 100;
+	line(7, "ped poly budget %4d", o.pedPolys);
+	c = 22;
+	if (button(7, c, "-") && o.pedPolys > 100) o.pedPolys -= 100;
+	if (button(7, c, "+") && o.pedPolys < 1200) o.pedPolys += 100;
+	toggle2(8, "colls", o.collision, "outline", o.colOutline);
+	line(9, "col range %2dm  polys %4d", o.colRange, o.colPolys);
+	c = 0;
+	if (button(10, c, "r-") && o.colRange > 2) o.colRange -= 2;
+	if (button(10, c, "r+") && o.colRange < 40) o.colRange += 2;
+	if (button(10, c, "p-") && o.colPolys > 100) o.colPolys -= 100;
+	if (button(10, c, "p+") && o.colPolys < 1800) o.colPolys += 100;
+	toggle2(11, "physic", o.physics, "veh lights", o.vehLights);
+	toggleRow(12, "skidmarks", o.skidmarks);
+	c = 0;
+	if (button(14, c, "repaint HUD")) chud::invalidate();
+	if (button(14, c, "defaults")) o = dbg::Options();
+}
+
+// SKY: time cycle / weather state and the sky render switches
+static void pageSky(bool inGame) {
+	if (!inGame) { notInGame(); return; }
+	dbg::Options& o = dbg::opts;
+	const weather::State& w = weather::g;
 	const timecycle::Colours& c = timecycle::current();
-	int col;
-
-	line(1, "time %02u:%02u:%02u  day %u/%u", player::g_clockH, player::g_clockM, player::clockSeconds(),
-	     player::g_clockDay, player::g_clockMonth);
-	put(2, 0, "");
-	col = 0;
-	if (button(2, col, "-1h")) player::setClock(player::g_clockH + 23, player::g_clockM);
-	if (button(2, col, "+1h")) player::setClock(player::g_clockH + 1, player::g_clockM);
-	if (button(2, col, "+6h")) player::setClock(player::g_clockH + 6, player::g_clockM);
-	if (button(2, col, "0h")) player::setClock(0, 0);
-	if (button(2, col, "12h")) player::setClock(12, 0);
-	line(3, "rate x%d", o.clockRate);
-	col = 9;
-	if (button(3, col, "||")) o.clockRate = 0;
-	if (button(3, col, "x1")) o.clockRate = 1;
-	if (button(3, col, "x10")) o.clockRate = 10;
-	if (button(3, col, "x60")) o.clockRate = 60;
-
-	line(4, "w %s>%s %2d%%", weather::name(w.oldType), weather::name(w.newType), (int)(w.interpolation * 100.0f));
-	line(5, "rgn %s  frc %s", weather::regionName(w.region), weather::name(w.forcedType));
-	line(6, "pick %s", weather::name((weather::Type)s_pickWeather));
-	col = 17;
-	if (button(6, col, "<")) s_pickWeather = (s_pickWeather + weather::NUM_PLAYABLE - 1) % weather::NUM_PLAYABLE;
-	if (button(6, col, ">")) s_pickWeather = (s_pickWeather + 1) % weather::NUM_PLAYABLE;
-	put(7, 0, "");
-	col = 0;
-	if (button(7, col, "next hour")) weather::forceWeather((weather::Type)s_pickWeather);
-	if (button(7, col, "now")) weather::forceWeatherNow((weather::Type)s_pickWeather);
-	if (button(7, col, "auto")) weather::releaseWeather();
-	put(8, 0, "");
-	col = 0;
-	if (button(8, col, "sun")) weather::forceWeatherNow(weather::EXTRASUNNY_LA);
-	if (button(8, col, "cld")) weather::forceWeatherNow(weather::CLOUDY_LA);
-	if (button(8, col, "rain")) weather::forceWeatherNow(weather::RAINY_SF);
-	if (button(8, col, "fog")) weather::forceWeatherNow(weather::FOGGY_SF);
-	if (button(8, col, "sand")) weather::forceWeatherNow(weather::SANDSTORM_DESERT);
-
-	line(9, "rain %.2f sand %.2f fog %.2f", w.rain, w.sandstorm, w.foggyness);
-	line(10, "cloud %.2f xsun %.2f wind %.2f", w.cloudCoverage, w.extraSunnyness, w.wind);
-	line(11, "glare %.2f rbow %.2f wet %.2f", w.sunGlare, w.rainbow, w.wetRoads);
+	line(1, "time %02u:%02u:%02u  day %u/%u  x%d", player::g_clockH, player::g_clockM, player::clockSeconds(),
+	     player::g_clockDay, player::g_clockMonth, o.clockRate);
+	line(2, "w %s>%s %2d%%", weather::name(w.oldType), weather::name(w.newType), (int)(w.interpolation * 100.0f));
+	line(3, "rgn %s  frc %s", weather::regionName(w.region), weather::name(w.forcedType));
+	line(4, "rain %.2f sand %.2f fog %.2f", w.rain, w.sandstorm, w.foggyness);
+	line(5, "cloud %.2f xsun %.2f wind %.2f", w.cloudCoverage, w.extraSunnyness, w.wind);
+	line(6, "glare %.2f rbow %.2f wet %.2f", w.sunGlare, w.rainbow, w.wetRoads);
 	const float* s = timecycle::vectorToSun();
-	line(12, "sun %+.2f %+.2f %+.2f dn %.2f", s[0], s[1], s[2], timecycle::dayNightBalance());
-	line(13, "skyT %3d %3d %3d B %3d %3d %3d", c.skyTopR, c.skyTopG, c.skyTopB, c.skyBotR, c.skyBotG, c.skyBotB);
+	line(7, "sun %+.2f %+.2f %+.2f dn %.2f", s[0], s[1], s[2], timecycle::dayNightBalance());
+	line(8, "skyT %3d %3d %3d B %3d %3d %3d", c.skyTopR, c.skyTopG, c.skyTopB, c.skyBotR, c.skyBotG, c.skyBotB);
 	u8 pr, pg, pb;
 	timecycle::pedLight(pr, pg, pb);
-	line(14, "far %d fog %d view %d", c.farClip, c.fogStart, o.fogView);
-	col = 23;
-	if (button(14, col, "-") && o.fogView > 40) o.fogView -= 20;
-	if (button(14, col, "+") && o.fogView < 200) o.fogView += 20;
-	line(15, "ped light %3d %3d %3d", pr, pg, pb);
-	toggle2(16, "sky", o.sky, "sprites", o.skySprites);
-	toggle2(17, "fog", o.fog, "weather fx", o.weatherFx);
-	line(18, "ped lit");
-	col = 7;
-	if (button(18, col, o.pedLight ? "ON " : "OFF")) o.pedLight = !o.pedLight;
-	col = 13;
-	if (button(18, col, "lightning")) weather::debugFlash();
-	blank(19, 23);
+	line(9, "ped light %3d %3d %3d", pr, pg, pb);
+	line(10, "far %d fog %d view %d", c.farClip, c.fogStart, o.fogView);
+	int col = 23;
+	if (button(10, col, "-") && o.fogView > 40) o.fogView -= 20;
+	if (button(10, col, "+") && o.fogView < 200) o.fogView += 20;
+	toggle2(12, "sky", o.sky, "sprites", o.skySprites);
+	toggle2(13, "fog", o.fog, "weather fx", o.weatherFx);
+	line(14, "ped lit");
+	toggle(14, 7, o.pedLight);
+}
+
+// ---- CHTS: every action, listed top to bottom; pages only when a category
+// does not fit rows 1..21 (row 22 = page control, row 23 = categories)
+static constexpr int ITEM_TOP = 1, ITEM_ROWS = 21;
+static int s_item, s_itemPage;
+
+// Row of the next item on the current page, or -1 (it is on another page).
+static int item() {
+	const int r = s_item++ - s_itemPage * ITEM_ROWS;
+	return r >= 0 && r < ITEM_ROWS ? ITEM_TOP + r : -1;
+}
+static int header(const char* text) {
+	const int r = item();
+	if (r >= 0) line(r, "\x1b[33m%s\x1b[39m", text);
+	return r;
+}
+
+static void cheatsPlayer() {
+	player::State& p = player::g;
+	int r, c;
+	if ((r = item()) >= 0) {
+		line(r, "$%d", p.money);
+		c = 12;
+		if (button(r, c, "+1k")) p.money += 1000;
+		if (button(r, c, "+100k")) p.money += 100000;
+		if (button(r, c, "0")) p.money = 0;
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Health %d/%d", (int)p.health, (int)p.maxHealth);
+		c = 17;
+		if (button(r, c, "-25")) p.health = clampf(p.health - 25, 0, p.maxHealth);
+		if (button(r, c, "max")) p.health = p.maxHealth;
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Armour %d/%d", (int)p.armour, (int)p.maxArmour);
+		c = 17;
+		if (button(r, c, "-25")) p.armour = clampf(p.armour - 25, 0, p.maxArmour);
+		if (button(r, c, "max")) p.armour = p.maxArmour;
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Wanted");
+		c = 7;
+		for (int i = 0; i <= 5; i++) {
+			char l[2] = { (char)('0' + i), 0 };
+			if (button(r, c, l, p.wantedLevel == i)) player::setWantedLevel(i);
+		}
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Full heal / sprint");
+		c = 20;
+		if (button(r, c, "heal")) { p.health = p.maxHealth; p.armour = p.maxArmour; player::refillSprint(); }
+	}
+	if ((r = item()) >= 0) {
+		line(r, "CJ speed x%d.%02d", dbg::opts.playerSpeedQ / 4, dbg::opts.playerSpeedQ % 4 * 25);
+		c = 23;
+		if (button(r, c, "<") && dbg::opts.playerSpeedQ > 1) dbg::opts.playerSpeedQ--;
+		if (button(r, c, ">") && dbg::opts.playerSpeedQ < 16) dbg::opts.playerSpeedQ++;
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Weapon %d", player::weaponTypeAt(s_weaponIdx));
+		c = 13;
+		if (button(r, c, "<") && --s_weaponIdx < 1) {
+			s_weaponIdx = 1;
+			while (player::weaponTypeAt(s_weaponIdx + 1) >= 0) s_weaponIdx++;
+		}
+		if (button(r, c, ">") && player::weaponTypeAt(++s_weaponIdx) < 0) s_weaponIdx = 1;
+		if (button(r, c, "give")) player::giveWeapon(player::weaponTypeAt(s_weaponIdx), 200);
+	}
+	if ((r = item()) >= 0) {
+		line(r, "All weapons");
+		c = 15;
+		if (button(r, c, "give")) player::giveAllWeapons();
+		if (button(r, c, "clear")) player::clearWeapons();
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Fat %d", (int)p.fat);
+		c = 13;
+		if (button(r, c, "0")) player::setBodyStats(0, p.muscle);
+		if (button(r, c, "-")) player::setBodyStats(p.fat - 250, p.muscle);
+		if (button(r, c, "+")) player::setBodyStats(p.fat + 250, p.muscle);
+		if (button(r, c, "max")) player::setBodyStats(1000, p.muscle);
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Muscle %d", (int)p.muscle);
+		c = 13;
+		if (button(r, c, "0")) player::setBodyStats(p.fat, 0);
+		if (button(r, c, "-")) player::setBodyStats(p.fat, p.muscle - 250);
+		if (button(r, c, "+")) player::setBodyStats(p.fat, p.muscle + 250);
+		if (button(r, c, "max")) player::setBodyStats(p.fat, 1000);
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Outfit %.10s", cj::outfitName(cj::outfit()));
+		c = 24;
+		const int n = cj::outfitCount();
+		if (n && button(r, c, "<")) cj::setOutfit((cj::outfit() + n - 1) % n);
+		if (n && button(r, c, ">")) cj::setOutfit((cj::outfit() + 1) % n);
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Respawn");
+		c = 20;
+		if (button(r, c, "do")) player::respawn();
+	}
+}
+
+static void cheatsVehicles() {
+	int r, c;
+	if (!vehdata::ready()) {
+		if ((r = item()) >= 0) line(r, "vehicles.dveh not ready");
+		return;
+	}
+	if (s_vehPick < 0) s_vehPick = vehdata::findModel(492) >= 0 ? vehdata::findModel(492) : nextOfCat(0, 1, VC_CAR);
+	if ((r = item()) >= 0) {
+		line(r, "Type %s", k_vcat[s_vcat]);
+		c = 23;
+		if (button(r, c, "<")) s_vcat = (s_vcat + VC_COUNT - 1) % VC_COUNT;
+		if (button(r, c, ">")) s_vcat = (s_vcat + 1) % VC_COUNT;
+	}
+	if (s_vehPick < 0 || catOf(s_vehPick) != s_vcat) s_vehPick = nextOfCat(-1, 1, s_vcat);
+	ds::VehInfo info;
+	const bool have = s_vehPick >= 0 && vehdata::read(s_vehPick, info);
+	if ((r = item()) >= 0) {
+		line(r, "Spawn");
+		c = 6;
+		if (button(r, c, "<")) s_vehPick = nextOfCat(s_vehPick, -1, s_vcat);
+		char label[16];
+		snprintf(label, sizeof label, "%d %.8s", have ? info.modelId : 0, have ? info.model : "?");
+		if (button(r, c, label) && have) spawnHere(s_vehPick);
+		if (button(r, c, ">")) s_vehPick = nextOfCat(s_vehPick, 1, s_vcat);
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Random of type");
+		c = 20;
+		if (button(r, c, "spawn")) {
+			for (int k = rand() % 8 + 1; k > 0; k--) s_vehPick = nextOfCat(s_vehPick, 1, s_vcat);
+			spawnHere(s_vehPick);
+		}
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Id %3d", s_spawnId);
+		c = 7;
+		if (button(r, c, "-10")) s_spawnId -= 10;
+		if (button(r, c, "-")) s_spawnId -= 1;
+		if (button(r, c, "+")) s_spawnId += 1;
+		if (button(r, c, "+10")) s_spawnId += 10;
+		if (s_spawnId < 400) s_spawnId = 611;
+		if (s_spawnId > 611) s_spawnId = 400;
+		if (button(r, c, "go")) {
+			const int i = vehdata::findModel(s_spawnId);
+			if (i >= 0 && vehdata::spawnable(i)) { s_vehPick = i; s_vcat = catOf(i); spawnHere(i); }
+			else hud::log("\x1b[33mno vehicle %d\x1b[39m", s_spawnId);
+		}
+	}
+	const int cur = currentCar();
+	const veh::Vehicle* v = veh::get(cur);
+	if ((r = item()) >= 0) {
+		if (v) line(r, "Car #%d hp %d %dkm/h", cur, (int)v->health, (int)(fabsf(v->speedFwd) * 180.0f));
+		else line(r, "Car (none)");
+	}
+	if ((r = item()) >= 0) {
+		c = 0;
+		if (button(r, c, "enter") && v) player::enterVehicleNow(cur);
+		if (button(r, c, "repair")) veh::repair(cur);
+		if (button(r, c, "flip")) veh::flip(cur);
+		if (button(r, c, "boom")) veh::blowUp(cur);
+	}
+	if ((r = item()) >= 0) {
+		c = 0;
+		if (button(r, c, "fire") && v) veh::setHealth(cur, 249.0f);
+		if (button(r, c, "tyres")) veh::burstTyre(cur, -1);
+		if (button(r, c, "remove all")) { veh::removeAll(); s_lastCar = -1; }
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Always radio");
+		toggle(r, 20, dbg::opts.alwaysRadio);
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Radio station %2d", FrontEndMenuManager.m_nRadioStation);
+		c = 23;
+		if (button(r, c, "<")) FrontEndMenuManager.scrollRadioStations(-1);
+		if (button(r, c, ">")) FrontEndMenuManager.scrollRadioStations(1);
+	}
+}
+
+static void cheatsPeds() {
+	player::State& p = player::g;
+	int r, c;
+	if ((r = item()) >= 0) {
+		line(r, "Peds %d live", peds::count());
+		toggle(r, 20, dbg::opts.peds);
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Density %d%%", dbg::opts.pedDensity);
+		c = 23;
+		if (button(r, c, "<") && dbg::opts.pedDensity > 0) dbg::opts.pedDensity -= 25;
+		if (button(r, c, ">") && dbg::opts.pedDensity < 200) dbg::opts.pedDensity += 25;
+	}
+	if ((r = item()) >= 0) {
+		c = 0;
+		if (button(r, c, "spawn ped")) peds::spawnNear(p.x, p.y, p.z);
+		if (button(r, c, "remove all")) peds::removeAll();
+	}
+}
+
+static void cheatsTime() {
+	int r, c;
+	if ((r = item()) >= 0) {
+		line(r, "Clock %02u:%02u", player::g_clockH, player::g_clockM);
+		c = 19;
+		if (button(r, c, "-1h")) player::setClock(player::g_clockH + 23, player::g_clockM);
+		if (button(r, c, "+1h")) player::setClock(player::g_clockH + 1, player::g_clockM);
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Hour");
+		c = 9;
+		for (int h = 0; h < 24; h += 6) {
+			char label[3];
+			snprintf(label, sizeof label, "%02d", h);
+			if (button(r, c, label)) player::setClock(h, 0);
+		}
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Rate x%d", dbg::opts.clockRate);
+		c = 9;
+		static const int k_rates[] = { 0, 1, 10, 60 };
+		for (int k : k_rates) {
+			char label[4];
+			snprintf(label, sizeof label, "%d", k);
+			if (button(r, c, label, dbg::opts.clockRate == k)) dbg::opts.clockRate = k;
+		}
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Weather %.12s", weather::name((weather::Type)s_cheatWeather));
+		c = 23;
+		if (button(r, c, "<")) s_cheatWeather = (s_cheatWeather + weather::NUM_PLAYABLE - 1) % weather::NUM_PLAYABLE;
+		if (button(r, c, ">")) s_cheatWeather = (s_cheatWeather + 1) % weather::NUM_PLAYABLE;
+	}
+	if ((r = item()) >= 0) {
+		c = 0;
+		if (button(r, c, "now")) weather::forceWeatherNow((weather::Type)s_cheatWeather);
+		if (button(r, c, "next hour")) weather::forceWeather((weather::Type)s_cheatWeather);
+		if (button(r, c, "auto")) weather::releaseWeather();
+	}
+	if ((r = item()) >= 0) {
+		c = 0;
+		if (button(r, c, "sun")) weather::forceWeatherNow(weather::EXTRASUNNY_LA);
+		if (button(r, c, "cld")) weather::forceWeatherNow(weather::CLOUDY_LA);
+		if (button(r, c, "rain")) weather::forceWeatherNow(weather::RAINY_SF);
+		if (button(r, c, "fog")) weather::forceWeatherNow(weather::FOGGY_SF);
+		if (button(r, c, "sand")) weather::forceWeatherNow(weather::SANDSTORM_DESERT);
+	}
+	if ((r = item()) >= 0) {
+		line(r, "Lightning");
+		c = 20;
+		if (button(r, c, "flash")) weather::debugFlash();
+	}
+	if ((r = item()) >= 0) line(r, "Now %.12s > %.12s", weather::name(weather::g.oldType), weather::name(weather::g.newType));
+}
+
+static void cheatsWorld() {
+	int r, c;
+	if ((r = item()) >= 0) line(r, "IPL exits: %d outside / %d", entryexits::exteriorCount(), entryexits::count());
+	if ((r = item()) >= 0) {
+		line(r, "All interiors");
+		c = 20;
+		if (button(r, c, entryexits::unlocked() ? "open" : "unlock", entryexits::unlocked()) && !entryexits::unlocked()) {
+			if (!entryexits::unlockAll()) hud::log("entry_exits.denx missing");
+			else chud::invalidate();
+		}
+	}
+}
+
+static void cheatsWarp() {
+	struct Warp { const char* name; float x, y, z; };
+	static const Warp k_ls[] = { { "Grove Street", 2495.0f, -1664.0f, 13.5f }, { "Downtown LS", 1481.0f, -1731.0f, 13.4f },
+	                             { "LS Airport", 1684.0f, -2334.0f, 13.5f }, { "Santa Maria", 342.0f, -1800.0f, 4.7f } };
+	static const Warp k_sf[] = { { "Downtown SF", -2150.0f, 550.0f, 35.0f }, { "SF Garage", -2030.0f, 160.0f, 28.8f } };
+	static const Warp k_lv[] = { { "The Strip", 2027.0f, 1343.0f, 10.8f }, { "North LV", 2515.0f, 1975.0f, 10.8f },
+	                             { "South LV", 1942.0f, 1073.0f, 10.8f } };
+	static const Warp k_cs[] = { { "Desert Strip", 400.0f, 2500.0f, 16.5f }, { "Bone County", -68.5f, 1020.75f, 19.7f },
+	                             { "Mt. Chiliad", -2326.0f, -1625.0f, 483.7f }, { "Dillimore", 655.0f, -575.0f, 16.3f },
+	                             { "Palomino Ck", 2230.0f, -112.0f, 26.5f } };
+	struct Group { const char* name; const Warp* w; int n; };
+	static const Group k_groups[] = { { "LOS SANTOS", k_ls, 4 }, { "SAN FIERRO", k_sf, 2 },
+	                                  { "LAS VENTURAS", k_lv, 3 }, { "COUNTRYSIDE / DESERT", k_cs, 5 } };
+	for (const Group& g : k_groups) {
+		header(g.name);
+		// two places per row
+		for (int i = 0; i < g.n; i += 2) {
+			const int r = item();
+			if (r < 0) continue;
+			for (int k = i; k < i + 2 && k < g.n; k++) {
+				int c = k == i ? 1 : 16;
+				char label[14];
+				snprintf(label, sizeof label, "%.12s", g.w[k].name);
+				if (button(r, c, label)) player::teleport(g.w[k].x, g.w[k].y, g.w[k].z, 0.0f);
+			}
+		}
+	}
 }
 
 static void pageCheats(bool inGame) {
-	static const char* const cats[] = { "PLAYER", "VEH", "PEDS", "TIME", "WORLD", "WARP" };
-	static const int cols[] = { 0, 6, 11, 16, 21, 26, 31 };
+	static const char* const cats[] = { "CJ", "VEH", "PEDS", "TIME", "WRLD", "WARP" };
+	static const int cols[] = { 0, 5, 10, 15, 20, 25, 30 };
 	for (int i = 0; i < 6; i++) {
-		const int col = cols[i];
-		printf("\x1b[23;%dH%s%-*.*s\x1b[39m", col, i == s_cheatCat ? "\x1b[33m" : "\x1b[37m",
-		       cols[i + 1] - col, cols[i + 1] - col, cats[i]);
-		if (s_tapRow == 23 && s_tapCol >= col && s_tapCol < cols[i + 1]) {
+		char buf[16];
+		snprintf(buf, sizeof buf, "%s%.*s", i == s_cheatCat ? "\x1b[33m" : "\x1b[37m", cols[i + 1] - cols[i], cats[i]);
+		write(23, cols[i], buf);
+		if (s_tapRow == 23 && s_tapCol >= cols[i] && s_tapCol < cols[i + 1]) {
 			s_cheatCat = i;
 			s_tapRow = -1;
 		}
 	}
-	const int page = s_cheatPage[s_cheatCat];
-	const int pages = s_cheatCat == 0 || s_cheatCat == 1 || s_cheatCat == 3 ? 2 : 1;
-	line(22, "%s %d/%d", cats[s_cheatCat], page + 1, pages);
-	int c = 19;
-	if (button(22, c, "<") && page > 0) s_cheatPage[s_cheatCat]--;
-	if (button(22, c, ">") && page + 1 < pages) s_cheatPage[s_cheatCat]++;
-	blank(1, 21);
-	if (!inGame) {
-		line(2, "\x1b[33m(start a game first)\x1b[39m");
-		return;
+	if (!inGame) { notInGame(); return; }
+	s_item = 0;
+	s_itemPage = s_cheatPage[s_cheatCat];
+	switch (s_cheatCat) {
+	case 0: cheatsPlayer(); break;
+	case 1: cheatsVehicles(); break;
+	case 2: cheatsPeds(); break;
+	case 3: cheatsTime(); break;
+	case 4: cheatsWorld(); break;
+	default: cheatsWarp(); break;
 	}
-	player::State& p = player::g;
-	if (s_cheatCat == 0 && page == 0) {
-		line(3, "Money $%d", p.money);
-		c = 16;
-		if (button(3, c, "+1k")) p.money += 1000;
-		if (button(3, c, "+100k")) p.money += 100000;
-		line(10, "Clear money");
-		c = 20;
-		if (button(10, c, "0")) p.money = 0;
-		line(4, "Health %d/%d", (int)p.health, (int)p.maxHealth);
-		c = 14;
-		if (button(4, c, "-25")) p.health = clampf(p.health - 25, 0, p.maxHealth);
-		if (button(4, c, "max")) p.health = p.maxHealth;
-		line(5, "Armour %d/%d", (int)p.armour, (int)p.maxArmour);
-		c = 14;
-		if (button(5, c, "-25")) p.armour = clampf(p.armour - 25, 0, p.maxArmour);
-		if (button(5, c, "max")) p.armour = p.maxArmour;
-		line(6, "Wanted");
-		for (int i = 0; i <= 5; i++) {
-			c = 10 + i * 3;
-			printf("\x1b[6;%dH%s[%d]\x1b[39m", c, p.wantedLevel == i ? "\x1b[33m" : "\x1b[36m", i);
-			if (s_tapRow == 6 && s_tapCol >= c && s_tapCol < c + 3) player::setWantedLevel(i);
-		}
-		line(7, "CJ speed      x%d.%02d", dbg::opts.playerSpeedQ / 4, dbg::opts.playerSpeedQ % 4 * 25);
-		c = 23;
-		if (button(7, c, "<") && dbg::opts.playerSpeedQ > 1) dbg::opts.playerSpeedQ--;
-		if (button(7, c, ">") && dbg::opts.playerSpeedQ < 16) dbg::opts.playerSpeedQ++;
-		line(8, "Sprint        %d%%", (int)p.sprint);
-		c = 20;
-		if (button(8, c, "fill")) player::refillSprint();
-		line(9, "Full heal");
-		c = 20;
-		if (button(9, c, "do")) { p.health = p.maxHealth; p.armour = p.maxArmour; player::refillSprint(); }
-	} else if (s_cheatCat == 0) {
-		line(2, "Weapon        %d", player::weaponTypeAt(s_weaponIdx));
-		c = 17;
-		if (button(2, c, "<") && --s_weaponIdx < 1) {
-			s_weaponIdx = 1;
-			while (player::weaponTypeAt(s_weaponIdx + 1) >= 0) s_weaponIdx++;
-		}
-		if (button(2, c, ">") && player::weaponTypeAt(++s_weaponIdx) < 0) s_weaponIdx = 1;
-		if (button(2, c, "give")) player::giveWeapon(player::weaponTypeAt(s_weaponIdx), 200);
-		line(3, "All weapons");
-		c = 17;
-		if (button(3, c, "give")) player::giveAllWeapons();
-		if (button(3, c, "clear")) player::clearWeapons();
-		line(4, "Fat           %d", (int)p.fat);
-		c = 18;
-		if (button(4, c, "0")) player::setBodyStats(0, p.muscle);
-		if (button(4, c, "+")) player::setBodyStats(p.fat + 250, p.muscle);
-		if (button(4, c, "max")) player::setBodyStats(1000, p.muscle);
-		line(5, "Muscle        %d", (int)p.muscle);
-		c = 18;
-		if (button(5, c, "0")) player::setBodyStats(p.fat, 0);
-		if (button(5, c, "+")) player::setBodyStats(p.fat, p.muscle + 250);
-		if (button(5, c, "max")) player::setBodyStats(p.fat, 1000);
-		line(6, "Outfit        %.10s", cj::outfitName(cj::outfit()));
-		c = 26;
-		const int n = cj::outfitCount();
-		if (n && button(6, c, "<")) cj::setOutfit((cj::outfit() + n - 1) % n);
-		if (n && button(6, c, ">")) cj::setOutfit((cj::outfit() + 1) % n);
-		line(7, "Respawn");
-		c = 18;
-		if (button(7, c, "do")) player::respawn();
-	} else if (s_cheatCat == 1 && page == 0) {
-		if (vehdata::ready()) {
-			if (s_vehPick < 0) s_vehPick = vehdata::findModel(492) >= 0 ? vehdata::findModel(492) : nextOfCat(0, 1, VC_CAR);
-			line(2, "Type          %s", k_vcat[s_vcat]);
-			c = 23;
-			if (button(2, c, "<")) s_vcat = (s_vcat + VC_COUNT - 1) % VC_COUNT;
-			if (button(2, c, ">")) s_vcat = (s_vcat + 1) % VC_COUNT;
-			if (s_vehPick < 0 || catOf(s_vehPick) != s_vcat) s_vehPick = nextOfCat(-1, 1, s_vcat);
-			ds::VehInfo info;
-			if (vehdata::read(s_vehPick, info)) {
-				line(3, "Spawn car");
-				c = 10;
-				if (button(3, c, "<")) s_vehPick = nextOfCat(s_vehPick, -1, s_vcat);
-				char label[14];
-				snprintf(label, sizeof label, "%d %.7s", info.modelId, info.model);
-				if (button(3, c, label)) spawnHere(s_vehPick);
-				if (button(3, c, ">")) s_vehPick = nextOfCat(s_vehPick, 1, s_vcat);
-			}
-			line(4, "Model id      %d", s_spawnId);
-			c = 18;
-			if (button(4, c, "-10")) s_spawnId -= 10;
-			if (button(4, c, "+10")) s_spawnId += 10;
-			if (s_spawnId < 400) s_spawnId = 611;
-			if (s_spawnId > 611) s_spawnId = 400;
-			line(5, "Spawn by id");
-			c = 17;
-			if (button(5, c, "spawn")) {
-				const int i = vehdata::findModel(s_spawnId);
-				if (i >= 0 && vehdata::spawnable(i)) { s_vehPick = i; s_vcat = catOf(i); spawnHere(i); }
-				else hud::log("no vehicle %d", s_spawnId);
-			}
-		} else line(2, "vehicles.dveh not ready");
-	} else if (s_cheatCat == 1) {
-		const int id = player::vehicleId() >= 0 ? player::vehicleId() : s_lastCar;
-		line(2, "Vehicle       #%d", veh::get(id) ? id : -1);
-		line(3, "Enter car");
-		c = 17;
-		if (button(3, c, "enter") && veh::get(id)) player::enterVehicleNow(id);
-		line(4, "Repair car");
-		c = 17;
-		if (button(4, c, "repair")) veh::repair(id);
-		line(5, "Flip car");
-		c = 17;
-		if (button(5, c, "flip")) veh::flip(id);
-		line(6, "Blow up car");
-		c = 17;
-		if (button(6, c, "boom")) veh::blowUp(id);
-		line(7, "Remove cars");
-		c = 17;
-		if (button(7, c, "clear")) { veh::removeAll(); s_lastCar = -1; }
-		line(8, "Vehicle lights");
-		c = 17;
-		if (button(8, c, dbg::opts.vehLights ? "ON" : "OFF")) dbg::opts.vehLights = !dbg::opts.vehLights;
-		line(9, "Always radio");
-		c = 17;
-		if (button(9, c, dbg::opts.alwaysRadio ? "ON" : "OFF")) dbg::opts.alwaysRadio = !dbg::opts.alwaysRadio;
-		line(10, "Radio station %2d", FrontEndMenuManager.m_nRadioStation);
-		c = 22;
-		if (button(10, c, "<")) FrontEndMenuManager.scrollRadioStations(-1);
-		if (button(10, c, ">")) FrontEndMenuManager.scrollRadioStations(1);
-	} else if (s_cheatCat == 2) {
-		line(2, "Peds          %d", peds::count());
-		c = 20;
-		if (button(2, c, dbg::opts.peds ? "ON" : "OFF")) dbg::opts.peds = !dbg::opts.peds;
-		line(3, "Spawn ped");
-		c = 17;
-		if (button(3, c, "spawn")) peds::spawnNear(p.x, p.y, p.z);
-		line(4, "Remove peds");
-		c = 17;
-		if (button(4, c, "clear")) peds::removeAll();
-		line(5, "Density       %d%%", dbg::opts.pedDensity);
-		c = 22;
-		if (button(5, c, "<") && dbg::opts.pedDensity > 0) dbg::opts.pedDensity -= 25;
-		if (button(5, c, ">") && dbg::opts.pedDensity < 200) dbg::opts.pedDensity += 25;
-	} else if (s_cheatCat == 3 && page == 0) {
-		line(2, "Clock         %02u:%02u", player::g_clockH, player::g_clockM);
-		c = 20;
-		if (button(2, c, "-1h")) player::setClock(player::g_clockH + 23, player::g_clockM);
-		if (button(2, c, "+1h")) player::setClock(player::g_clockH + 1, player::g_clockM);
-		line(3, "Set hour");
-		c = 12;
-		for (int h = 0; h < 24; h += 6) {
-			char label[3];
-			snprintf(label, sizeof label, "%02d", h);
-			if (button(3, c, label)) player::setClock(h, 0);
-		}
-		line(4, "Clock rate    x%d", dbg::opts.clockRate);
-		c = 17;
-		if (button(4, c, "0")) dbg::opts.clockRate = 0;
-		if (button(4, c, "1")) dbg::opts.clockRate = 1;
-		if (button(4, c, "10")) dbg::opts.clockRate = 10;
-		if (button(4, c, "60")) dbg::opts.clockRate = 60;
-		line(5, "Weather       %.9s", weather::name((weather::Type)s_cheatWeather));
-		c = 23;
-		if (button(5, c, "<")) s_cheatWeather = (s_cheatWeather + weather::NUM_PLAYABLE - 1) % weather::NUM_PLAYABLE;
-		if (button(5, c, ">")) s_cheatWeather = (s_cheatWeather + 1) % weather::NUM_PLAYABLE;
-		line(6, "Force weather");
-		c = 17;
-		if (button(6, c, "now")) weather::forceWeatherNow((weather::Type)s_cheatWeather);
-		if (button(6, c, "auto")) weather::releaseWeather();
-		line(7, "Current       %.12s", weather::name(weather::g.newType));
-	} else if (s_cheatCat == 3) {
-		line(2, "Rain");
-		c = 17;
-		if (button(2, c, "force")) weather::forceWeatherNow(weather::RAINY_SF);
-		line(3, "Fog");
-		c = 17;
-		if (button(3, c, "force")) weather::forceWeatherNow(weather::FOGGY_SF);
-		line(4, "Sandstorm");
-		c = 17;
-		if (button(4, c, "force")) weather::forceWeatherNow(weather::SANDSTORM_DESERT);
-		line(5, "Sun");
-		c = 17;
-		if (button(5, c, "force")) weather::forceWeatherNow(weather::EXTRASUNNY_LA);
-		line(6, "Weather FX");
-		c = 17;
-		if (button(6, c, dbg::opts.weatherFx ? "ON" : "OFF")) dbg::opts.weatherFx = !dbg::opts.weatherFx;
-		line(7, "Lightning");
-		c = 17;
-		if (button(7, c, "flash")) weather::debugFlash();
-	} else if (s_cheatCat == 4) {
-		line(2, "Map");
-		c = 17;
-		if (button(2, c, dbg::opts.world ? "ON" : "OFF")) dbg::opts.world = !dbg::opts.world;
-		line(3, "Collision");
-		c = 17;
-		if (button(3, c, dbg::opts.collision ? "ON" : "OFF")) dbg::opts.collision = !dbg::opts.collision;
-		line(4, "Physics");
-		c = 17;
-		if (button(4, c, dbg::opts.physics ? "ON" : "OFF")) dbg::opts.physics = !dbg::opts.physics;
-		line(5, "Water");
-		c = 17;
-		if (button(5, c, dbg::opts.water ? "ON" : "OFF")) dbg::opts.water = !dbg::opts.water;
-		line(6, "Sim speed     x%d.%02d", dbg::opts.simSpeedQ / 4, dbg::opts.simSpeedQ % 4 * 25);
-		c = 23;
-		if (button(6, c, "<") && dbg::opts.simSpeedQ > 0) dbg::opts.simSpeedQ--;
-		if (button(6, c, ">") && dbg::opts.simSpeedQ < 8) dbg::opts.simSpeedQ++;
-		line(8, "IPL exits: %d outside / %d", entryexits::exteriorCount(), entryexits::count());
-		line(9, "Unlock all interiors");
-		c = 22;
-		if (button(9, c, entryexits::unlocked() ? "ON" : "unlock") && !entryexits::unlocked()) {
-			if (!entryexits::unlockAll()) hud::log("entry_exits.denx missing");
-			else chud::invalidate();
-		}
-	} else {
-		struct Warp { int row; const char* name; float x, y, z; };
-		static const Warp warps[] = {
-			{ 3, "Grove Street", 2495.0f, -1664.0f, 13.5f },
-			{ 4, "Downtown LS", 1481.0f, -1731.0f, 13.4f },
-			{ 5, "LS Airport", 1684.0f, -2334.0f, 13.5f },
-			{ 6, "Santa Maria", 342.0f, -1800.0f, 4.7f },
-			{ 8, "Downtown SF", -2150.0f, 550.0f, 35.0f },
-			{ 9, "SF Garage", -2030.0f, 160.0f, 28.8f },
-			{ 11, "The Strip", 2027.0f, 1343.0f, 10.8f },
-			{ 12, "North LV", 2515.0f, 1975.0f, 10.8f },
-			{ 13, "South LV", 1942.0f, 1073.0f, 10.8f },
-			{ 15, "Desert Airstrip", 400.0f, 2500.0f, 16.5f },
-			{ 16, "Bone County", -68.5f, 1020.75f, 19.7f },
-			{ 17, "Mt. Chiliad", -2326.0f, -1625.0f, 483.7f },
-			{ 18, "Dillimore", 655.0f, -575.0f, 16.3f },
-			{ 19, "Palomino Creek", 2230.0f, -112.0f, 26.5f },
-		};
-		line(1, "Tap a place to teleport");
-		line(2, "\x1b[33mLOS SANTOS\x1b[39m");
-		line(7, "\x1b[33mSAN FIERRO\x1b[39m");
-		line(10, "\x1b[33mLAS VENTURAS\x1b[39m");
-		line(14, "\x1b[33mCOUNTRYSIDE / DESERT\x1b[39m");
-		for (const Warp& w : warps) {
-			c = 2;
-			if (button(w.row, c, w.name)) player::teleport(w.x, w.y, w.z, 0.0f);
-		}
+	const int pages = (s_item + ITEM_ROWS - 1) / ITEM_ROWS;
+	if (s_itemPage >= pages && pages) s_cheatPage[s_cheatCat] = pages - 1;
+	if (pages > 1) {
+		line(22, "page %d/%d", s_itemPage + 1, pages);
+		int c = 19;
+		if (button(22, c, "<") && s_itemPage > 0) s_cheatPage[s_cheatCat]--;
+		if (button(22, c, ">") && s_itemPage + 1 < pages) s_cheatPage[s_cheatCat]++;
 	}
 }
 
@@ -860,6 +808,9 @@ static void pageCheats(bool inGame) {
 void enter() {
 	s_repaint = true;
 	consoleClear();
+	clearBuffer();
+	memset(s_shownCh, ' ', sizeof s_shownCh);   // what consoleClear left
+	memset(s_shownCol, DEFAULT_COL, sizeof s_shownCol);
 }
 
 void frame(const input::State& in, bool inGame) {
@@ -873,15 +824,19 @@ void frame(const input::State& in, bool inGame) {
 			s_tapRow = -1;   // the tap only switched tabs
 		}
 	}
-	if (s_repaint) consoleClear();
-	// tab bar
-	printf("\x1b[0;0H");
+	// stats change every frame but nobody reads them at 60 Hz: rebuild the
+	// page every few frames, or at once when something was tapped
+	if (!s_repaint && !in.tapped && ++s_frameNo % REFRESH) return;
+	// now and then rewrite everything (something else may have printed)
+	if (s_frameNo % 600 == 0) invalidateShown();
+	clearBuffer();
 	// tab bar: the console has no background colours, so the active tab is
 	// marked in yellow; four columns per tab leave room for CHTS
 	for (int t = 0; t < TAB_COUNT; t++) {
-		printf(t == s_tab ? "\x1b[33m%-4.4s\x1b[39m" : "\x1b[37m%-4.4s\x1b[39m", k_tabs[t]);
+		char buf[16];
+		snprintf(buf, sizeof buf, "%s%-4.4s", t == s_tab ? "\x1b[33m" : "\x1b[37m", k_tabs[t]);
+		write(0, t * TAB_W, buf);
 	}
-	printf("   ");
 	switch (s_tab) {
 	case TAB_LOG: pageLog(); break;
 	case TAB_PERF: pagePerf(); break;
@@ -891,8 +846,20 @@ void frame(const input::State& in, bool inGame) {
 	case TAB_CHTS: pageCheats(inGame); break;
 	default: pageRend(); break;
 	}
+	flush();
 	s_repaint = false;
-	(void)ROWS;
 }
+
+#ifdef GTASADS_DEBUG
+void debugShow(int tab, int cheatCat) {
+	s_tab = tab;
+	s_cheatCat = cheatCat;
+	s_repaint = true;
+}
+
+void debugDump(FILE* f) {
+	for (int r = 0; r < ROWS; r++) fprintf(f, "%2d|%.*s|\n", r, COLS, s_shownCh[r]);
+}
+#endif
 
 }
