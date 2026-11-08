@@ -115,6 +115,17 @@ at the spawn (~15-25 while driving).
   `OPT` (with the appropriate DS/DSi flags). It starts PROLOG1 despite a
   pre-existing save, skips at frame 40, and the usual `gtasads_hudok.txt` /
   `gtasads_shot0.dscr` should show exterior world models at CJ's restored spawn.
+- World flicker regression: add `-DGTASADS_FLICKERTEST` to a DEBUG QUICKTEST SD
+  build's `OPT`, plus `-DGTASADS_FAT` and `-DGTASADS_DSI` for DSi. Run the
+  matching `run-sd-ds` or `run-sd` target with the same flags for ~100 s,
+  interrupting melonDS with SIGINT so the virtual SD syncs. The test holds
+  westward movement from frame 100 to 800, stops an opening cutscene if one
+  started, and records frames 100-850 in
+  `build/emulator/{ds,dsi}-sd/sd-root/gtasads_flickertest.txt`: model reloads,
+  evictions, previously drawn instances dropped by the polygon budget, and
+  STREAM free/largest-block sizes. `gtasads_flickershot.dscr` captures the
+  final view. This does not prove that every object stays
+  visible: the 2048-polygon hardware limit remains the same on DS and DSi.
 - Skid regression (DEBUG): the same flags with `-DGTASADS_SKIDTEST` write `gtasads_skidtest.txt` after
   a normal Greenwood turn and straight driving; both should report `skid=0.00`.
 - What stopped CJ there? `python3 tools/colnear.py X Y Z [R]` lists the baked collision

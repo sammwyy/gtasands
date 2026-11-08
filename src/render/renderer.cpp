@@ -123,8 +123,6 @@ void draw() {
 	// vehicles right after CJ (their own light0: the sun), then the map's budget
 	if (world::area() == 0 || cutscene::active())
 		veh::draw({ px, py, vz, px + elx, py + ely, vz + eyeH, yaw, pitch });
-	// peds after the vehicles (their own polygon budget, nearest first)
-	if (world::area() == 0) peds::draw({ px, py, vz, px + elx, py + ely, vz + eyeH, yaw, pitch });
 	cutscene::drawActors(px, py, vz);
 	// debug collision overlay before the map: the map's polygon budget yields to it
 	col::drawDebug(px, py, vz, px, py, player::g.z);
@@ -133,6 +131,8 @@ void draw() {
 	// light0 = world light (see world.cpp compile(): ambient * light colour)
 	glLight(0, RGB15(s_lr >> 3, s_lg >> 3, s_lb >> 3), 0, floattov10(-0.99f), 0);
 	world::draw({ px + elx, py + ely, vz + eyeH, yaw, pitch, px, py, vz });
+	// peds after the vehicles (their own polygon budget, nearest first)
+	if (world::area() == 0) peds::draw({ px, py, vz, px + elx, py + ely, vz + eyeH, yaw, pitch });
 	entryexits::drawMarker(px, py, vz);
 
 	if (dbg::opts.ground || !world::ready()) {

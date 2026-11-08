@@ -119,9 +119,8 @@ static float s_doorAngle;
 static float s_doorX, s_doorY;
 static int s_doorSign;
 
-// key = projected size (radius / distance), doubled for instances drawn last
-// frame: the polygon budget drops the smallest-looking ones and keeps the set
-// stable between frames
+// Nearby HD geometry wins polygon RAM over distant LODs and large skyline
+// models; last frame's drawn set gets a smaller bonus to suppress toggling.
 struct Vis { const Inst* inst; uint16_t slot; uint8_t wasDrawn, pad; int32_t key; };
 static Vis* s_vis;
 static int s_numVis;
@@ -315,6 +314,7 @@ void vblank() {
 // Model slots (CStreaming::RequestModel / CModelInfo, reduced)
 // ----------------------------------------------------------------------------
 static void freeSlot(Slot& s) {
+	if (s.state == SLOT_READY) s_stats.evictions++;
 	for (int i = 0; i < s.numTex; i++) releaseTex(s.tex[i]);
 	mem::free(s.list);
 	mdl::free(s.view);
@@ -350,6 +350,8 @@ static bool startLoad(uint16_t model, int32_t priority) {
 	s.priority = priority;
 	s_slotOf[model] = (uint16_t)si;
 	s_stats.loads++;
+	if (s_models[model].pad[0]) s_stats.reloads++;
+	s_models[model].pad[0] = 1;
 
 	ds::WorldModel wm;
 	if (fseek(s_file, (long)(s_hdr.modelsOffset + model * sizeof wm), SEEK_SET) || fread(&wm, sizeof wm, 1, s_file) != 1)
@@ -715,7 +717,7 @@ static constexpr int DRAWN_HASH = 1024;
 static_assert(DRAWN_HASH >= 2 * WORLD_VISIBLE_MAX);
 static const Inst* s_drawn[2][DRAWN_HASH];
 static int s_drawnCur;
-static constexpr int32_t NEW_MARGIN = 96;   // polys a newcomer needs on top of its estimate
+static constexpr int32_t NEW_MARGIN = 192;   // polys a newcomer needs on top of its estimate
 
 static inline uint32_t drawnHash(const Inst* p) { return ((uint32_t)p >> 5) * 2654435761u >> 22; }
 
@@ -842,18 +844,26 @@ static void scan(const Cam& c) {
 			const int32_t d = visD2 > INT_MAX ? c.view + visRad : (int32_t)sqrt32((uint32_t)visD2);
 			const int32_t near = d - visRad > 0 ? d - visRad : 0;
 			if (si == NONE) {
-				addWant(in.model, inView ? near : near * 2 + 32 * 16);
+				if (inView) addWant(in.model, near);
 				continue;
 			}
 			Slot& s = s_slots[si];
-			s.lastUse = s_frame;
+			if (near < 64 * 16) s.lastUse = s_frame;
 			if (s.state == SLOT_LOADING && near < s.priority) s.priority = near;
 			if (s.state != SLOT_READY || !c.frustum) continue;
-			// CRenderer::SetupEntityVisibility-ish: how big it looks (near
-			// surface, floor 4 m so everything close ranks first)
+			// Surface distance keeps wide ground and nearby houses ahead of
+			// huge models behind them. The distance bands keep the foreground
+			// ahead even when a distant object was drawn in the last frame.
 			const uint8_t was = wasDrawn(&in);
-			int32_t key = (visRad << 10) / (near + 64);
-			if (was) key <<= 1;
+			if (was) s.lastUse = s_frame;
+			const int tier = near < (was ? 40 : 32) * 16 ? 3 :
+			                 near < (was ? 88 : 80) * 16 ? 2 :
+			                 near < (was ? 128 : 120) * 16 ? 1 : 0;
+			const int32_t apparent = (visRad << 10) / (near + 64);
+			const int32_t distance = near < c.view ? c.view - near : 0;
+			const int32_t key = tier * 16384 + (was ? 1024 : 0) +
+			                    ((in.lodSwitch & 0x8000) ? 0 : 256) +
+			                    distance * 3 + (apparent < 1024 ? apparent : 1023);
 			if (s_numVis < WORLD_VISIBLE_MAX) {
 				s_vis[s_numVis++] = { &in, si, was, 0, key };
 			} else {
@@ -893,13 +903,6 @@ static Cam makeCam(float ex, float ey, float ez, float yaw, float pitch, bool fr
 static void stream(u32 budgetUs, int maxStarts) {
 	const u32 t0 = timing::ticks();
 	bool worked = false;
-	if (mem::stats(mem::REGION_STREAM).largestFree < 64 * 1024)
-		for (int k = 0; k < 4 && mem::stats(mem::REGION_STREAM).largestFree < 96 * 1024; k++) {
-			const int v = lruSlot();
-			if (v < 0) break;
-			freeSlot(s_slots[v]);
-			worked = true;
-		}
 	u32 staged = 0;
 	for (int i = 0; i < WORLD_TEX_ENTRIES; i++)
 		if (s_tex[i].state == TEX_STAGED) staged += s_tex[i].size;
@@ -1150,7 +1153,7 @@ void draw(const DrawView& v) {
 	scan(makeCam(v.eyeX, v.eyeY, v.eyeZ, v.yaw, v.pitch, true));
 	s_stats.scanUs = (uint16_t)timing::usSince(t0);
 
-	// biggest on screen first (the polygon budget drops what looks smallest)
+	// Foreground first; apparent size only breaks ties within a distance band.
 	std::sort(s_vis, s_vis + s_numVis, [](const Vis& a, const Vis& b) { return a.key > b.key; });
 	s_drawnCur ^= 1;
 	memset(s_drawn[s_drawnCur], 0, sizeof s_drawn[0]);
@@ -1166,15 +1169,16 @@ void draw(const DrawView& v) {
 	for (int i = 0; i < s_numVis; i++) {
 		const Vis& vi = s_vis[i];
 		Slot& s = s_slots[vi.slot];
-		s.lastUse = s_frame;
 		// backface culling removes roughly half of a closed model; a model that
 		// was not on screen last frame only comes in with room to spare, so the
 		// set at the edge of the budget does not flip every frame
 		if (polys + s.tris / 2 + (vi.wasDrawn ? 0 : NEW_MARGIN) > budget ||
 		    polys + s.tris > 2048 - 64) {
 			dropped++;
+			if (vi.wasDrawn) s_stats.budgetPops++;
 			continue;
 		}
+		s.lastUse = s_frame;
 		const Inst& in = *vi.inst;
 		const int e = s.scaleExp;
 		MATRIX_RESTORE = VIEW_SLOT;

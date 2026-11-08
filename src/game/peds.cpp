@@ -1544,6 +1544,9 @@ void draw(const View& v) {
 		while (k > 0 && vis[k - 1].d > d) { vis[k] = vis[k - 1]; k--; }
 		vis[k] = { p, d };
 	}
+	int occupied = 0;
+	glGetInt(GL_GET_POLYGON_RAM_COUNT, &occupied);
+	const int available = 2048 - 32 - occupied;
 	int polys = 0, drawn = 0, posed = 0;
 	u32 poseUs = 0;
 	MATRIX_STORE = pedmodel::SLOT_VIEW;
@@ -1556,7 +1559,8 @@ void draw(const View& v) {
 			if (!car || !car->npcDriver || !vehmdl::ready(car->model) ||
 			    !onScreen(car->pos[0], car->pos[1], car->pos[2] + 1.0f, 2.0f)) continue;
 			const float dx = car->pos[0] - v.eyeX, dy = car->pos[1] - v.eyeY;
-			if (dx * dx + dy * dy > 35.0f * 35.0f || polys + est > dbg::opts.pedPolys) continue;
+			if (dx * dx + dy * dy > 35.0f * 35.0f || polys + est > dbg::opts.pedPolys ||
+			    polys + est > available) continue;
 			const vehmdl::Model* carModel = vehmdl::get(car->model);
 			s32 attached[12];
 			veh::attachMatrix(*car, carModel->seat, v.originX, v.originY, v.originZ, attached);
@@ -1572,7 +1576,7 @@ void draw(const View& v) {
 		Ped& p = *vis[k].p;
 		const pedmodel::Model& m = *pedmodel::get(p.model);
 		const int est = m.tris / 2 + 8;   // back faces culled: about half reach the polygon RAM
-		if (polys + est > dbg::opts.pedPolys) break;
+		if (polys + est > dbg::opts.pedPolys || polys + est > available) break;
 		// pose (~0.9 ms each, DEBUG): every frame near, every 2nd..4th frame further away
 		const int rate = vis[k].d < 10.0f ? 1 : vis[k].d < 20.0f ? 2 : vis[k].d < 30.0f ? 3 : 4;
 		if (!p.poseValid || (!p.still && ++p.poseAge >= rate)) {

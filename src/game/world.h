@@ -54,7 +54,8 @@ struct Stats {
 	uint16_t modelsReady, modelsLoading;
 	uint16_t textures, texFailed;
 	uint32_t listBytes, texVram;
-	uint32_t loads, uploads;        // totals since boot
+	uint32_t loads, uploads, reloads, evictions;        // totals since boot
+	uint32_t budgetPops;
 	uint16_t polysBefore, polysAfter; // hardware polygon count around draw()
 	uint16_t updateUs, drawUs, scanUs; // scanUs is part of drawUs
 };

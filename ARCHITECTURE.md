@@ -327,8 +327,10 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   switch at 100 m (LOD remains visible until HD is ready), sphere vs frustum
   (fixed point, 1/16 m), slot state. When the visible array is full, its least important
   entry is replaced instead of discarding subsequently scanned nearby instances. Not-loaded
-  models go to an 8-entry nearest-first want list (out of view = lower priority). Drawn or
-  within 40 m = protected from LRU.
+  models in the camera frustum go to an 8-entry nearest-first want list; off-screen
+  models are not loaded until visible. Drawn or visible within 64 m (off-screen
+  within 40 m) = protected from LRU; far models skipped by the polygon budget
+  can be evicted before foreground ones.
 - **Model streaming** (`world::update`, ~3 ms budget, 2 starts/frame): `startLoad` reads the DMDL
   into STREAM and queues its textures; textures are found in the model TXD or its txdp parents
   (4-entry TXD directory cache). At most eight DMDLs may wait for textures; each update
@@ -352,22 +354,32 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   so building one list no longer requires two large STREAM allocations. Its vertices also
   produce a tighter model-space sphere for frustum culling once the list is ready (used
   only when the original origin-centred radius overestimates the bound by more than 8 m).
-- **Draw**: visible instances sorted by projected size (`radius << 10 / (near surface + 4 m)`,
-  doubled for instances drawn last frame), a model is skipped when the hardware polygon count +
-  tris/2 passes `dbg::opts.worldPolys` (+ `NEW_MARGIN` 96 for instances not drawn last frame);
+- **Draw**: visible instances sorted by foreground distance bands (surface distance
+  0-32 m, 32-80 m, 80-120 m, then background), then continuous surface distance,
+  recent visibility and projected size. HD models get a small priority over LODs
+  within each band; previously drawn instances retain an extra 8 m of band
+  hysteresis. A model is skipped when the hardware polygon count +
+  tris/2 passes `dbg::opts.worldPolys` (+ `NEW_MARGIN` 192 for instances not drawn last frame);
   a separate worst-case full-triangle check reserves 64 of the hardware's 2048 polygon
   slots so a model cannot overflow the GX polygon RAM when backface culling removes few faces.
-  The budget drops what looks smallest and the drawn set has hysteresis: with near->far buckets
-  ~37 dropped models/frame flipped in and out (~300 pops per 2400 frames, now ~20, at the camera
-  turns). Drawn set = 2 x 1024-entry pointer hash, swapped per draw. GE-bound: each `callList`
-  waits for its DMA (~100 us per model).
+  The budget drops what looks smallest and the drawn set has hysteresis; movement can
+  still drop a previously drawn instance when the fixed 2048-polygon hardware limit is
+  reached. The map draws before peds so a changing ped count does not change its
+  polygon allowance; peds use the remaining polygon RAM. Drawn set = 2 x 1024-entry
+  pointer hash, swapped per draw. GE-bound: each `callList` waits for its DMA
+  (~100 us per model).
 - **Eviction**: slots LRU (`WORLD_MODEL_SLOTS`, `WORLD_LIST_BYTES`), textures refcounted + LRU.
+  DSi holds up to 320 map models and 2 MiB of compiled lists (DS: 192 and 720 KiB);
+  DS still needs some model eviction and reloading during longer walks. No preemptive
+  eviction just because the largest free STREAM block is below a fixed threshold:
+  smaller models can still fit in fragmented memory.
   If texture VRAM cannot make space, upload waits briefly while stale models are evicted;
   after 20 frames it falls back to an untextured model rather than blocking geometry forever.
   `world::suspend()` drops all lists/textures when the pause menu opens (VRAM); they stream back.
 - **Preload** (loading job): sectors + every model in range around the player, no frustum, until
   idle or 10 s.
-- Stats: PERF tab rows 15-18 (collision 19-20), `world:` / `col:` lines in hudok, REND tab toggle + poly budget.
+- Stats: PERF tab rows 15-18 (collision 19-20), `world:` / `col:` lines in hudok
+  (including model reloads, evictions and budget pops), REND tab toggle + poly budget.
   `GTASADS_WORLDTEST` also reserves 24 KB and crosses a nearby sector at frame 1022; its
   `boundary: ... kept=1 pressure=1` line checks that resident models survive the crossing.
 - Grove Street numbers: ~110 models / 600 instances in the window, ~70 drawn, ~1600 polys,

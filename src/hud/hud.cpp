@@ -19,6 +19,7 @@
 #include "audio/audioengine.h"
 #include "game/cj.h"
 #include "game/collision.h"
+#include "game/cutscene.h"
 #include "game/timecycle.h"
 #include "game/weather.h"
 #include "game/debugopts.h"
@@ -353,6 +354,39 @@ static void worldTest(int f) {
 }
 #endif
 
+#if defined(GTASADS_DEBUG) && defined(GTASADS_FLICKERTEST)
+static void flickerTest(int f) {
+	static FILE* out;
+	if (f == 1) {
+		cutscene::stop();
+		if (world::area() != 0) world::setArea(0);
+		player::respawn();
+	}
+	if (f == 100) {
+		out = fopen("fat:/gtasads_flickertest.txt", "w");
+		player::debugSetView(1.5708f, 0.15f);
+		input::debugHold(KEY_UP);
+	}
+	if (f == 800) input::debugHold(0);
+	if (out) {
+		const world::Stats& s = world::stats();
+		fprintf(out, "%d pos=%.1f,%.1f,%.1f sec=%u inst=%u cand=%u drawn=%u budget=%u pops=%lu ready=%u loading=%u lists=%luK free=%luK largest=%luK loads=%lu reloads=%lu evict=%lu polys=%u>%u\n",
+		        f, player::g.x, player::g.y, player::g.z, s.sectors, s.instances, s.candidates, s.drawn, s.culledBudget,
+		        (unsigned long)s.budgetPops,
+		        s.modelsReady, s.modelsLoading, (unsigned long)(s.listBytes >> 10),
+		        (unsigned long)((mem::stats(mem::REGION_STREAM).capacity - mem::stats(mem::REGION_STREAM).used) >> 10),
+		        (unsigned long)(mem::stats(mem::REGION_STREAM).largestFree >> 10),
+		        (unsigned long)s.loads, (unsigned long)s.reloads, (unsigned long)s.evictions,
+		        s.polysBefore, s.polysAfter);
+		if (f == 850) {
+			fclose(out);
+			out = nullptr;
+			video::requestCapture("fat:/gtasads_flickershot.dscr");
+		}
+	}
+}
+#endif
+
 #if defined(GTASADS_DEBUG) && defined(GTASADS_PEDTEST)
 // Headless ped test (after the screenshot sequence): a ped placed 1 m in
 // front of CJ takes a punch combo (hit / knock-down / response), then CJ gets
@@ -444,6 +478,9 @@ void draw() {
 #ifdef GTASADS_WORLDTEST
 			worldTest(s_gameFrames);
 #endif
+#ifdef GTASADS_FLICKERTEST
+			flickerTest(s_gameFrames);
+#endif
 #ifdef GTASADS_PEDTEST
 			pedTest(s_gameFrames);
 #endif
@@ -451,6 +488,7 @@ void draw() {
 			// (shot0 at the marker frame, then turn, give streaming 60 frames,
 			// capture), a bird's eye view (shot4), then a teleport 150 m west to
 			// exercise sector streaming + eviction (shot5, gtasads_hudok2.txt)
+#ifndef GTASADS_FLICKERTEST
 			static const float k_yaw[6] = { 0.0f, 1.5708f, 3.1416f, -1.5708f, 0.0f, 3.1416f };
 			for (int k = 0; k < 6; k++) {
 				const int at = 120 + k * 90;
@@ -466,14 +504,17 @@ void draw() {
 					video::requestCapture(path);
 				}
 			}
+#endif
 			const world::Stats& ws = world::stats();
 			auto worldLine = [&](FILE* f) {
 				fprintf(f, "world: sec=%u inst=%u cand=%u drawn=%u cullF=%u cullB=%u ready=%u loading=%u "
-				        "tex=%u fail=%u lists=%luK texvram=%luK loads=%lu up=%lu polys=%u>%u upd=%uus draw=%uus scan=%uus\n",
+				        "tex=%u fail=%u lists=%luK texvram=%luK loads=%lu reloads=%lu evict=%lu pops=%lu up=%lu polys=%u>%u upd=%uus draw=%uus scan=%uus\n",
 				        ws.sectors, ws.instances, ws.candidates, ws.drawn, ws.culledFrustum, ws.culledBudget,
 				        ws.modelsReady, ws.modelsLoading, ws.textures, ws.texFailed,
 				        (unsigned long)(ws.listBytes >> 10), (unsigned long)(ws.texVram >> 10),
-				        (unsigned long)ws.loads, (unsigned long)ws.uploads, ws.polysBefore, ws.polysAfter,
+				        (unsigned long)ws.loads, (unsigned long)ws.reloads, (unsigned long)ws.evictions,
+				        (unsigned long)ws.budgetPops,
+				        (unsigned long)ws.uploads, ws.polysBefore, ws.polysAfter,
 				        ws.updateUs, ws.drawUs, ws.scanUs);
 				const col::Stats& cs = col::stats();
 				fprintf(f, "col: models=%u bytes=%luK near=%u wants=%u miss=%u loads=%lu upd=%uus query=%uus push=%uus "
