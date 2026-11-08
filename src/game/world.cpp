@@ -803,6 +803,41 @@ static void markDrawn(const Inst* p) {
 	t[h] = p;
 }
 
+// HD instances with a LOD drawn this frame, keyed by (model, position): a LOD
+// asks whether its own HD drew in O(1). (The old linear search over every
+// visible instance for each LOD cost ~2-3 ms per frame with ~200 candidates.)
+struct HdDrawn { int32_t pos[3]; uint16_t model, gen; };
+static constexpr int HD_DRAWN = 512;
+static HdDrawn s_hdDrawn[HD_DRAWN];
+static uint16_t s_hdGen = 1;
+
+static inline uint32_t hdHash(uint16_t model, const int32_t* p) {
+	return ((uint32_t)p[0] * 73856093u ^ (uint32_t)p[1] * 19349663u ^ (uint32_t)p[2] * 83492791u ^
+	        model * 2654435761u) >> 23;
+}
+
+static void markHdDrawn(const Inst& in) {
+	uint32_t h = hdHash(in.model, in.pos);
+	for (int n = 0; n < HD_DRAWN; n++, h = (h + 1) & (HD_DRAWN - 1)) {
+		HdDrawn& e = s_hdDrawn[h];
+		if (e.gen == s_hdGen && (e.model != in.model || memcmp(e.pos, in.pos, sizeof e.pos))) continue;
+		e.gen = s_hdGen;
+		e.model = in.model;
+		memcpy(e.pos, in.pos, sizeof e.pos);
+		return;
+	}
+}
+
+static bool hdDrawnFor(const Inst& lod) {
+	uint32_t h = hdHash(lod.linkedModel, lod.pos);
+	for (int n = 0; n < HD_DRAWN; n++, h = (h + 1) & (HD_DRAWN - 1)) {
+		const HdDrawn& e = s_hdDrawn[h];
+		if (e.gen != s_hdGen) return false;
+		if (e.model == lod.linkedModel && !memcmp(e.pos, lod.pos, sizeof e.pos)) return true;
+	}
+	return false;
+}
+
 static void addWant(uint16_t model, int32_t key) {
 	for (int i = 0; i < s_numWant; i++)
 		if (s_want[i].model == model) {
@@ -1296,6 +1331,10 @@ void draw(const DrawView& v) {
 	std::sort(s_vis, s_vis + s_numVis, [](const Vis& a, const Vis& b) { return a.key > b.key; });
 	s_drawnCur ^= 1;
 	memset(s_drawn[s_drawnCur], 0, sizeof s_drawn[0]);
+	if (++s_hdGen == 0) {   // wrapped: stale entries could match generation 1 again
+		memset(s_hdDrawn, 0, sizeof s_hdDrawn);
+		s_hdGen = 1;
+	}
 
 	const int32_t ox = (int32_t)(v.originX * 4096.0f), oy = (int32_t)(v.originY * 4096.0f),
 	              oz = (int32_t)(v.originZ * 4096.0f);
@@ -1314,15 +1353,7 @@ void draw(const DrawView& v) {
 		const Inst& in = *vi.inst;
 		const bool lod = (in.lodSwitch & 0x8000) != 0;
 		if (lod != (pass == 1)) continue;
-		if (lod && in.linkedModel != NONE) {
-			bool hdDrawn = false;
-			for (int j = 0; j < s_numVis && !hdDrawn; j++) {
-				const Inst& hd = *s_vis[j].inst;
-				hdDrawn = hd.model == in.linkedModel &&
-				          !memcmp(hd.pos, in.pos, sizeof in.pos) && wasDrawn(&hd);
-			}
-			if (hdDrawn) continue;
-		}
+		if (lod && in.linkedModel != NONE && hdDrawnFor(in)) continue;
 		Slot& s = s_slots[vi.slot];
 		const uint16_t hd = lod && in.linkedModel < s_hdr.numModels ? s_slotOf[in.linkedModel] : NONE;
 		const bool fallback = hd != NONE && s_slots[hd].state == SLOT_READY;
@@ -1355,6 +1386,7 @@ void draw(const DrawView& v) {
 		MATRIX_MULT4x3 = oy - in.pos[1];
 		gx::callList(s.list);
 		markDrawn(vi.inst);
+		if (!lod && in.linkedModel != NONE) markHdDrawn(in);
 		drawn++;
 		glGetInt(GL_GET_POLYGON_RAM_COUNT, &polys);
 	}

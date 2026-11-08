@@ -284,9 +284,12 @@ bool popRow(int zoneType, int weekend, int slot, ds::PopRow& out) {
 const ds::PedZone* zoneAt(float x, float y) {
 	const ds::PedZone* best = nullptr;
 	int32_t bestArea = 0x7FFFFFFF;
+	// 1/16 m integers: four soft-float compares per zone over ~380 zones made
+	// every population / traffic spawn attempt cost ~0.7 ms
+	const int32_t ix = (int32_t)(x * 16.0f), iy = (int32_t)(y * 16.0f);
 	for (int i = 0; s_zones && i < s_hdr.numZones; i++) {
 		const ds::PedZone& z = s_zones[i];
-		if (x < z.x1 || x > z.x2 || y < z.y1 || y > z.y2) continue;
+		if (ix < z.x1 * 16 || ix > z.x2 * 16 || iy < z.y1 * 16 || iy > z.y2 * 16) continue;
 		const int32_t a = (int32_t)(z.x2 - z.x1) * (z.y2 - z.y1);
 		if (a < bestArea) { bestArea = a; best = &z; }
 	}
