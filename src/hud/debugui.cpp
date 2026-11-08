@@ -257,23 +257,9 @@ static int nextOfCat(int from, int dir, int cat) {
 	return -1;
 }
 
-// in front of CJ (boats: the nearest water, trains: the nearest track; CJ is
-// moved next to them), side on
 static void spawnHere(int index) {
 	if (index < 0) return;
-	player::State& p = player::g;
-	const int cat = catOf(index);
-	const float d = cat == VC_PLANE ? 14.0f : cat == VC_HELI || cat == VC_TRAIN ? 10.0f : cat == VC_BOAT ? 8.0f : 6.0f;
-	float x = p.x - sinf(p.heading) * d, y = p.y + cosf(p.heading) * d, z = p.z + 1.0f;
-	float sx, sy, sz;
-	if (veh::spawnPoint(index, x, y, sx, sy, sz)) {
-		if ((sx - x) * (sx - x) + (sy - y) * (sy - y) > 25.0f) {
-			p.x = sx + 6.0f; p.y = sy; p.z = sz + 2.0f;   // next to it; the collision streams in first
-			player::placeOnGround();
-		}
-		x = sx; y = sy; z = sz + 0.5f;
-	}
-	const int id = veh::spawn(index, x, y, z, p.heading + 1.5708f);
+	const int id = veh::spawnInFront(index);
 	if (id >= 0) s_lastCar = id;
 }
 

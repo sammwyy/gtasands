@@ -41,6 +41,8 @@ enum State : uint8_t { STATE_FREE, STATE_PENDING, STATE_TEXTURES, STATE_READY, S
 
 struct Model {
 	uint8_t state, refs;
+	uint8_t retries;           // DMDL reads that found no STREAM block for it
+	uint32_t retryAt;          // frame of the next attempt
 	int16_t pedIndex;          // peddata model index
 	char cutsceneName[24];
 	bool cutsceneSource;

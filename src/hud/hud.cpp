@@ -272,6 +272,60 @@ static void vehTest(int f) {
 }
 #endif
 
+#if defined(GTASADS_DEBUG) && defined(GTASADS_VEHSPAWNTEST)
+// Headless spawn regression: the debug-UI spawn in front of CJ for a car and
+// a bike, CJ facing 4 directions at the Grove spawn. Each run logs where it
+// was placed, then CJ gets in and drives 100 frames: `moved` must be > 0
+// (a vehicle wedged in a wall / kerb / shelter stays at ~0).
+static void vehSpawnTest(int f) {
+	static FILE* out;
+	static int id = -1;
+	static float sx, sy;
+	if (f < 600) return;
+	const int run = (f - 600) / 480, t = (f - 600) % 480;
+	if (run >= 8) {
+		if (out) {
+			for (int i = 0; i < LOG_LINES; i++) {
+				const char* l = s_log[(s_logHead + i) % LOG_LINES];
+				if (*l) fprintf(out, "log: %s\n", l);
+			}
+			fclose(out);
+			out = nullptr;
+		}
+		return;
+	}
+	const int model = run & 1 ? 522 : 492;
+	const veh::Vehicle* v = veh::get(id);
+	if (t == 0) {
+		if (!out) out = fopen("fat:/gtasads_vehspawn.txt", "w");
+		veh::removeAll();
+		player::respawn();
+		player::g.heading = (run >> 1) * 1.5708f;
+		player::debugSetView(player::g.heading, 0.3f);
+		id = veh::spawnInFront(vehdata::findModel(model));
+	}
+	if (t == 100 && out) {
+		fprintf(out, "run %d model %d id %d hdg %.2f cj=%.1f,%.1f,%.2f ", run, model, id, player::g.heading, player::g.x, player::g.y, player::g.z);
+		if (v) fprintf(out, "car=%.1f,%.1f,%.2f up=%.2f contact=%u sleep=%d ", v->pos[0], v->pos[1], v->pos[2], v->up[2], v->numContact, (int)v->asleep);
+		else fprintf(out, "car=none ");
+	}
+	if (t == 110) input::debugHold(KEY_Y);
+	if (t == 113) input::debugHold(0);
+	if (t == 330 && v) { sx = v->pos[0]; sy = v->pos[1]; }
+	if (t == 330) input::debugHold(KEY_UP);
+	if (t == 430) {
+		input::debugHold(0);
+		if (out) {
+			if (v) fprintf(out, "in=%d moved=%.1f spd=%.1fkmh up=%.2f\n", player::vehicleId() == id,
+			               sqrtf((v->pos[0] - sx) * (v->pos[0] - sx) + (v->pos[1] - sy) * (v->pos[1] - sy)),
+			               v->speedFwd * 180.0f, v->up[2]);
+			else fprintf(out, "lost\n");
+			fflush(out);
+		}
+	}
+}
+#endif
+
 #if defined(GTASADS_DEBUG) && defined(GTASADS_RADIOTEST)
 static void radioTest(int f) {
 	static FILE* out;
@@ -544,6 +598,9 @@ void draw() {
 #endif
 #ifdef GTASADS_RADIOTEST
 			radioTest(s_gameFrames);
+#endif
+#ifdef GTASADS_VEHSPAWNTEST
+			vehSpawnTest(s_gameFrames);
 #endif
 #ifdef GTASADS_SKIDTEST
 			skidTest(s_gameFrames);

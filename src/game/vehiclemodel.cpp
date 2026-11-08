@@ -362,19 +362,30 @@ static void freeModel(Model& m) {
 	m = {};
 }
 
-static bool startLoad(Model& m) {
+enum LoadResult { LOAD_OK, LOAD_RETRY, LOAD_FAIL };
+
+static LoadResult startLoad(Model& m) {
 	openGeneric();
 	s_stats.loads++;
 	const Pack& pack = m.cutsceneName[0] ? streaming::g_cutscene : streaming::g_models;
 	const char* const base = m.cutsceneName[0] ? m.cutsceneName : m.info.model;
 	char name[40];
 	snprintf(name, sizeof name, "%.24s.dff", base);
-	m.blob = pack.load(name, mem::TAG_MODEL);
-	mdl::Model* view = mdl::load(m.blob);
+	ds::PackEntry de;
+	if (!pack.find(name, de)) {
+		hud::log("\x1b[33mveh: %s missing\x1b[39m", name);
+		return LOAD_FAIL;
+	}
+	// a ~40 KB DMDL in a full / fragmented STREAM heap (the map streams
+	// into it too) is not a broken model: it failed the vehicle outright,
+	// so spawns and traffic cars vanished at random. Try again shortly.
+	m.blob = pack.load(de, mem::TAG_MODEL);
+	mdl::Model* view = m.blob ? mdl::load(m.blob) : nullptr;
 	m.view = view;
 	if (!view) {
-		hud::log("\x1b[33mveh: %s missing\x1b[39m", name);
-		return false;
+		mem::free(m.blob);
+		m.blob = nullptr;
+		return LOAD_RETRY;
 	}
 	// model TXD directory (entries only)
 	Dir dir = {};
@@ -402,7 +413,7 @@ static bool startLoad(Model& m) {
 			if (!dup) m.tex[m.numTex++] = requestTex(dir, txdHash, tn);
 		}
 	}
-	return true;
+	return LOAD_OK;
 }
 
 static bool finishLoad(Model& m) {
@@ -640,7 +651,14 @@ void update() {
 	s_frame++;
 	for (Model& m : s_models) {
 		if (m.state == STATE_PENDING) {
-			m.state = startLoad(m) ? STATE_TEXTURES : STATE_FAILED;
+			if ((int32_t)(s_frame - m.retryAt) < 0) continue;
+			const LoadResult r = startLoad(m);
+			if (r == LOAD_RETRY && ++m.retries < 40) {
+				m.retryAt = s_frame + 15;
+			} else {
+				if (r == LOAD_RETRY) hud::log("\x1b[33mveh: no RAM for %.12s\x1b[39m", m.info.model);
+				m.state = r == LOAD_OK ? STATE_TEXTURES : STATE_FAILED;
+			}
 			break;   // one DMDL read per frame
 		}
 		if (m.state == STATE_TEXTURES) {

@@ -422,8 +422,11 @@ void physPlace(Car& c) {
 	// CalculateHeightAboveRoad: drop the car onto the ground under it
 	const float spring = fx::toFloat(c.springLen);
 	const float hab = (1.0f - 1.0f / (c.h.suspForce * 4.0f)) * spring + fx::toFloat(c.wheelR[0]) - fx::toFloat(c.lineStart[0].z);
+	// from just above the requested point first: a probe from 3 m up put
+	// spawns on top of bus shelters, fences and awnings next to the street
 	col::Hit hit;
-	if (col::groundAt(v.pos[0], v.pos[1], v.pos[2] + 3.0f, v.pos[2] - 20.0f, hit))
+	if (col::groundAt(v.pos[0], v.pos[1], v.pos[2] + 1.0f, v.pos[2] - 20.0f, hit) ||
+	    col::groundAt(v.pos[0], v.pos[1], v.pos[2] + 3.0f, v.pos[2] - 20.0f, hit))
 		c.pos[2] = wpOf(hit.z + (v.cls == CLS_BOAT ? -fx::toFloat(c.bmin.z) : hab));
 }
 

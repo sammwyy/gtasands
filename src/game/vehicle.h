@@ -82,6 +82,7 @@ void init();
 // track) once its collision is there. Returns the id or -1.
 int spawn(int vehIndex, float x, float y, float z, float heading, int colour = -1,
           const char* cutsceneModel = nullptr);
+int spawnInFront(int vehIndex);   // debug / cheat spawn at a clear spot in front of CJ
 bool prepareCutscene(int id);
 void positionCutscene(int id, float x, float y, float z, float heading);
 void remove(int id);

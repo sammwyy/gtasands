@@ -163,6 +163,55 @@ int spawn(int vehIndex, float x, float y, float z, float hdg, int colour, const 
 	return id;
 }
 
+// CCheat::VehicleCheat-style spawn in front of CJ (boats: the nearest water,
+// trains: the nearest track; CJ is moved next to them), side on. Cars and
+// bikes look for a clear spot first: a floor near CJ's level, no wall, box or
+// other vehicle where the body goes (a car spawned into a wall or on a kerb
+// edge wedged itself and never moved).
+int spawnInFront(int index) {
+	player::State& p = player::g;
+	const uint8_t t = vehdata::type(index);
+	const bool plane = t == ds::VEH_PLANE || t == ds::VEH_FPLANE, heli = t == ds::VEH_HELI || t == ds::VEH_FHELI;
+	const float d = plane ? 14.0f : heli || t == ds::VEH_TRAIN ? 10.0f : t == ds::VEH_BOAT ? 8.0f : 6.0f;
+	const float hdg = p.heading + 1.5708f;
+	float x = p.x - sinf(p.heading) * d, y = p.y + cosf(p.heading) * d, z = p.z + 1.0f;
+	float sx, sy, sz;
+	if (spawnPoint(index, x, y, sx, sy, sz)) {
+		if ((sx - x) * (sx - x) + (sy - y) * (sy - y) > 25.0f) {
+			p.x = sx + 6.0f; p.y = sy; p.z = sz + 2.0f;   // next to it; the collision streams in first
+			player::placeOnGround();
+		}
+		return spawn(index, sx, sy, sz + 0.5f, hdg);
+	}
+	if (plane || heli || !col::available()) return spawn(index, x, y, z, hdg);
+	const float half = t == ds::VEH_BIKE || t == ds::VEH_BMX ? 1.0f : 2.4f;
+	const float ax = -sinf(hdg), ay = cosf(hdg);   // the body's long axis
+	static const float k_turn[] = { 0.0f, 0.45f, -0.45f, 0.9f, -0.9f, 3.1416f, 2.5f, -2.5f };
+	for (float dist : { d, d + 2.5f, d - 1.5f }) {
+		for (float turn : k_turn) {
+			const float a = p.heading + turn;
+			const float cx = p.x - sinf(a) * dist, cy = p.y + cosf(a) * dist;
+			col::Hit h;
+			if (!col::groundAt(cx, cy, p.z + 1.5f, p.z - 3.0f, h)) continue;
+			bool clear = true;
+			for (float k = -1.0f; k <= 1.0f && clear; k += 1.0f) {
+				float qx = cx + ax * half * k, qy = cy + ay * half * k;
+				col::Hit g;
+				// both ends on a floor at about the same height, nothing solid at body height
+				if (!col::groundAt(qx, qy, h.z + 1.0f, h.z - 1.0f, g) || fabsf(g.z - h.z) > 0.6f) clear = false;
+				else if (col::pushSphere(qx, qy, h.z + 1.1f, 0.75f)) clear = false;
+			}
+			for (const Car& o : g_cars) {
+				if (!clear || o.v.status == STATUS_FREE) continue;
+				const float ox = o.v.pos[0] - cx, oy = o.v.pos[1] - cy;
+				if (ox * ox + oy * oy < 5.0f * 5.0f) clear = false;
+			}
+			if (clear) return spawn(index, cx, cy, h.z + 0.5f, a + 1.5708f);
+		}
+	}
+	return spawn(index, x, y, z, hdg);
+}
+
 void remove(int id) {
 	if (!get(id)) return;
 	Car& c = g_cars[id];
@@ -757,6 +806,14 @@ static void spawnTraffic() {
 	}
 }
 
+// a floor under the vehicle close to where it was asked for (the record under
+// it is in the near list; the rest of the window may still be streaming)
+static bool groundReady(const Vehicle& v) {
+	if (v.cls == CLS_TRAIN || v.cls == CLS_BOAT || !inRange(v)) return v.cls == CLS_TRAIN;
+	col::Hit h;
+	return col::groundAt(v.pos[0], v.pos[1], v.pos[2] + 1.5f, v.pos[2] - 4.0f, h);
+}
+
 static void setupFromModel(Car& c) {
 	Vehicle& v = c.v;
 	const Model* m = vehmdl::get(v.model);
@@ -819,7 +876,11 @@ void update() {
 		if (!c.placed) {
 			const Model* m = vehmdl::get(v.model);
 			if (!m || m->state == STATE_FAILED) { hud::log("\x1b[33mveh #%d: model failed\x1b[39m", i); remove(i); continue; }
-			if (m->state == STATE_READY && !col::pending()) setupFromModel(c);
+			// placed once the ground under it is resident: waiting for the
+			// whole collision / sector window to go idle left a spawn hanging
+			// (invisible, not enterable) for as long as anything streamed
+			if (m->state == STATE_READY && (!col::nearPending() || groundReady(v) || (++c.placeWait > 240 && !inRange(v))))
+				setupFromModel(c);
 			continue;
 		}
 		if (v.status == STATUS_WRECKED && c.wreckBurn > 0.0f) c.wreckBurn -= frameMs;

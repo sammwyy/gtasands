@@ -90,6 +90,7 @@ struct Car {
 	bool trafficSeen;
 	// state
 	bool placed;
+	uint16_t placeWait;         // frames the ready model waited for its ground collision
 	uint32_t hasDam;            // components with a *_dam variant
 	uint32_t doorSound;         // door edges already played (bit per door: open)
 	bool windscreenSaid;

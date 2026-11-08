@@ -130,31 +130,39 @@ static void freeModel(Model& m) {
 	m = {};
 }
 
-static bool startLoad(Model& m) {
+enum LoadResult { LOAD_FAIL, LOAD_OK, LOAD_RETRY };
+
+static LoadResult startLoad(Model& m) {
 	s_stats.loads++;
 	const Pack& pack = m.cutsceneSource ? streaming::g_cutscene : streaming::g_models;
 	ds::PedName nm{};
 	if (m.cutsceneName[0]) {
 		snprintf(nm.model, sizeof nm.model, "%s", m.cutsceneName);
 		snprintf(nm.txd, sizeof nm.txd, "%s", m.cutsceneName);
-	} else if (!peddata::name(m.pedIndex, nm)) return false;
+	} else if (!peddata::name(m.pedIndex, nm)) return LOAD_FAIL;
 	char file[40];
 	snprintf(file, sizeof file, "%.23s.dff", nm.model);
-	m.blob = pack.load(file, mem::TAG_MODEL);
-	m.view = mdl::load(m.blob);
-	if (!m.view || !m.view->nodes || m.view->numBones > anim::MAX_NODES || !anim::prepare(m.view)) {
+	ds::PackEntry de;
+	if (!pack.find(file, de)) {
 		hud::log("\x1b[33mped %s missing\x1b[39m", file);
-		return false;
+		return LOAD_FAIL;
+	}
+	m.blob = pack.load(de, mem::TAG_MODEL);
+	m.view = m.blob ? mdl::load(m.blob) : nullptr;
+	if (!m.view) return LOAD_RETRY;   // no STREAM block right now (not a broken model)
+	if (!m.view->nodes || m.view->numBones > anim::MAX_NODES || !anim::prepare(m.view)) {
+		hud::log("\x1b[33mped %s unusable\x1b[39m", file);
+		return LOAD_FAIL;
 	}
 	snprintf(file, sizeof file, "%.23s.txd", nm.txd);
 	ds::PackEntry pe;
 	ds::TxdHeader th;
 	if (!pack.find(file, pe) || !pack.read(pe.offset, &th, sizeof th) ||
 	    th.magic != DS_FOURCC('D', 'T', 'X', 'D') || !th.count)
-		return true;   // untextured
+		return LOAD_OK;   // untextured
 	mem::Scratch scratch;
 	ds::TxdEntry* dir = (ds::TxdEntry*)scratch.alloc(sizeof(ds::TxdEntry) * th.count);
-	if (!dir || !pack.read(pe.offset + sizeof th, dir, sizeof(ds::TxdEntry) * th.count)) return true;
+	if (!dir || !pack.read(pe.offset + sizeof th, dir, sizeof(ds::TxdEntry) * th.count)) return LOAD_OK;
 	for (int g = 0; g < m.view->numGeoms; g++) {
 		const mdl::Geometry& geo = m.view->geoms[g];
 		for (int mi = 0; mi < geo.h->numMaterials; mi++) {
@@ -166,7 +174,7 @@ static bool startLoad(Model& m) {
 			if (!dup) m.tex[m.numTex++] = stageTex(pack, dir, th.count, pe.offset, tn);
 		}
 	}
-	return true;
+	return LOAD_OK;
 }
 
 static const TexEntry* texFor(const Model& m, const char* name) {
@@ -437,12 +445,19 @@ void update() {
 	s_frame++;
 	for (Model& m : s_models) {
 		if (m.state == STATE_PENDING) {
-			m.state = startLoad(m) ? STATE_TEXTURES : STATE_FAILED;
+			if ((int32_t)(s_frame - m.retryAt) < 0) continue;
+			const LoadResult r = startLoad(m);
+			m.state = r == LOAD_OK ? STATE_TEXTURES : STATE_FAILED;
 			if (m.state == STATE_FAILED) {
 				mdl::free(m.view);
 				mem::free(m.blob);
 				m.view = nullptr;
 				m.blob = nullptr;
+				// out of STREAM: wait and read it again instead of failing the ped
+				if (r == LOAD_RETRY && ++m.retries < 40) {
+					m.state = STATE_PENDING;
+					m.retryAt = s_frame + 15;
+				}
 			}
 			break;   // one DMDL read per frame
 		}
