@@ -496,7 +496,15 @@ static bool compile(Slot& s) {
 	const u32 cap = numIdx * 6 + numMats * 8 + 8;
 	mem::Scratch scratch;
 	u32* buf = (u32*)scratch.alloc(cap * 4);
-	if (!buf) return false;
+	if (!buf) {
+		s.readDone = cap * 4;
+#ifdef GTASADS_DEBUG
+		s_stats.compileFailModel = s.model;
+		s_stats.compileFailReason = 1;
+		s_stats.compileFailBytes = cap * 4;
+#endif
+		return false;
+	}
 	gx::ListBuilder dl(buf, cap);
 	dl.cmd(gx::CMD_SPE_EMI, 0);
 	uint32_t tris = 0;
@@ -572,14 +580,30 @@ static bool compile(Slot& s) {
 		}
 	}
 	const u32 n = dl.finish();
-	if (!n) return false;
+	if (!n) {
+		s.readDone = UINT_MAX;
+#ifdef GTASADS_DEBUG
+		s_stats.compileFailModel = s.model;
+		s_stats.compileFailReason = 2;
+		s_stats.compileFailBytes = cap * 4;
+#endif
+		return false;
+	}
 	u32* list = nullptr;
 	for (;;) {
 		if (s_listBytes + n * 4 <= WORLD_LIST_BYTES)
 			list = (u32*)mem::alloc(n * 4, mem::TAG_MODEL);
 		if (list) break;
 		const int v = lruSlot();
-		if (v < 0) return false;
+		if (v < 0) {
+			s.readDone = n * 4;
+#ifdef GTASADS_DEBUG
+			s_stats.compileFailModel = s.model;
+			s_stats.compileFailReason = 3;
+			s_stats.compileFailBytes = n * 4;
+#endif
+			return false;
+		}
 		freeSlot(s_slots[v]);
 	}
 	memcpy(list, buf, n * 4);
@@ -604,7 +628,17 @@ static bool finishLoad(Slot& s) {
 #ifdef GTASADS_DEBUG
 	s_stats.compileUs += timing::usSince(compileT0);
 #endif
-	if (!compiled) return false;
+	if (!compiled) {
+		for (int k = 0; k < s.numTex; k++) releaseTex(s.tex[k]);
+		s.numTex = 0;
+		mdl::free(s.view);
+		mem::free(s.blob);
+		s.view = nullptr;
+		s.blob = nullptr;
+		s.lastUse = s_frame;
+		s.state = SLOT_FAILED;
+		return false;
+	}
 	mdl::free(s.view);
 	mem::free(s.blob);
 	s.view = nullptr;
@@ -829,16 +863,14 @@ static void scan(const Cam& c) {
 			// visible during streaming, and respect the IDE draw distance
 			const int32_t d2 = dx * dx + dy * dy + dz * dz;
 			const int32_t sw = (in.lodSwitch & 0x7FFF) * 16;
-			if ((in.lodSwitch & 0x8000) && d2 < (sw ? sw * sw : (100 * 16) * (100 * 16))) {
-				const uint16_t hd = in.linkedModel < s_hdr.numModels ? s_slotOf[in.linkedModel] : NONE;
-				if (hd != NONE && s_slots[hd].state == SLOT_READY) continue;
-			}
 			if (sw && in.linkedModel != NONE && in.linkedModel < s_hdr.numModels) {
 				const uint16_t linked = s_slotOf[in.linkedModel];
 				if (!(in.lodSwitch & 0x8000) && d2 >= sw * sw &&
 				    (linked == NONE || s_slots[linked].state == SLOT_READY)) continue;
 			}
 			int32_t dd = ml.drawDist * 16 + rad;
+			if (!(in.lodSwitch & 0x8000) && sw && in.linkedModel < s_hdr.numModels &&
+			    dd < sw + rad) dd = sw + rad;
 			if (dd > 0x6000) dd = 0x6000;
 			if (d2 > reach * reach || d2 > dd * dd) continue;
 			candidates++;
@@ -870,11 +902,29 @@ static void scan(const Cam& c) {
 			const int32_t d = visD2 > INT_MAX ? c.view + visRad : (int32_t)sqrt32((uint32_t)visD2);
 			const int32_t near = d - visRad > 0 ? d - visRad : 0;
 			if (si == NONE) {
-				if (inView) addWant(in.model, near);
+				int32_t want = near;
+				if ((in.lodSwitch & 0x8000) && in.linkedModel < s_hdr.numModels && d2 < sw * sw &&
+				    (s_slotOf[in.linkedModel] == NONE ||
+				     (s_slots[s_slotOf[in.linkedModel]].state != SLOT_READY &&
+				      s_slots[s_slotOf[in.linkedModel]].state != SLOT_FAILED))) {
+					const ModelLite& hd = s_models[in.linkedModel];
+					const int32_t hdDistance = (hd.drawDist * 16 > sw ? hd.drawDist * 16 : sw) + hd.radius * 16;
+					const int32_t hdReach = hdDistance < 0x6000 ? hdDistance : 0x6000;
+					if (d2 < hdReach * hdReach) want += 48 * 16;
+				}
+				if (inView) addWant(in.model, want);
 				continue;
 			}
 			Slot& s = s_slots[si];
-			if (near < 64 * 16) s.lastUse = s_frame;
+			if (s.state == SLOT_FAILED && s.readSize && inView && s_frame - s.lastUse >= 120) {
+				if (s.readDone <= mem::stats(mem::REGION_STREAM).largestFree) {
+					freeSlot(s);
+					addWant(in.model, near);
+					continue;
+				}
+				s.lastUse = s_frame;
+			}
+			if (near < 64 * 16 && s.state != SLOT_FAILED) s.lastUse = s_frame;
 			if ((s.state == SLOT_READING || s.state == SLOT_LOADING) && near < s.priority) s.priority = near;
 			if (s.state != SLOT_READY || !c.frustum) continue;
 			// Surface distance keeps wide ground and nearby houses ahead of
@@ -1246,23 +1296,40 @@ void draw(const DrawView& v) {
 	int polys = 0;
 	glGetInt(GL_GET_POLYGON_RAM_COUNT, &polys);
 	s_stats.polysBefore = (uint16_t)polys;
-	const int budget = dbg::opts.worldPolys;
+	const int budget = dbg::opts.worldPolys < 2048 - 32 - v.pedReserve ?
+	                   dbg::opts.worldPolys : 2048 - 32 - v.pedReserve;
 	uint16_t drawn = 0, dropped = 0;
 	glStoreMatrix(VIEW_SLOT);
+	for (int tier = 3; tier >= 0; tier--)
+	for (int pass = 0; pass < 2; pass++)
 	for (int i = 0; i < s_numVis; i++) {
 		const Vis& vi = s_vis[i];
+		if (vi.key / 16384 != tier) continue;
+		const Inst& in = *vi.inst;
+		const bool lod = (in.lodSwitch & 0x8000) != 0;
+		if (lod != (pass == 1)) continue;
+		if (lod && in.linkedModel != NONE) {
+			bool hdDrawn = false;
+			for (int j = 0; j < s_numVis && !hdDrawn; j++) {
+				const Inst& hd = *s_vis[j].inst;
+				hdDrawn = hd.model == in.linkedModel &&
+				          !memcmp(hd.pos, in.pos, sizeof in.pos) && wasDrawn(&hd);
+			}
+			if (hdDrawn) continue;
+		}
 		Slot& s = s_slots[vi.slot];
+		const uint16_t hd = lod && in.linkedModel < s_hdr.numModels ? s_slotOf[in.linkedModel] : NONE;
+		const bool fallback = hd != NONE && s_slots[hd].state == SLOT_READY;
 		// backface culling removes roughly half of a closed model; a model that
 		// was not on screen last frame only comes in with room to spare, so the
 		// set at the edge of the budget does not flip every frame
-		if (polys + s.tris / 2 + (vi.wasDrawn ? 0 : NEW_MARGIN) > budget ||
+		if (polys + s.tris / 2 + (vi.wasDrawn ? 0 : fallback ? 96 : NEW_MARGIN) > budget ||
 		    polys + s.tris > 2048 - 64) {
 			dropped++;
 			if (vi.wasDrawn) s_stats.budgetPops++;
 			continue;
 		}
 		s.lastUse = s_frame;
-		const Inst& in = *vi.inst;
 		const int e = s.scaleExp;
 		MATRIX_RESTORE = VIEW_SLOT;
 		if (&in == s_door && s_doorAngle != 0.0f) {

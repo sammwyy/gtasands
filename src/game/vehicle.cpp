@@ -173,6 +173,7 @@ void remove(int id) {
 	for (Debris& d : s_debris)
 		if (d.used && d.model == c.v.model) d.used = false;
 	c.v.status = STATUS_FREE;
+	c.v.npcDriver = false;
 }
 
 void removeAll() {
@@ -696,10 +697,11 @@ static uint32_t s_trafficFrame;
 static void spawnTraffic() {
 	if (!peddata::numRoadNodes() || count() >= MAX - 2) return;
 	int traffic = 0;
-	for (const Car& c : g_cars) traffic += c.v.npcDriver;
+	for (const Car& c : g_cars) traffic += c.v.status != STATUS_FREE && c.v.npcDriver;
 	if (traffic >= 2) return;
+	s_stats.trafficAttempts++;
 	int cand[64], nc = 0;
-	peddata::forRoadNodesNear(player::g.x, player::g.y, 50.0f, [&](int i) {
+	peddata::forRoadNodesNear(player::g.x, player::g.y, 72.0f, [&](int i) {
 		const ds::PathNode* a = peddata::roadNode(i);
 		if (!roadOpen(a) || !a->numLinks || !(a->flags >> 4)) return true;
 		if (nc < 64) cand[nc] = i;
@@ -710,7 +712,9 @@ static void spawnTraffic() {
 		nc++;
 		return true;
 	});
+	s_stats.trafficCandidates = (uint16_t)nc;
 	const int attempts = nc < 24 ? nc : 24;
+	for (int pass = 0; pass < 2; pass++)
 	for (int tryNode = 0; tryNode < attempts; tryNode++) {
 		const int from = cand[rand() % (nc < 64 ? nc : 64)];
 		const ds::PathNode* a = peddata::roadNode(from);
@@ -726,8 +730,9 @@ static void spawnTraffic() {
 		const float z = (a->z + (b->z - a->z) * t) * 0.125f;
 		const float dx = x - player::g.x, dy = y - player::g.y;
 		const float d2 = dx * dx + dy * dy;
-		if (d2 < 22.0f * 22.0f || d2 > 38.0f * 38.0f || fabsf(z - player::g.z) > 12.0f ||
-		    peds::visible(x, y, z + 1.0f, 2.5f)) continue;
+		if (d2 < 22.0f * 22.0f || d2 > 65.0f * 65.0f || fabsf(z - player::g.z) > 12.0f) continue;
+		const bool seen = peds::visible(x, y, z + 1.0f, 2.5f);
+		if (pass == 0 ? seen : !seen || d2 < 48.0f * 48.0f) continue;
 		bool clear = true;
 		for (const Car& c : g_cars) {
 			if (c.v.status == STATUS_FREE) continue;
@@ -735,10 +740,11 @@ static void spawnTraffic() {
 			if (cx * cx + cy * cy < 9.0f * 9.0f) { clear = false; break; }
 		}
 		if (!clear) continue;
+		s_stats.trafficSpots++;
 		const int index = trafficModel(peddata::zoneAt(x, y));
-		if (index < 0) continue;
+		if (index < 0) { s_stats.trafficModelMiss++; continue; }
 		const int id = spawn(index, x, y, z, atan2f(-sx, sy));
-		if (id < 0) return;
+		if (id < 0) { s_stats.trafficSpawnFail++; return; }
 		Car& c = g_cars[id];
 		c.roadFrom = (int16_t)from;
 		c.roadTo = (int16_t)to;
@@ -785,7 +791,8 @@ void positionCutscene(int id, float x, float y, float z, float heading) {
 
 void update() {
 	vehmdl::update();
-	if (++s_trafficFrame % 90 == 0) spawnTraffic();
+	++s_trafficFrame;
+	if (s_trafficFrame % 90 == 0) spawnTraffic();
 	skid::update();
 	static uint32_t s_lastVbl;
 	const uint32_t vb = timing::vblanks();
@@ -802,10 +809,10 @@ void update() {
 		if (v.status != STATUS_PLAYER && !v.playerOwned &&
 		    !seen) {
 			const float dx = v.pos[0] - player::g.x, dy = v.pos[1] - player::g.y;
-			if ((v.npcDriver && ((c.trafficSeen && c.trafficOffscreen > 90 &&
-			                      dx * dx + dy * dy > 32.0f * 32.0f) ||
-			                     (!c.trafficSeen && s_trafficFrame - c.trafficBorn > 180))) ||
-			    dx * dx + dy * dy > 45.0f * 45.0f) { remove(i); continue; }
+			if ((v.npcDriver && ((c.trafficSeen && c.trafficOffscreen > 120 &&
+			                      dx * dx + dy * dy > 48.0f * 48.0f) ||
+			                     (!c.trafficSeen && s_trafficFrame - c.trafficBorn > 360))) ||
+			    dx * dx + dy * dy > (v.npcDriver ? 80.0f * 80.0f : 45.0f * 45.0f)) { remove(i); continue; }
 		}
 		active++;
 		traffic += v.npcDriver;

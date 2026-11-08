@@ -50,6 +50,7 @@ void update(int dt60);
 // Inside renderer::draw after the vehicles (view matrix loaded, player-local
 // GL space with `origin` at the GL origin).
 struct View { float originX, originY, originZ; float eyeX, eyeY, eyeZ, yaw, pitch; };
+int reservePolys(const View& v);
 void draw(const View& v);
 void vblank();            // ped model texture uploads
 

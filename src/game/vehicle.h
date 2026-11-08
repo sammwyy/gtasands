@@ -144,7 +144,12 @@ void flip(int id);
 void setHealth(int id, float h);
 void burstTyre(int id, int wheel);   // -1 = all
 
-struct Stats { uint16_t active, awake, drawn, polys; uint32_t stepUs, drawUs, queryUs; uint16_t skids, lights, traffic, spawned, removed; };
+struct Stats {
+	uint16_t active, awake, drawn, polys;
+	uint32_t stepUs, drawUs, queryUs;
+	uint16_t skids, lights, traffic, spawned, removed, trafficCandidates;
+	uint32_t trafficAttempts, trafficSpots, trafficModelMiss, trafficSpawnFail;
+};
 const Stats& stats();
 
 }

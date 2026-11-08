@@ -324,10 +324,13 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   load even if the largest free block is below 64 KB.
 - **Scan** (in `draw`, ~1.7 ms for ~700 instances): sector sphere vs range/frustum, then per
   instance: tobj hour, distance (`d - radius < view && d < drawDist + radius`), linked HD/LOD
-  switch at 100 m (LOD remains visible until HD is ready), sphere vs frustum
+  switch at 100 m (linked HD can draw up to the switch even when its IDE draw distance is
+  shorter; LOD remains a fallback until the HD actually draws), sphere vs frustum
   (fixed point, 1/16 m), slot state. When the visible array is full, its least important
   entry is replaced instead of discarding subsequently scanned nearby instances. Not-loaded
-  models in the camera frustum go to an 8-entry nearest-first want list; off-screen
+  models in the camera frustum go to an 8-entry nearest-first want list (nearby HD
+  models precede their LOD counterparts while loading; a LOD is requested without
+  that delay once its HD is ready but may not draw); off-screen
   models are not loaded until visible. Drawn or visible within 64 m (off-screen
   within 40 m) = protected from LRU; far models skipped by the polygon budget
   can be evicted before foreground ones.
@@ -359,9 +362,14 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
 - **Draw**: visible instances sorted by foreground distance bands (surface distance
   0-32 m, 32-80 m, 80-120 m, then background), then continuous surface distance,
   recent visibility and projected size. HD models get a small priority over LODs
-  within each band; previously drawn instances retain an extra 8 m of band
-  hysteresis. A model is skipped when the hardware polygon count +
-  tris/2 passes `dbg::opts.worldPolys` (+ `NEW_MARGIN` 192 for instances not drawn last frame);
+  within each band; each band draws HD first, then draws LOD only if its matching
+  instance was not drawn (e.g. the HD was skipped by the polygon budget).
+  Previously drawn instances retain an extra 8 m of band
+  hysteresis. When ready pedestrians or NPC drivers are on screen, the map's
+  polygon budget yields up to 320 estimated polygons so they can draw after it;
+  no reserve is made when there are no eligible actors. A model is skipped when the hardware polygon count +
+  tris/2 passes `dbg::opts.worldPolys` (+ `NEW_MARGIN` 192 for instances not drawn last frame,
+  reduced to 96 for a LOD backing up a ready but undrawn HD model);
   a separate worst-case full-triangle check reserves 64 of the hardware's 2048 polygon
   slots so a model cannot overflow the GX polygon RAM when backface culling removes few faces.
   The budget drops what looks smallest and the drawn set has hysteresis; movement can
@@ -377,6 +385,9 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   smaller models can still fit in fragmented memory.
   If texture VRAM cannot make space, upload waits briefly while stale models are evicted;
   after 20 frames it falls back to an untextured model rather than blocking geometry forever.
+  An unallocatable GX list releases its source DMDL/texture refs and leaves a failed slot,
+  instead of recompiling for ~45 ms every frame. Failed models can be retried after 120 frames
+  once STREAM has a contiguous free block large enough for the attempted list.
   `world::suspend()` drops all lists/textures when the pause menu opens (VRAM); they stream back.
 - **Preload** (loading job): sectors + every model in range around the player, no frustum, until
   idle or 10 s.
@@ -384,6 +395,9 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   (including model reloads, evictions and budget pops), REND tab toggle + poly budget.
   DEBUG flicker logs also record per-frame sector-window, model-read, model-parse/TXD lookup,
   texture-read, list-compile, model-start and vblank-upload times in microseconds.
+  Adding `-DGTASADS_GROVESHOT` alongside `-DGTASADS_FLICKERTEST` holds CJ at
+  `(2495,-1664)` and captures `gtasads_grove_west.dscr` at frame 180 and
+  `gtasads_grove_east.dscr` at frame 290 to check the houses behind Grove Street's fence.
   A DS SD DEBUG run over frames 100-850 measured peaks of 43 ms for `world::update`:
   GX list compile 41 ms, model parse/TXD lookup 20 ms, model chunk reads 16 ms,
   sector loads 12 ms, texture reads 8 ms and texture uploads 0.6 ms.
@@ -513,18 +527,23 @@ CDamageManager / CAEVehicleAudioEntity, reduced; every IDE type spawns, pool of 
   plane, train, trailer, rc), spawn / rnd, model id `-10 - + +10 go` (400..611), enter (any type), del all, repair,
   boom, flip, hp250, tyre (burst all), skid on/off, state / susp / damage+burst+lean+rotor / perf rows.
   `GTASADS_VEHTEST` (AGENTS.md; the log line has gas / brake / handbrake / skid and the frame sections).
-- **Street traffic**: `peds.dped` v4 also carries compact vehicle path nodes/links from `data/Paths/nodes*.dat`
+- **Street traffic**: `peds.dped` v5 also carries compact vehicle path nodes/links from `data/Paths/nodes*.dat`
   within the world bounds + 60 m (`tools/gtasa/peds.py`, `peddata::roadNode/roadLink`). Water nodes
   are excluded; switched-off and roadblock nodes from the PC file are retained in the graph but excluded
   from random traffic spawn/routes (the SCM mission road switches are not implemented). `cargrp.dat` groups (18 civilian, 10 gang, dealers)
   are resolved against `vehicles.ide` at build time; each traffic spawn samples its own `info.zon` zone,
   gang strength and the weekday/time `popcycle.dat` row. Only cars/trucks are eligible (no bike riders yet).
-  `veh::update` attempts an offscreen spawn 22..38 m away every 90 frames, up to two traffic cars and leaving two pool slots free. `veh::step` steers each
+  `veh::update` attempts an offscreen spawn 22..65 m away every 90 frames, searching road
+  nodes within 72 m; if that yields none, a distant visible road beyond 48 m can seed
+  traffic where every road is already in view. Up to two traffic cars leave two pool slots
+  free. Removing a traffic car clears its NPC driver flag so freed slots cannot
+  permanently block future spawns. `veh::step` steers each
   NPC driver along connected links in the normal fixed-point physics inside the 10 m collision range;
   outside it moves along the route kinematically. Drivers look ahead to the next link and slow before
   bends and vehicles ahead; NPC skid audio requires actual wheel slip, not merely a transient wheel state. A driver car
-  despawns after 90 frames offscreen and >32 m away; unseen new spawns have at most 180 frames
-  to enter view. Empty, unclaimed cars despawn only when both offscreen and >45 m away; any car entered by
+  despawns after 120 frames offscreen and >48 m away (or beyond 80 m); unseen
+  new spawns have at most 360 frames to enter view. Empty, unclaimed cars
+  despawn only when both offscreen and >45 m away; any car entered by
   CJ is marked player-owned and never distance-despawned. `peds::initStep` retains an already resident
   civilian ped model and samples `CAR_sit` / `CAR_Lsit` once during loading. `peds::draw` draws that skinned
   model at the vehicle's `ped_frontseat` dummy with `veh::attachMatrix` for up to two visible drivers within
@@ -573,6 +592,10 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   35.5 m, not needed 4 s outside 16 m and off screen, dead after 30 s offscreen). Visible peds are retained
   even at longer distances; the camera-frustum check is shared with vehicle population. Loading job `jobPeds`: tables,
   the first models, GeneratePedsAtStartOfGame.
+- **Drawing**: before the map is submitted, visible ready pedestrian models and
+  up to two visible NPC drivers reserve their estimated GX polygons (capped at
+  320 and the configured ped budget). Ped draw then chooses the nearest models
+  that fit; a large model that does not fit no longer blocks smaller peds behind it.
 - **Tasks**: wander (path graph, lane offset, pauses, side-steps peds / CJ), follow (gang formation), flee (panic sprint
   along nearby links selected away from the threat, walls near CJ), attack (melee FightA_1..3 combo + FIGHTIDLE,
   or gang / cop guns: Gun_stand, aim chance by distance,

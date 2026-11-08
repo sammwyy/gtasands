@@ -130,9 +130,11 @@ void draw() {
 	// map after CJ: the polygon budget drops far map objects, never CJ.
 	// light0 = world light (see world.cpp compile(): ambient * light colour)
 	glLight(0, RGB15(s_lr >> 3, s_lg >> 3, s_lb >> 3), 0, floattov10(-0.99f), 0);
-	world::draw({ px + elx, py + ely, vz + eyeH, yaw, pitch, px, py, vz });
+	const peds::View pedView = { px, py, vz, px + elx, py + ely, vz + eyeH, yaw, pitch };
+	const int pedReserve = world::area() == 0 ? peds::reservePolys(pedView) : 0;
+	world::draw({ px + elx, py + ely, vz + eyeH, yaw, pitch, px, py, vz, pedReserve });
 	// peds after the vehicles (their own polygon budget, nearest first)
-	if (world::area() == 0) peds::draw({ px, py, vz, px + elx, py + ely, vz + eyeH, yaw, pitch });
+	if (world::area() == 0) peds::draw(pedView);
 	entryexits::drawMarker(px, py, vz);
 
 	if (dbg::opts.ground || !world::ready()) {

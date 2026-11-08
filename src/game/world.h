@@ -20,6 +20,7 @@ struct DrawView {
 	float eyeX, eyeY, eyeZ;      // camera, SA world
 	float yaw, pitch;            // renderer chase camera (yaw 0 = north, pitch > 0 looks down)
 	float originX, originY, originZ; // SA point that maps to the GL origin (player-local space)
+	int pedReserve;
 };
 
 // An instance as kept in RAM: same 36 bytes as ds::WorldInstance, but the
@@ -60,6 +61,8 @@ struct Stats {
 	uint16_t updateUs, drawUs, scanUs; // scanUs is part of drawUs
 #ifdef GTASADS_DEBUG
 	uint32_t sectorUs, modelReadUs, modelParseUs, texReadUs, compileUs, startUs, uploadUs;
+	uint16_t compileFailModel, compileFailReason;
+	uint32_t compileFailBytes;
 #endif
 };
 

@@ -1525,6 +1525,34 @@ static inline void storeCam(const View& v) {
 	s_cam.valid = true;
 }
 
+int reservePolys(const View& v) {
+	if (!s_pool.capacity()) return 0;
+	storeCam(v);
+	int reserve = 0;
+	for (int i = 0; i < MAX; i++) {
+		const Ped* p = pedAt(i);
+		if (!p || !pedmodel::ready(p->model) || !onScreen(p->x, p->y, p->z + 1.0f, 1.2f)) continue;
+		const float dx = p->x - v.eyeX, dy = p->y - v.eyeY, dz = p->z - v.eyeZ;
+		if (dx * dx + dy * dy + dz * dz > DRAW_DIST * DRAW_DIST) continue;
+		reserve += pedmodel::get(p->model)->tris / 2 + 8;
+	}
+	if (s_driverModel >= 0 && pedmodel::ready(s_driverModel)) {
+		const int cost = pedmodel::get(s_driverModel)->tris / 2 + 8;
+		int drivers = 0;
+		for (int i = 0; i < veh::MAX && drivers < 2; i++) {
+			const veh::Vehicle* car = veh::get(i);
+			if (!car || !car->npcDriver || !vehmdl::ready(car->model) ||
+			    !onScreen(car->pos[0], car->pos[1], car->pos[2] + 1.0f, 2.0f)) continue;
+			const float dx = car->pos[0] - v.eyeX, dy = car->pos[1] - v.eyeY;
+			if (dx * dx + dy * dy > 35.0f * 35.0f) continue;
+			reserve += cost;
+			drivers++;
+		}
+	}
+	if (reserve > dbg::opts.pedPolys) reserve = dbg::opts.pedPolys;
+	return reserve < 320 ? reserve : 320;
+}
+
 void draw(const View& v) {
 	storeCam(v);
 	if (!s_pool.capacity()) return;
@@ -1576,7 +1604,7 @@ void draw(const View& v) {
 		Ped& p = *vis[k].p;
 		const pedmodel::Model& m = *pedmodel::get(p.model);
 		const int est = m.tris / 2 + 8;   // back faces culled: about half reach the polygon RAM
-		if (polys + est > dbg::opts.pedPolys || polys + est > available) break;
+		if (polys + est > dbg::opts.pedPolys || polys + est > available) continue;
 		// pose (~0.9 ms each, DEBUG): every frame near, every 2nd..4th frame further away
 		const int rate = vis[k].d < 10.0f ? 1 : vis[k].d < 20.0f ? 2 : vis[k].d < 30.0f ? 3 : 4;
 		if (!p.poseValid || (!p.still && ++p.poseAge >= rate)) {

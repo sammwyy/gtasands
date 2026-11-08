@@ -368,9 +368,24 @@ static void flickerTest(int f) {
 		input::debugHold(KEY_UP);
 	}
 	if (f == 800) input::debugHold(0);
+#ifdef GTASADS_GROVESHOT
+	if (f == 100) {
+		input::debugHold(0);
+		player::teleport(2495.0f, -1664.0f, 12.35f, 1.5708f);
+		player::debugSetView(1.5708f, 0.15f);
+	}
+	if (f == 180) video::requestCapture("fat:/gtasads_grove_west.dscr");
+	if (f == 210) {
+		player::teleport(2495.0f, -1664.0f, 12.35f, -1.5708f);
+		player::debugSetView(-1.5708f, 0.15f);
+	}
+	if (f > 210 && f <= 300) player::debugSetView(-1.5708f, 0.15f);
+	if (f == 290) video::requestCapture("fat:/gtasads_grove_east.dscr");
+	if (f == 300 && out) fflush(out);
+#endif
 	if (out) {
 		const world::Stats& s = world::stats();
-		fprintf(out, "%d pos=%.1f,%.1f,%.1f sec=%u inst=%u cand=%u drawn=%u budget=%u pops=%lu ready=%u loading=%u lists=%luK free=%luK largest=%luK loads=%lu reloads=%lu evict=%lu polys=%u>%u upd=%u sector=%lu mdlread=%lu parse=%lu texread=%lu compile=%lu start=%lu upload=%lu\n",
+		fprintf(out, "%d pos=%.1f,%.1f,%.1f sec=%u inst=%u cand=%u drawn=%u budget=%u pops=%lu ready=%u loading=%u lists=%luK free=%luK largest=%luK loads=%lu reloads=%lu evict=%lu polys=%u>%u upd=%u sector=%lu mdlread=%lu parse=%lu texread=%lu compile=%lu start=%lu upload=%lu fail=%u:%u:%lu veh=%u:%u:%u:%u peds=%u:%u trafficTry=%lu:%u:%lu:%lu:%lu\n",
 		        f, player::g.x, player::g.y, player::g.z, s.sectors, s.instances, s.candidates, s.drawn, s.culledBudget,
 		        (unsigned long)s.budgetPops,
 		        s.modelsReady, s.modelsLoading, (unsigned long)(s.listBytes >> 10),
@@ -380,7 +395,13 @@ static void flickerTest(int f) {
 		        s.polysBefore, s.polysAfter, s.updateUs, (unsigned long)s.sectorUs,
 		        (unsigned long)s.modelReadUs, (unsigned long)s.modelParseUs,
 		        (unsigned long)s.texReadUs, (unsigned long)s.compileUs,
-		        (unsigned long)s.startUs, (unsigned long)s.uploadUs);
+		        (unsigned long)s.startUs, (unsigned long)s.uploadUs,
+		        s.compileFailModel, s.compileFailReason, (unsigned long)s.compileFailBytes,
+		        veh::stats().active, veh::stats().traffic, veh::stats().spawned, veh::stats().drawn,
+		        peds::stats().live, peds::stats().drawn,
+		        (unsigned long)veh::stats().trafficAttempts, veh::stats().trafficCandidates,
+		        (unsigned long)veh::stats().trafficSpots, (unsigned long)veh::stats().trafficModelMiss,
+		        (unsigned long)veh::stats().trafficSpawnFail);
 		if (f == 850) {
 			fclose(out);
 			out = nullptr;
