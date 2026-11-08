@@ -234,9 +234,9 @@ static bool loadTile(int key, mem::Pool<T>& pool, T** map, u32 base, u32& budget
 
 // Ensures the tiles under the disc (plus a prefetch margin) are resident,
 // nearest first, within the frame's I/O budget.
-static void stream(float px, float py, float reach, bool wantFull, bool wantMip, u32& budget) {
-	const int x0 = (int)((px - reach + 3000.0f) / 500.0f), x1 = (int)((px + reach + 3000.0f) / 500.0f);
-	const int y0 = (int)((3000.0f - py - reach) / 500.0f), y1 = (int)((3000.0f - py + reach) / 500.0f);
+static void stream(float px, float py, float rx, float ry, bool wantFull, bool wantMip, u32& budget) {
+	const int x0 = (int)((px - rx + 3000.0f) / 500.0f), x1 = (int)((px + rx + 3000.0f) / 500.0f);
+	const int y0 = (int)((3000.0f - py - ry) / 500.0f), y1 = (int)((3000.0f - py + ry) / 500.0f);
 	const int ptx = (int)((px + 3000.0f) / 500.0f), pty = (int)((3000.0f - py) / 500.0f);
 	// rings around the player's tile: the visible centre always wins the budget
 	for (int ring = 0; ring <= 3; ring++)
@@ -254,7 +254,7 @@ static void stream(float px, float py, float reach, bool wantFull, bool wantMip,
 void prefetch() {
 	u32 budget = 0xFFFFFFFFu;
 	s_frame++;
-	stream(player::g.x, player::g.y, s_range + 150.0f, true, true, budget);
+	stream(player::g.x, player::g.y, s_range + 150.0f, s_range + 150.0f, true, true, budget);
 }
 
 // Tile data for a grid cell, or nullptr when it isn't resident (yet).
@@ -278,7 +278,7 @@ void update() {
 	const bool mip = s_range > (float)MIP_RANGE;
 	s_frame++;
 	u32 budget = IO_BUDGET;
-	stream(p.x, p.y, s_range + 150.0f, !mip || s_range < MIP_RANGE + MIP_HYST, mip || s_range > MIP_RANGE - MIP_HYST, budget);
+	stream(p.x, p.y, s_range + 150.0f, s_range + 150.0f, !mip || s_range < MIP_RANGE + MIP_HYST, mip || s_range > MIP_RANGE - MIP_HYST, budget);
 }
 
 // What the disc shows, quantised (0.5 m, ~0.35 degree, whole range units):
@@ -362,7 +362,10 @@ static void drawMap() {
 void streamPauseMap(float centerX, float centerY) {
 	s_frame++;
 	u32 budget = IO_BUDGET;
-	stream(centerX, centerY, 550.0f, true, false, budget);
+	// exactly the 1024 x 768 m the 4 m/px view shows (+ a tile edge): a
+	// square 550 m reach wanted up to 16 tiles, the whole pool, and the
+	// LRU kept re-reading them (and repainting the bottom screen) every frame
+	stream(centerX, centerY, 520.0f, 392.0f, true, false, budget);
 }
 
 void drawPauseMap(float centerX, float centerY) {

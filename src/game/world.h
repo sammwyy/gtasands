@@ -84,7 +84,8 @@ void vblank();
 // Inside renderer::draw with the view matrix loaded (player-local space).
 void draw(const DrawView& v);
 // Drops every display list and world texture (the pause menu needs the
-// VRAM); streaming rebuilds them when drawing resumes.
+// VRAM); streaming rebuilds them when drawing resumes, with a raised
+// budget for the first 90 frames.
 void suspend();
 // Frees the least recently used unreferenced map texture (vehicles ask when
 // VRAM is full). False when nothing can go.

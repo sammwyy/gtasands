@@ -115,6 +115,7 @@ static uint32_t s_listBytes, s_texVram;
 static int s_centerX = -9999, s_centerY = -9999, s_windowR;
 static bool s_windowDirty = true;
 static bool s_nearDirty = true;      // a sector of the 3x3 block around the player is missing
+static int s_boost;                  // frames of raised streaming budget left (after suspend)
 static int s_preloadStep;
 static u32 s_preloadT0;
 static Stats s_stats;
@@ -1141,11 +1142,14 @@ void update(float x, float y) {
 		s_stats.compileUs = s_stats.startUs = 0;
 	const u32 sectorT0 = timing::ticks();
 #endif
-	updateSectors(x, y, 2);
+	updateSectors(x, y, s_boost ? 4 : 2);
 #ifdef GTASADS_DEBUG
 	s_stats.sectorUs = timing::usSince(sectorT0);
 #endif
-	stream(UPDATE_US, 2);
+	// after a suspend (pause menu) the visible set is rebuilt with a bigger
+	// budget for a moment instead of trickling back in over ~10 s
+	stream(s_boost ? UPDATE_US * 3 : UPDATE_US, s_boost ? 4 : 2);
+	if (s_boost) s_boost--;
 	s_stats.updateUs = (uint16_t)timing::usSince(t0);
 }
 
@@ -1308,6 +1312,7 @@ bool initStep() {
 
 void suspend() {
 	if (!ready()) return;
+	s_boost = 90;
 	for (int i = 0; i < WORLD_MODEL_SLOTS; i++)
 		if (s_slots[i].state != SLOT_FREE) freeSlot(s_slots[i]);
 	for (int i = 0; i < WORLD_TEX_ENTRIES; i++)

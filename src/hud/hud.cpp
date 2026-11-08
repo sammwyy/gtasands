@@ -8,6 +8,7 @@
 
 #include "assets/texture.h"
 #include "game/hud/chud.h"
+#include "game/hud/radar.h"
 #include "game/menu/menu.h"
 #include "game/hud/subfb.h"
 #include "hud/debugui.h"
@@ -326,6 +327,34 @@ static void vehSpawnTest(int f) {
 }
 #endif
 
+#if defined(GTASADS_DEBUG) && defined(GTASADS_MENUAUDTEST)
+// Headless pause-menu test: opens the pause menu, scrolls the items (menu
+// beeps), records the mixer (gtasads_menu.wav) and the frame cost per 30
+// frames into gtasads_menutest.txt, closes it and walks on.
+static void menuAudTest(int f) {
+	static FILE* out;
+	if (f == 600) out = fopen("fat:/gtasads_menutest.txt", "w");
+	if (f == 610 || f == 1100) input::debugHold(KEY_START);
+	if (f == 612 || f == 1102) input::debugHold(0);
+	if (f == 660) aehw::captureStart(16384 * 3 / 2, 16384);
+	for (int k = 0; k < 10; k++) {
+		if (f == 670 + k * 14) input::debugHold(k & 4 ? KEY_UP : KEY_DOWN);
+		if (f == 672 + k * 14) input::debugHold(0);
+	}
+	if (f >= 860 && f < 1000 && !aehw::captureBusy()) aehw::captureSave("fat:/gtasads_menu.wav");
+	if (out && f >= 600 && f <= 1300 && f % 30 == 0) {
+		char ab[320];
+		audio::statsLine(ab, sizeof ab);
+		fprintf(out, "%d menu=%d scr=%d tl=%lu ready=%u evict=%lu drawn=%u wu=%u fps=%lu cpu=%lu (3d %lu sim %lu hud %lu) %s\n", f,
+		        (int)FrontEndMenuManager.m_bMenuActive, (int)FrontEndMenuManager.m_nCurrentScreen, (unsigned long)radar::tileLoads(), world::stats().modelsReady, (unsigned long)world::stats().evictions,
+		        world::stats().drawn, world::stats().updateUs,
+		        (unsigned long)timing::fps(), (unsigned long)timing::frameUs(), (unsigned long)timing::sectionUs(timing::SEC_3D),
+		        (unsigned long)timing::sectionUs(timing::SEC_SIM), (unsigned long)timing::sectionUs(timing::SEC_HUD), ab);
+	}
+	if (f == 1301 && out) { fclose(out); out = nullptr; }
+}
+#endif
+
 #if defined(GTASADS_DEBUG) && defined(GTASADS_RADIOTEST)
 static void radioTest(int f) {
 	static FILE* out;
@@ -571,6 +600,10 @@ static void pedTest(int f) {
 #endif
 
 void draw() {
+#if defined(GTASADS_DEBUG) && defined(GTASADS_MENUAUDTEST)
+	static int s_testFrames;   // counts menu frames too (the in-game hooks stop in the menu)
+	if (s_gameActive || FrontEndMenuManager.m_bMenuActive) menuAudTest(++s_testFrames);
+#endif
 	if (s_screen == Screen::GAME) {
 		static bool s_menuLast;   // the backbuffer holds the menu's bottom screen
 		if (FrontEndMenuManager.m_bMenuActive) {

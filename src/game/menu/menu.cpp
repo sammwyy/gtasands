@@ -174,10 +174,11 @@ void CMenuManager::initialise() {
 void CMenuManager::loadAllTextures() {
 	// Only the always-needed sprites up front; per-screen art loads lazily
 	// on SwitchToNewScreen so VRAM is never exhausted.
+	// The DS layout draws only the arrow and the fonts on the top screen (the
+	// map / back8 art goes to the bottom framebuffer, decoded on the CPU):
+	// back8, map, back8_top/right, mouse and crosshair cost ~110 KB of VRAM
+	// the pause menu loaded for nothing.
 	loadSpriteFile("fronten1", FRONTEND_SPRITE_ARROW, FRONTEND_SPRITE_ARROW + 1);
-	loadSpriteFile("fronten2", FRONTEND_SPRITE_BACK8, FRONTEND_SPRITE_MAP + 1);
-	loadSpriteFile("fronten3", FRONTEND3_START, FRONTEND4_START);
-	loadSpriteFile("fronten_pc", FRONTEND4_START, FRONTEND_SPRITE_COUNT);
 	TxdFile fonts;
 	if (openTxd(fonts, "fonts")) {
 		s_font2 = loadTxdEntry(fonts, "font2");
