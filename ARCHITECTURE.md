@@ -263,6 +263,9 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
   running. Ambient game audio is suspended and restored; A/B/START skips after
   a short guard period without triggering the pause menu. The normal chase
   camera, HUD and controls return automatically when the shots finish or skip.
+  Skipping PROLOG1 also resets the world from interior area 14 to exterior area
+  0 before streaming resumes at CJ's restored spawn; otherwise the exterior
+  remains invisible after the skip.
   `missions.cpp` starts a short funeral-area camera sequence after the
   Jefferson preload for `INTRO1`, before allowing the BMX objective.
 - This is a reusable scene controller, **not** the full `CCutsceneMgr` or

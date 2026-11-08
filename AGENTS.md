@@ -111,6 +111,10 @@ at the spawn (~15-25 while driving).
   teleports from Ganton through San Fierro, Las Venturas, its northern outskirts and a countryside town;
   `gtasads_worldtest.txt` records loaded path/road nodes, population, traffic, render and memory counts,
   including the path-read time and `heapok`. Allow `timeout -s INT 200` and inspect `gtasads_world_*.dscr`.
+- Cutscene skip regression: add `-DGTASADS_CUTSKIPTEST` to a DEBUG QUICKTEST SD build's
+  `OPT` (with the appropriate DS/DSi flags). It starts PROLOG1 despite a
+  pre-existing save, skips at frame 40, and the usual `gtasads_hudok.txt` /
+  `gtasads_shot0.dscr` should show exterior world models at CJ's restored spawn.
 - Skid regression (DEBUG): the same flags with `-DGTASADS_SKIDTEST` write `gtasads_skidtest.txt` after
   a normal Greenwood turn and straight driving; both should report `skid=0.00`.
 - What stopped CJ there? `python3 tools/colnear.py X Y Z [R]` lists the baked collision

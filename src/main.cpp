@@ -160,7 +160,14 @@ int main() {
 			static u32 s_pedVbl;
 			if (playing) {
 				const bool scene = cutscene::active();
-				if (scene) cutscene::update(in.down);
+				if (scene) {
+#if defined(GTASADS_DEBUG) && defined(GTASADS_CUTSKIPTEST)
+					static int sceneFrames;
+					cutscene::update(++sceneFrames == 40 ? KEY_B : in.down);
+#else
+					cutscene::update(in.down);
+#endif
+				}
 				if (cutscene::takeNextOriginal()) {
 					hud::setGameActive(false);
 					audio::setGameActive(false);

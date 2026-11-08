@@ -19,6 +19,7 @@
 #include "game/text/gxt.h"
 #include "game/vehicle.h"
 #include "game/vehicledata.h"
+#include "game/world.h"
 #include "hud/hud.h"
 #include "mem/mem.h"
 #include "platform/timing.h"
@@ -157,6 +158,7 @@ void stop() {
 			s_actorStage = 0;
 			cj::setCutsceneBlock(animstore::NO_BLOCK);
 			player::teleport(s_return[0], s_return[1], s_return[2], s_return[3]);
+			if (!follow && world::area() != 0) world::setArea(0);
 			col::resetScene();
 			s_ready = s_placed = false;
 			s_next = follow;

@@ -148,6 +148,10 @@ void init() {
 		player::setClock(6, 30);
 #endif
 	}
+#if defined(GTASADS_DEBUG) && defined(GTASADS_CUTSKIPTEST)
+	s_newGame = true;
+	player::teleport(2239.367f, -1261.939f, 23.9f, 4.76f);
+#endif
 	target();
 	hud::log("SCM mission 2 INTRO, mission 11 INTRO1: %u passed", s_passed);
 }
