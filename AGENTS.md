@@ -141,6 +141,12 @@ at the spawn (~15-25 while driving).
   visible: the 2048-polygon hardware limit remains the same on DS and DSi.
 - Skid regression (DEBUG): the same flags with `-DGTASADS_SKIDTEST` write `gtasads_skidtest.txt` after
   a normal Greenwood turn and straight driving; both should report `skid=0.00`.
+- Vehicle spawn regression (DEBUG): `-DGTASADS_VEHSPAWNTEST` spawns a car and a bike in front of CJ in four
+  directions, gets in and drives; `gtasads_vehspawn.txt` must show `in=1 moved>0` for the cars (plus the log ring).
+  Needs `timeout -s INT 270`.
+- Pause-menu regression (DEBUG): `-DGTASADS_MENUAUDTEST` opens the pause menu, scrolls (beeps), records
+  `gtasads_menu.wav` (check with `tools/audwav.py`) and `gtasads_menutest.txt` (frame cost, world models ready after
+  resuming). Needs `timeout -s INT 90`.
 - What stopped CJ there? `python3 tools/colnear.py X Y Z [R]` lists the baked collision
   (faces with world n.z, boxes) around a point.
 

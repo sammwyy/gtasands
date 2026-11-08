@@ -380,6 +380,7 @@ static LoadResult startLoad(Model& m) {
 	// into it too) is not a broken model: it failed the vehicle outright,
 	// so spawns and traffic cars vanished at random. Try again shortly.
 	m.blob = pack.load(de, mem::TAG_MODEL);
+	if (!m.blob && world::releaseRam(de.size)) m.blob = pack.load(de, mem::TAG_MODEL);
 	mdl::Model* view = m.blob ? mdl::load(m.blob) : nullptr;
 	m.view = view;
 	if (!view) {

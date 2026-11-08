@@ -1310,6 +1310,18 @@ bool initStep() {
 	return false;
 }
 
+bool releaseRam(uint32_t bytes) {
+	if (!ready()) return false;
+	bool freed = false;
+	while (mem::stats(mem::REGION_STREAM).largestFree < bytes + 64) {
+		const int slot = lruSlot();   // never one drawn this or last frame
+		if (slot < 0) break;
+		freeSlot(s_slots[slot]);
+		freed = true;
+	}
+	return freed;
+}
+
 void suspend() {
 	if (!ready()) return;
 	s_boost = 90;

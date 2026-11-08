@@ -523,6 +523,8 @@ static bool load(uint16_t model) {
 	while (s_bytes + ix.size > COL_CACHE_BYTES)
 		if (!evictOne()) return false;
 	ds::WorldCol* c = (ds::WorldCol*)mem::alloc(ix.size, mem::TAG_COL);
+	// collision under CJ matters more than a far map model
+	if (!c && world::releaseRam(ix.size)) c = (ds::WorldCol*)mem::alloc(ix.size, mem::TAG_COL);
 	if (!c) {
 		hud::log("\x1b[33mcol: no RAM for model %u (%luB)\x1b[39m", model, (unsigned long)ix.size);
 		return false;

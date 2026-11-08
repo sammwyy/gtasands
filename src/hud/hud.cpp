@@ -264,6 +264,10 @@ static void vehTest(int f) {
 	if (f == 1585) video::requestCapture("fat:/gtasads_shot10.dscr");
 	if (f == 1910 && out) {
 		log("end");
+		for (int i = 0; i < LOG_LINES; i++) {
+			const char* l = s_log[(s_logHead + i) % LOG_LINES];
+			if (*l) fprintf(out, "log: %s\n", l);
+		}
 		char ab[320];
 		audio::statsLine(ab, sizeof ab);
 		fprintf(out, "%s\n", ab);

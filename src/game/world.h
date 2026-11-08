@@ -90,6 +90,10 @@ void suspend();
 // Frees the least recently used unreferenced map texture (vehicles ask when
 // VRAM is full). False when nothing can go.
 bool evictTexture();
+// Frees map models not drawn this / last frame until STREAM has a `bytes`
+// block (vehicles, peds and collision share the heap with the map cache).
+// True if anything was freed.
+bool releaseRam(uint32_t bytes);
 const Stats& stats();
 
 }

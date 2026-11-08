@@ -148,6 +148,7 @@ static LoadResult startLoad(Model& m) {
 		return LOAD_FAIL;
 	}
 	m.blob = pack.load(de, mem::TAG_MODEL);
+	if (!m.blob && world::releaseRam(de.size)) m.blob = pack.load(de, mem::TAG_MODEL);
 	m.view = m.blob ? mdl::load(m.blob) : nullptr;
 	if (!m.view) return LOAD_RETRY;   // no STREAM block right now (not a broken model)
 	if (!m.view->nodes || m.view->numBones > anim::MAX_NODES || !anim::prepare(m.view)) {

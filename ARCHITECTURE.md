@@ -388,7 +388,13 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   An unallocatable GX list releases its source DMDL/texture refs and leaves a failed slot,
   instead of recompiling for ~45 ms every frame. Failed models can be retried after 120 frames
   once STREAM has a contiguous free block large enough for the attempted list.
-  `world::suspend()` drops all lists/textures when the pause menu opens (VRAM); they stream back.
+  `world::suspend()` drops all lists/textures when the pause menu opens (VRAM; the fonts alone are 128 KB and need
+  contiguous blocks, partial eviction emptied the map anyway); they stream back with a 3x budget for 90 frames.
+  The frontend only uploads the arrow + fonts (the DS layout draws nothing else on the top screen).
+- **Near readiness**: `world::nearSectorsPending()` = a sector of the 3x3 block around the player is missing;
+  `col::nearPending()` adds the near list (rebuilt as soon as a sector arrives). The teleport hold, the fall hold
+  and vehicle placement use it instead of the whole ~180 m window (`col::pending()`), which froze CJ after warps.
+- LOD fallback: drawn HDs with a LOD go into a per-frame (model, position) hash, so a LOD checks its HD in O(1).
 - **Preload** (loading job): sectors + every model in range around the player, no frustum, until
   idle or 10 s.
 - Stats: PERF tab rows 15-18 (collision 19-20), `world:` / `col:` lines in hudok
@@ -456,7 +462,9 @@ CDamageManager / CAEVehicleAudioEntity, reduced; every IDE type spawns, pool of 
   Runtime keeps a 4 B index per vehicle + colour/surface tables; a 380 B VehInfo is read on demand.
 - **Classes** (`veh::Class` from the IDE type): AUTOMOBILE (car, mtruck, quad, kart, trailer, RC), BIKE (bike, bmx),
   BOAT (boats + the Skimmer: plane type with boat handling), HELI, PLANE, TRAIN.
-- **Models** (`vehmdl`, 4 slots, refcounted): vehicle DFFs keep `*_dam` frames (`drop_damage = false` rule,
+- **Models** (`vehmdl`, 4 slots, refcounted; a DMDL read that finds no STREAM block retries every 15 frames, 40
+  times, instead of failing the vehicle - same in `pedmodel`; first `world::releaseRam` frees map models not drawn
+  this / last frame, also used by collision record loads): vehicle DFFs keep `*_dam` frames (`drop_damage = false` rule,
   ratio 0.25, max 320 tris/geometry). Streamed like map models: DMDL read + textures staged (model TXD, then
   `models/generic/vehicle.txd` as txd parent, 64-entry shared cache), uploaded in `vehmdl::vblank`, then one GX
   list per atomic: DIF_AMB per material (diffuse = colour, ambient 5/8), NORMAL per vertex, light0 = sun
@@ -523,6 +531,11 @@ CDamageManager / CAEVehicleAudioEntity, reduced; every IDE type spawns, pool of 
   engine (ID / AC / CRZ sweeps), every other type (bikes, boats, aircraft by rotor speed, trains) the dummy engine
   loops of its banks; BMX none. Horn, skid loop by surface, doors, engine start, crash thumps, ped hit, windscreen,
   part off, tyre burst, explosion, fire loop.
+- **Spawn / placement**: `veh::spawnInFront` (debug UI) tries distances / angles in front of CJ for a floor near his
+  level under both body ends, no wall / box at body height (`col::pushSphere`) and no vehicle within 5 m; boats / trains
+  use `spawnPoint`. A ready model is placed once `groundReady` (floor in the near list) or `!col::nearPending()`;
+  `physPlace` probes from 1 m above first (3 m put spawns on shelters / fences). `GTASADS_VEHSPAWNTEST` = car + bike in
+  four directions, get in, drive (`gtasads_vehspawn.txt`, `moved` > 0).
 - **Debug**: GAME tab rows 15-23: pick within a type `<` `>`, `type<` `type>` (car, bike, bmx, quad, boat, heli,
   plane, train, trailer, rc), spawn / rnd, model id `-10 - + +10 go` (400..611), enter (any type), del all, repair,
   boom, flip, hp250, tyre (burst all), skid on/off, state / susp / damage+burst+lean+rotor / perf rows.
@@ -601,9 +614,19 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   or gang / cop guns: Gun_stand, aim chance by distance,
   map line of sight), HIT_* reactions, KO_* knock-downs + getup / getup_front, death (KO_shot_* / KO_skid_* / KO_spin_*),
   EV_dive / EV_step out of a car's way, DUCK_cower, handsup. Events: CJ's gunshots (civilians flee / cower, hostile gangs
-  attack, a cop nearby gives a star), aimed at (hands up / flee / attack), acquaintances (Ballas + Vagos hate CJ, Grove
-  respect him, gangs fight each other within 10 m, cops chase while wanted), damage response by ped type + temper/fear,
-  gang mates join, witnesses of a death flee. AI LOD: peds off screen and away from CJ think every 2nd / 4th frame.
+  kill-or-flee as a group, a cop nearby gives a star), aimed at (hands up / flee; hostile gangs kill-or-flee),
+  acquaintances (Ballas + Vagos hate CJ, Grove respect him, gangs fight each other within 10 m, cops chase while
+  wanted), damage response by ped type + temper/fear, gang mates join, witnesses of a death flee. AI LOD: peds off
+  screen and away from CJ think every 2nd / 4th frame.
+- **Acquaintance scanner / group decisions** (CPedIntelligence seeing range, GangMbr.ped + RANDOM.grp from
+  `data/Decision`): every 2..4 s (`scanT`) a group leader checks CJ within the seeing range (gangs 40 m x0.65 = 26 m,
+  others 10 m, cops 30 m), in front and in line of sight (collision cast when near). The group answers the hate event
+  with TASK_NONE 500 : KILL_THREATS_BASIC 200 (`ignoreT` holds the whole group until the next scan), gunshots /
+  aiming 50:50 kill / flee (`respondAsGroup`). An attacker whose target stays out of sight for 5 s (`lostT`), is
+  > 40 m away or has chased 50 s (CTaskComplexSeekEntity) gives up and ignores CJ for 15-30 s; cops are excluded.
+  At most two peds strike CJ in melee at once (the others square up in FIGHTIDLE), an AI combo chains to the next
+  move with 60% odds, 0.7-2 s pauses. CJ always gets up: floor kicks no longer reset the down timer (240 steps cap)
+  and a non-fatal hit does not abort the getup. `GTASADS_PEDTEST` ends with an escape run (the attacker loses CJ).
 - **Melee** (`game/melee.h`, melee.dat UNARMED_1 for CJ and the peds): FightA_1/2/3 (+ FightA_G on a body on the
   floor), strike at the move's hit frame, a press during a move queues the next one at its chain frame, damage
   6/9/15/25 (peds x attackStrength). Victims (peds and CJ, CTaskSimpleBeHit): HitA_n of the attacker's move from the
@@ -632,7 +655,11 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
 - `game/hud/subfb.*`: 96 KB RAM backbuffer DMA'd to sub BG3 (B16 bitmap, VRAM C) in vblank.
   CPU never writes VRAM mid-frame (no tearing). Debug console printf is the only exception.
 - `chud.*` (CHud): clock, money, wanted stars, weapon icon/ammo, bars, zone/vehicle names.
-  Dirty-region drawing: only the radar repaints every frame; stat blocks repaint on a hash change
+  Dirty-region drawing: the radar repaints when `radar::signature()` changes (0.5 m position, ~0.35 deg heading,
+  range, blips, tile loads, fps once per second; `radar::update()` eases the range and streams tiles every frame),
+  stat blocks repaint on a hash change, `subfb::present()` skips the 96 KB DMA when nothing drew (HUD standing still
+  ~0.1 ms instead of ~8.7 ms). The frontend bottom screen (`CMenuManager::drawBottom`) is cached the same way by screen /
+  map position / tile loads; `invalidateBottom()` when the menu takes the framebuffer back.
   (note: clockRate x60 changes the clock every frame -> HUD ~24 ms/frame while testing).
 - `radar.*` (CRadar): pre-baked RGB15 tiles from `models/radar.dsrt`, two pools around the player,
   max 12 KB reads/frame, texel-space inner loop.
@@ -655,8 +682,8 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   clock, population, simulation switches). WARP lists 14 direct-tap exterior locations across
   Los Santos, San Fierro, Las Venturas, countryside and desert; coordinates were checked against
   the baked world collision. `player::teleport` detaches CJ from vehicles, resets motion and camera
-  position, then holds simulation until the destination sector/collision has streamed and the ground
-  can be probed (300-frame fallback). The seven top tabs use four console columns each;
+  position, then holds simulation until the collision around CJ (`col::nearPending`) has streamed and the
+  ground can be probed (300-frame fallback). The seven top tabs use four console columns each;
   active tabs are yellow. `dbg::opts.playerSpeedQ` scales CJ's on-foot root displacement
   in quarters (default 4 = x1), without changing vehicle or ped motion.
 
@@ -749,7 +776,8 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   ACT_LAND; ACT_PUNCH phase 0.2; fireOne / reload) and `weather.cpp`.
 - **Stream** (`aestream`, CAEStreamingChannel): one mono track from `audio/streams/*.dsst`,
   software IMA-ADPCM into a 16 KB PCM16 ring (the mixer's ADPCM can't loop a ring); play position
-  from the CPU timer and the channel timer. ~16k samples/s for ambience; the SD radio uses 11.025k.
+  from the CPU timer and the channel timer. The predicted rate applies the same 1000..65000 Hz clamp as `aehw::setFreq`
+  (a paused 11 kHz radio asked for 689 Hz, drifted and crackled after the pause menu). ~16k samples/s for ambience; the SD radio uses 11.025k.
   Resumes the last ambience track. DSST v2 (radio only) has 20-byte entries pointing to decoder
   checkpoints every 8192 samples, allowing direct entry mid-song with <8192 samples of decode.
   Its 16 KB PCM ring is reserved during audio loading and retained across track
