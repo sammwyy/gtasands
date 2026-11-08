@@ -492,7 +492,23 @@ static void pedTest(int f) {
 	if (f >= 930 && f < 1060 && f % 16 == 4) input::debugHold(KEY_R);
 	if (f == 1060) input::debugHold(0);
 	if (f == 1000) video::requestCapture("fat:/gtasads_shot8.dscr");
-	if (f == 1200 && out) {
+	// escape: a ped goes for CJ, CJ sprints away; it must lose him and walk on
+	if (f == 1200) {
+		player::respawn();
+		peds::removeAll();
+	}
+	if (f >= 1210 && f < 1260 && a < 0 && f % 10 == 0) a = peds::spawnNear(player::g.x, player::g.y, player::g.z);
+	if (f == 1200) a = -1;
+	if (f == 1260 && a >= 0) {
+		// east of CJ; he sprints west (open street, the mission house is south)
+		peds::debugPlace(a, player::g.x + 3.0f, player::g.y, player::g.z, 1.5708f);
+		peds::debugAttackPlayer(a);
+		player::debugSetView(1.5708f, 0.3f);
+	}
+	if (f == 1290) input::debugHold(KEY_UP | KEY_B);
+	if (f == 1650) input::debugHold(0);
+	if (f > 1200 && f < 2100 && f % 20 == 0) log(f < 1290 ? "chase" : f < 1650 ? "flee" : "lost");
+	if (f == 2100 && out) {
 		log("end");
 		fclose(out);
 		out = nullptr;

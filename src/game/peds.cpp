@@ -43,6 +43,13 @@ static constexpr float REMOVE_DIST = 35.5f, REMOVE_FAR = 48.0f, NEED_DIST = 16.0
 static constexpr float DRAW_DIST = 46.0f;
 static constexpr float COL_RANGE = 13.0f;    // inside the collision near list around CJ (GATHER_M 14)
 static constexpr float PED_R = 0.35f;        // CTempColModels::ms_colModelPed1 sphere radius
+// CPedIntelligence::m_fSeeingRange: 15 m, gang members 40 m (x0.65 like the
+// population distances above); cops look for a wanted CJ further.
+static constexpr float SEE_GANG = 26.0f, SEE_PED = 10.0f, SEE_COP = 30.0f;
+static constexpr int SCAN_MIN = 120, SCAN_RAND = 120;   // acquaintance scans every 2..4 s
+static constexpr int LOSE_TICKS = 300;                  // out of sight this long: the attacker gives up
+static constexpr int CHASE_TICKS = 3000;                // CTaskComplexSeekEntity's 50 s
+static constexpr int MAX_MELEE_ON_PLAYER = 2;           // attackers striking CJ at the same time
 
 // ----------------------------------------------------------------------------
 // Ped
@@ -54,7 +61,7 @@ struct Ped {
 	uint8_t pedType, female, gang;   // gang: eGangID or 0xFF
 	uint8_t weapon;               // eWeaponType in hand (0 = fists)
 	uint8_t sub, combo;           // ATTACK: 0 approach, 1 strike, 2 recover
-	bool struck, onScreen, poseValid, still, moneyGiven, near;
+	bool struck, chain, onScreen, poseValid, still, moneyGiven, near;
 	int8_t model;                 // pedmodel handle
 	int8_t target, leader;
 	int16_t pedIndex;
@@ -67,6 +74,9 @@ struct Ped {
 	float thx, thy;               // threat point (flee)
 	float lastFoot, steer;
 	int16_t avoidT;
+	int16_t scanT;                // CPedAcquaintanceScanner timer (ticks to the next look around)
+	int16_t ignoreT;              // the group decided not to respond / lost CJ: no new hate event before 0
+	int16_t lostT;                // ticks the attack target has been out of sight
 	uint8_t acc;                  // ticks owed by the AI LOD (skipped frames)
 	int32_t t, dur, cooldown, voiceCd;
 	uint32_t needUntil, deathFrame;
@@ -158,6 +168,24 @@ static bool hatesPlayer(const Ped& p) {
 }
 static bool hates(const Ped& a, const Ped& b) { return a.gang != 0xFF && b.gang != 0xFF && a.gang != b.gang; }
 static bool friendOfPlayer(const Ped& p) { return p.pedType == peddata::PT_GANG2; }
+
+static float seeingRange(const Ped& p) { return isCop(p) ? SEE_COP : p.gang != 0xFF ? SEE_GANG : SEE_PED; }
+
+// CPedIntelligence::IsInSeeingRange (in range and in front) + the
+// acquaintance scanner's line of sight (only where the collision is streamed)
+static bool lineOfSight(const Ped& p, float x, float y, float z) {
+	if (!p.near || !col::available()) return true;
+	const float a[3] = { p.x, p.y, p.z + 1.5f }, b[3] = { x, y, z + 1.2f };
+	col::Hit h;
+	return !col::castSegment(a, b, h);
+}
+
+static bool canSee(const Ped& p, float x, float y, float z, float range) {
+	const float dx = x - p.x, dy = y - p.y;
+	if (dx * dx + dy * dy > range * range) return false;
+	if (-fsin(p.heading) * dx + fcos(p.heading) * dy <= 0.0f) return false;
+	return lineOfSight(p, x, y, z);
+}
 
 // weapon.dat damage (STD skill) for CJ's hits on peds; melee scaled like
 // CTaskSimpleFight's per-move damage
@@ -462,6 +490,7 @@ static void startAttack(Ped& p, int target) {
 	if (!alive(p)) return;
 	p.target = (int8_t)target;
 	p.leader = -1;
+	p.lostT = 0;
 	if (p.task == TASK_HIT || p.task == TASK_FALL || p.task == TASK_GETUP || p.task == TASK_DIVE) { p.after = TASK_ATTACK; return; }
 	if (p.task != TASK_ATTACK) setTask(p, TASK_ATTACK);
 }
@@ -495,6 +524,42 @@ static void startFlee(Ped& p, float fx, float fy, int32_t dur) {
 
 static Ped* pedAt(int i) { return s_pool.at(i); }
 static int indexOf(const Ped& p) { return s_pool.indexOf(&p); }
+
+// CPedGroupIntelligence: a gang walking together answers an event as one
+// (GangMbr.ped informs the group, RANDOM.grp picks the group task). `attack`:
+// TASK_GROUP_KILL_THREATS_BASIC, else TASK_GROUP_FLEE_THREAT.
+static void respondAsGroup(Ped& p, bool attack, int target, float fx, float fy) {
+	const int self = indexOf(p);
+	const int leader = p.leader >= 0 ? p.leader : self;
+	for (int i = 0; i < MAX; i++) {
+		Ped* o = pedAt(i);
+		if (!o || !alive(*o) || (i != self && i != leader && o->leader != leader)) continue;
+		if (o->gang != p.gang) continue;
+		o->ignoreT = 0;
+		if (attack) startAttack(*o, target);
+		else startFlee(*o, fx, fy, 480 + irand(360));
+	}
+}
+
+// the group ignored CJ (TASK_NONE): nobody in it reacts to him again for a while
+static void ignoreAsGroup(Ped& p, int16_t ticks) {
+	const int self = indexOf(p);
+	const int leader = p.leader >= 0 ? p.leader : self;
+	for (int i = 0; i < MAX; i++) {
+		Ped* o = pedAt(i);
+		if (o && (i == self || i == leader || o->leader == leader)) o->ignoreT = ticks;
+	}
+}
+
+// melee attackers in their strike phase against CJ
+static int playerStrikers() {
+	int n = 0;
+	for (int i = 0; i < MAX; i++) {
+		const Ped* o = pedAt(i);
+		n += o && o->task == TASK_ATTACK && o->target == TARGET_PLAYER && o->weapon < player::WEAPON_PISTOL && o->sub == 1;
+	}
+	return n;
+}
 
 static bool targetPos(const Ped& p, float& x, float& y, float& z) {
 	if (p.target == TARGET_PLAYER) {
@@ -767,7 +832,20 @@ static void taskStep(Ped& p, int dt) {
 		float tx, ty, tz;
 		if (!targetPos(p, tx, ty, tz) || (p.target == TARGET_PLAYER && !hatesPlayer(p) && isCop(p))) { resumeWander(p); break; }
 		const float dx = tx - p.x, dy = ty - p.y, d = sqrtf(dx * dx + dy * dy);
-		if (d > 40.0f || (p.t > 900 && d > 25.0f)) { resumeWander(p); break; }
+		// CTaskComplexSeekEntity gives up after 50 s; a target that stays out
+		// of sight (outrun, around a corner) is lost, and the hate event is not
+		// raised again for a while so CJ can get away
+		if (p.target == TARGET_PLAYER && !isCop(p)) {
+			bool seen = d < 4.0f;
+			if (!seen && d < seeingRange(p))
+				seen = ((s_frame + indexOf(p)) & 15) ? p.lostT == 0 : lineOfSight(p, tx, ty, tz);
+			p.lostT = seen ? 0 : (int16_t)(p.lostT + dt);
+			if (d > 40.0f || p.lostT > LOSE_TICKS || (p.t > CHASE_TICKS && d > 6.0f)) {
+				resumeWander(p);
+				p.ignoreT = (int16_t)(900 + irand(900));
+				break;
+			}
+		} else if (d > 40.0f || (p.t > 900 && d > 25.0f)) { resumeWander(p); break; }
 		const bool targetInCar = p.target == TARGET_PLAYER && player::g.inVehicle;
 		const float want = headingTo(dx, dy);
 		if (p.weapon >= player::WEAPON_PISTOL) {
@@ -793,6 +871,14 @@ static void taskStep(Ped& p, int dt) {
 		                                            : pedAt(p.target) && (pedAt(p.target)->task == TASK_FALL || pedAt(p.target)->task == TASK_GETUP);
 		if (p.sub == 0) {
 			if (d > melee::RANGE - 0.4f) { locomote(p, avoid(p, want, dt), d > 4.0f ? 2.0f : 1.2f, false, dt); break; }
+			// CTaskSimpleFightingControl: a crowd does not swing at CJ all at
+			// once, the others square up (FIGHTIDLE) and wait for an opening
+			if (p.target == TARGET_PLAYER && playerStrikers() >= MAX_MELEE_ON_PLAYER) {
+				p.sub = 2;
+				p.t = 0;
+				p.cooldown = 30 + irand(60);
+				break;
+			}
 			p.sub = 1;
 			p.combo = down ? melee::MOVE_GROUND : melee::MOVE_HIT_1;
 			p.struck = false;
@@ -805,6 +891,8 @@ static void taskStep(Ped& p, int dt) {
 			const int at = pedanim::time(p.anim, mv.clip);
 			if (!p.struck && at >= melee::hitTicks(p.combo)) {
 				p.struck = true;
+				// CalcMoveCommand's random attack: an AI combo often stops short
+				p.chain = irand(5) < 3;
 				aeped::swing(player::WEAPON_UNARMED, voicePos(p));
 				const bool kick = p.combo == melee::MOVE_GROUND;
 				if (d < melee::REACH + 0.15f && fabsf(wrap(want - p.heading)) < 0.8f && kick == down) {
@@ -814,7 +902,7 @@ static void taskStep(Ped& p, int dt) {
 				}
 			}
 			const bool ended = clipDone(p, mv.clip);
-			const bool more = p.combo < melee::MOVE_HIT_3 && !down && d < melee::RANGE;
+			const bool more = p.combo < melee::MOVE_HIT_3 && !down && d < melee::RANGE && p.chain;
 			if (p.struck && more && (at >= melee::chainTicks(p.combo) || ended)) {
 				p.combo++;
 				p.struck = false;
@@ -822,7 +910,7 @@ static void taskStep(Ped& p, int dt) {
 			} else if (ended) {
 				p.sub = 2;
 				p.t = 0;
-				p.cooldown = 20 + irand(50);
+				p.cooldown = 40 + irand(80);
 			}
 			break;
 		}
@@ -892,6 +980,13 @@ static void gunShotFrom(float sx, float sy, int shooter) {
 		const float dx = p->x - sx, dy = p->y - sy, d2 = dx * dx + dy * dy;
 		if (d2 > 30.0f * 30.0f) continue;
 		if (shooter == TARGET_PLAYER) {
+			if (hatesPlayer(*p) && !isCop(*p)) {
+				// CEventGunShot -> GangMbr informs the group -> RANDOM.grp:
+				// KILL_THREATS_BASIC or FLEE_THREAT, even odds (CJ in sight)
+				const bool attack = canSee(*p, player::g.x, player::g.y, player::g.z, seeingRange(*p)) ? irand(2) != 0 : irand(4) == 0;
+				respondAsGroup(*p, attack, TARGET_PLAYER, sx, sy);
+				continue;
+			}
 			if (hatesPlayer(*p)) { startAttack(*p, TARGET_PLAYER); continue; }
 			if (isCop(*p) && d2 < 20.0f * 20.0f) {   // gunfire next to a cop
 				if (player::g.wantedLevel < 1) player::setWantedLevel(1);
@@ -927,9 +1022,12 @@ static void scan(Ped& p, int i) {
 	const player::State& g = player::g;
 	const float dx = g.x - p.x, dy = g.y - p.y, d2 = dx * dx + dy * dy;
 	if (aimedAt(p) && calm(p)) {
-		if (hatesPlayer(p) || isCop(p)) {
-			if (isCop(p)) player::registerCrime(player::CRIME_AIM_GUN);
+		if (isCop(p)) {
+			player::registerCrime(player::CRIME_AIM_GUN);
 			startAttack(p, TARGET_PLAYER);
+		} else if (hatesPlayer(p)) {
+			// CEventGunAimedAt (seen) -> the group: kill or flee, even odds
+			if (canSee(p, g.x, g.y, g.z, seeingRange(p))) respondAsGroup(p, irand(2) != 0, TARGET_PLAYER, g.x, g.y);
 		} else if (!friendOfPlayer(p)) {
 			p.thx = g.x;
 			p.thy = g.y;
@@ -939,11 +1037,21 @@ static void scan(Ped& p, int i) {
 		return;
 	}
 	if (!calm(p)) return;
-	// CPedScanner + acquaintances: CJ / a rival gang member in range
-	if (g.health > 0.0f && hatesPlayer(p) && d2 < (isCop(p) ? 30.0f * 30.0f : 12.0f * 12.0f) &&
+	if (p.scanT > 0) return;
+	p.scanT = (int16_t)(SCAN_MIN + irand(SCAN_RAND));
+	// CPedAcquaintanceScanner: CJ seen within the seeing range (in front, line
+	// of sight). Cops go for a wanted CJ. A hostile gang raises
+	// CEventAcquaintancePedHate; GangMbr.ped informs the group and RANDOM.grp
+	// answers TASK_NONE 500 : TASK_GROUP_KILL_THREATS_BASIC 200 on foot, so a
+	// walk past usually draws looks, not always a fight. Followers wait for
+	// their leader's decision.
+	if (g.health > 0.0f && hatesPlayer(p) && d2 < seeingRange(p) * seeingRange(p) &&
 	    (!g.inVehicle || p.weapon >= player::WEAPON_PISTOL)) {
-		startAttack(p, TARGET_PLAYER);
-		return;
+		if (isCop(p)) { startAttack(p, TARGET_PLAYER); return; }
+		if (p.leader < 0 && p.ignoreT <= 0 && canSee(p, g.x, g.y, g.z, seeingRange(p))) {
+			if (irand(7) < 2) { respondAsGroup(p, true, TARGET_PLAYER, g.x, g.y); return; }
+			ignoreAsGroup(p, (int16_t)(SCAN_MIN + irand(SCAN_RAND)));
+		}
 	}
 	if (p.gang == 0xFF) return;
 	for (int j = 0; j < MAX; j++) {
@@ -1167,6 +1275,7 @@ static Ped* addPed(int pedIndex, float x, float y, float z, float heading) {
 	p->lastFoot = -1.0f;
 	p->money = (uint16_t)(pm->pedType == peddata::PT_DEALER ? 100 + irand(200) : irand(35));
 	p->needUntil = s_frame + 240;
+	p->scanT = (int16_t)irand(180);   // CEventScanner: first scan within 3 s
 	// CGangs::Gang[].GetRandomWeapon (33%), CCopPed's pistol
 	static const uint8_t k_gangWeapons[10][2] = {
 		{ player::WEAPON_PISTOL, player::WEAPON_MICRO_UZI }, { player::WEAPON_PISTOL, 0 }, { player::WEAPON_PISTOL, 0 },
@@ -1489,6 +1598,8 @@ void update(int dt) {
 		}
 		const u32 ta = timing::ticks();
 		if (p->voiceCd > 0) p->voiceCd -= pdt;
+		if (p->scanT > 0) p->scanT = (int16_t)(p->scanT - pdt);
+		if (p->ignoreT > 0) p->ignoreT = (int16_t)(p->ignoreT - pdt);
 		if (p->task != TASK_ATTACK && p->cooldown > 0) p->cooldown -= pdt;
 		taskStep(*p, pdt);
 		taskUs += timing::usSince(ta);
@@ -1773,6 +1884,10 @@ void debugPlace(int i, float x, float y, float z, float heading) {
 	p->x = x; p->y = y; p->z = z;
 	p->heading = heading;
 	setTask(*p, TASK_STAND, 600);
+}
+
+void debugAttackPlayer(int i) {
+	if (Ped* p = pedAt(i)) startAttack(*p, TARGET_PLAYER);
 }
 
 const Stats& stats() { return s_stats; }

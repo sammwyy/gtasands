@@ -173,6 +173,7 @@ static bool s_queued;            // CTaskSimpleFight::m_nNextCommand: the next m
 static const char* s_hitClip;    // the be-hit / knock-down / death clip
 static const char* s_getupClip;
 static int s_downSteps;          // lying on the floor before the getup
+static int s_downTotal;          // steps since the knock-down, floor kicks included
 
 static constexpr float CAM_TIMESTEP = 0.5f; // CTimer is 1 at 30 fps; we step at 60
 static constexpr float DT = 1.0f / 60.0f;
@@ -642,7 +643,8 @@ static void updateAction(bool jumpDown, bool attackDown, bool aiming, bool melee
 	if (s_action == ACT_DOWN) {
 		// on the floor until the knock-down (or floor hit) clip ends + ~1 s
 		poseOne(s_hitClip, false, false, false);
-		if ((cj::clipEnded(s_hitClip) || cj::clipPhase(s_hitClip) < 0.0f) && ++s_downSteps > 60) {
+		const bool lying = cj::clipEnded(s_hitClip) || cj::clipPhase(s_hitClip) < 0.0f;
+		if ((lying && ++s_downSteps > 60) || ++s_downTotal > 240) {
 			s_action = ACT_GETUP;
 			poseOne(s_getupClip, false, false, true);
 		}
@@ -1402,21 +1404,28 @@ void meleeHitBy(float fx, float fy, int move, float damage) {
 	const float rel = relHeading(fx, fy);
 	const bool front = fabsf(rel) < 0.785f, back = fabsf(rel) > 2.356f;
 	if (g.health <= 0.0f) { dieNow(rel); return; }
+	if (s_action == ACT_GETUP) {
+		// CTaskSimpleGetUp::MakeAbortable: once the getup is under way a
+		// non-fatal hit does not put CJ back on the floor
+		aeped::sayPain(aeped::PAIN_CJ_GENERIC_LOW, pedPos());
+		return;
+	}
 	pedmove::suspend(s_move);
 	s_footPhase = -1.0f;
 	s_jumpVX = s_jumpVY = s_jumpVZ = 0.0f;
-	if (s_action == ACT_DOWN || s_action == ACT_GETUP) {
+	if (s_action == ACT_DOWN) {
 		// kicked on the floor (AGROUND): FLOOR_hit lying on the back, _f face down
+		// (the time on the floor keeps counting: a crowd kicking CJ does not
+		// keep him down forever, CTaskSimpleGetUp still starts)
 		s_hitClip = !strcmp(s_getupClip, "getup") ? "FLOOR_hit" : "FLOOR_hit_f";
 		s_action = ACT_DOWN;
-		s_downSteps = 0;
 		aeped::sayPain(aeped::PAIN_CJ_GENERIC_LOW, pedPos());
 	} else if (melee::knocksDown(move)) {
 		// CTaskComplexFallAndGetUp: hit from the front = on the back
 		s_hitClip = back ? "KO_skid_back" : "KO_skid_front";
 		s_getupClip = back ? "getup_front" : "getup";
 		s_action = ACT_DOWN;
-		s_downSteps = 0;
+		s_downSteps = s_downTotal = 0;
 		aeped::sayPain(aeped::PAIN_CJ_GENERIC_HIGH, pedPos());
 	} else {
 		// CTaskSimpleBeHit::StartAnim: the attacker's combo move from the front

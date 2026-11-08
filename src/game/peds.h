@@ -81,6 +81,7 @@ int spawnNear(float x, float y, float z, int modelId = -1);   // a random / give
 void removeAll();
 void suspendForCutscene();
 void debugPlace(int i, float x, float y, float z, float heading);   // headless tests
+void debugAttackPlayer(int i);
 struct Stats {
 	uint16_t live, drawn, posed, polys, spawned, removed, models, wanted;
 	uint16_t drivers;
