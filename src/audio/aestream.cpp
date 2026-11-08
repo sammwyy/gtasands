@@ -222,9 +222,16 @@ static unsigned hwVolume() {
 	return s_freq <= 0.0f ? 0 : aesound::volumeFromDb(s_volDb + (s_cutscene ? 0.0f : s_musicDb));
 }
 
+// The play head is never read back from the mixer: it is predicted from the
+// CPU timer at the rate the channel really runs at, so this must apply the
+// same 1000..65000 Hz clamp as aehw::setFreq. (A paused 11 kHz radio track
+// asked for 689 Hz but played at 1000: the prediction fell behind the real
+// head by ~300 samples a second, and after a pause the decoder kept
+// overwriting what the mixer was playing -> crackle until the next track.)
 static unsigned hwHz() {
 	const float f = s_freq > 0.0625f ? s_freq : 0.0625f;
-	return (unsigned)((float)s_rate * f);
+	const unsigned hz = (unsigned)((float)s_rate * f);
+	return hz < 1000 ? 1000 : hz > 65000 ? 65000 : hz;
 }
 
 bool play(uint32_t trackId, float volumeDb, bool loop, bool resume, uint32_t startMs) {
