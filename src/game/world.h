@@ -58,6 +58,9 @@ struct Stats {
 	uint32_t budgetPops;
 	uint16_t polysBefore, polysAfter; // hardware polygon count around draw()
 	uint16_t updateUs, drawUs, scanUs; // scanUs is part of drawUs
+#ifdef GTASADS_DEBUG
+	uint32_t sectorUs, modelReadUs, modelParseUs, texReadUs, compileUs, startUs, uploadUs;
+#endif
 };
 
 // Loading-screen job: opens the world file, then preloads the models around

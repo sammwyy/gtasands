@@ -34,6 +34,7 @@ static constexpr int VIEW_SLOT = 13;         // matrix stack slot holding the vi
 static constexpr int SECTOR_MARGIN = 40;     // m added to the view distance for the sector window
 static constexpr int MAX_WANTS = 8;
 static constexpr int MAX_LOADING = 8;
+static constexpr u32 MODEL_READ_BYTES = 16 * 1024;
 static constexpr u32 UPDATE_US = 3000;       // streaming CPU per in-game frame
 static constexpr u32 PRELOAD_US = 8000;      // per loading-screen slice
 static constexpr u32 UPLOAD_BYTES = 24 * 1024; // texture bytes per vblank
@@ -43,17 +44,20 @@ static constexpr u32 NORMAL_UP = 0x1FFu << 10;
 
 struct ModelLite { uint16_t drawDist, radius; uint8_t on, off, pad[2]; };
 
-enum : uint8_t { SLOT_FREE, SLOT_LOADING, SLOT_READY, SLOT_FAILED };
+enum : uint8_t { SLOT_FREE, SLOT_READING, SLOT_LOADING, SLOT_READY, SLOT_FAILED };
 struct Slot {
 	uint16_t model;
 	uint8_t state, numTex;
 	int8_t scaleExp;          // list vertices are v16 * 2^scaleExp
 	uint8_t hingeDoor;
 	uint16_t tris;
+	uint16_t txd;
+	uint8_t interior;
 	u32* list;
 	uint32_t listBytes;
 	void* blob;               // DMDL while LOADING
 	mdl::Model* view;         // parsed view while LOADING
+	uint32_t readOffset, readSize, readDone;
 	uint32_t lastUse;
 	int32_t priority;         // distance to closest visible instance while loading
 	int32_t boundCenter[3];   // model-space SA, 20.12
@@ -264,6 +268,9 @@ static uint16_t requestTex(int txd, const char* name) {
 
 void vblank() {
 	if (!s_tex) return;
+#ifdef GTASADS_DEBUG
+	const u32 uploadT0 = timing::ticks();
+#endif
 	u32 spent = 0;
 	for (int i = 0; i < WORLD_TEX_ENTRIES && spent < UPLOAD_BYTES; i++) {
 		TexEntry& te = s_tex[i];
@@ -308,6 +315,9 @@ void vblank() {
 		te.pal = pal < 0 ? 0 : (uint32_t)pal;
 	}
 	if (spent) glBindTexture(0, 0);
+#ifdef GTASADS_DEBUG
+	s_stats.uploadUs = timing::usSince(uploadT0);
+#endif
 }
 
 // ----------------------------------------------------------------------------
@@ -364,11 +374,20 @@ static bool startLoad(uint16_t model, int32_t priority) {
 		hud::log("\x1b[33mworld: %s missing\x1b[39m", name);
 		return true;
 	}
-	s.blob = pack.load(pe, mem::TAG_MODEL);
+	s.blob = mem::alloc(pe.size, mem::TAG_MODEL);
 	if (!s.blob) {
 		freeSlot(s);
 		return false;
 	}
+	s.readOffset = pe.offset;
+	s.readSize = pe.size;
+	s.txd = wm.txd;
+	s.interior = (wm.flags & 0x80000000u) != 0;
+	s.state = SLOT_READING;
+	return true;
+}
+
+static bool finishRead(Slot& s) {
 	s.view = mdl::load(s.blob);
 	if (!s.view) {
 		freeSlot(s);
@@ -378,12 +397,12 @@ static bool startLoad(uint16_t model, int32_t priority) {
 		const mdl::Geometry& geo = s.view->geoms[g];
 		for (int mi = 0; mi < geo.h->numMaterials; mi++) {
 			const char* tn = geo.mats[mi].texture;
-			if (!tn[0] || wm.txd == NONE || s.numTex >= MAX_MODEL_TEX) continue;
+			if (!tn[0] || s.txd == NONE || s.numTex >= MAX_MODEL_TEX) continue;
 			const uint32_t h = ds::fnv1a(tn);
 			bool dup = false;
 			for (int k = 0; k < s.numTex && !dup; k++) dup = s.tex[k] != NONE && s_tex[s.tex[k]].nameHash == h;
 			if (!dup) {
-				const uint16_t ti = requestTex(wm.txd, tn);
+				const uint16_t ti = requestTex(s.txd, tn);
 				if (ti == TEX_BUSY) {
 					freeSlot(s);
 					return false;
@@ -578,7 +597,14 @@ static bool finishLoad(Slot& s) {
 	for (int k = 0; k < s.numTex; k++)
 		if (s.tex[k] != NONE && (s_tex[s.tex[k]].state == TEX_QUEUED ||
 		                         s_tex[s.tex[k]].state == TEX_STAGED)) return false;
-	if (!compile(s)) return false;
+#ifdef GTASADS_DEBUG
+	const u32 compileT0 = timing::ticks();
+#endif
+	const bool compiled = compile(s);
+#ifdef GTASADS_DEBUG
+	s_stats.compileUs += timing::usSince(compileT0);
+#endif
+	if (!compiled) return false;
 	mdl::free(s.view);
 	mem::free(s.blob);
 	s.view = nullptr;
@@ -849,7 +875,7 @@ static void scan(const Cam& c) {
 			}
 			Slot& s = s_slots[si];
 			if (near < 64 * 16) s.lastUse = s_frame;
-			if (s.state == SLOT_LOADING && near < s.priority) s.priority = near;
+			if ((s.state == SLOT_READING || s.state == SLOT_LOADING) && near < s.priority) s.priority = near;
 			if (s.state != SLOT_READY || !c.frustum) continue;
 			// Surface distance keeps wide ground and nearby houses ahead of
 			// huge models behind them. The distance bands keep the foreground
@@ -903,6 +929,41 @@ static Cam makeCam(float ex, float ey, float ez, float yaw, float pitch, bool fr
 static void stream(u32 budgetUs, int maxStarts) {
 	const u32 t0 = timing::ticks();
 	bool worked = false;
+	for (int reads = 0; reads < 2 && timing::usSince(t0) < budgetUs; reads++) {
+		int best = -1;
+		for (int i = 0; i < WORLD_MODEL_SLOTS; i++)
+			if (s_slots[i].state == SLOT_READING &&
+			    (best < 0 || s_slots[i].priority < s_slots[best].priority)) best = i;
+		if (best < 0) break;
+		Slot& s = s_slots[best];
+		const u32 left = s.readSize - s.readDone;
+		const u32 bytes = left < MODEL_READ_BYTES ? left : MODEL_READ_BYTES;
+		Pack& pack = s.interior ? streaming::g_interiors : streaming::g_models;
+#ifdef GTASADS_DEBUG
+		const u32 readT0 = timing::ticks();
+#endif
+		const bool readOk = pack.read(s.readOffset + s.readDone, (uint8_t*)s.blob + s.readDone, bytes);
+#ifdef GTASADS_DEBUG
+		s_stats.modelReadUs += timing::usSince(readT0);
+#endif
+		if (!readOk) {
+			mem::free(s.blob);
+			s.blob = nullptr;
+			s.state = SLOT_FAILED;
+			continue;
+		}
+		s.readDone += bytes;
+		worked = true;
+		if (s.readDone == s.readSize) {
+#ifdef GTASADS_DEBUG
+			const u32 parseT0 = timing::ticks();
+#endif
+			worked |= finishRead(s);
+#ifdef GTASADS_DEBUG
+			s_stats.modelParseUs += timing::usSince(parseT0);
+#endif
+		}
+	}
 	u32 staged = 0;
 	for (int i = 0; i < WORLD_TEX_ENTRIES; i++)
 		if (s_tex[i].state == TEX_STAGED) staged += s_tex[i].size;
@@ -920,10 +981,17 @@ static void stream(u32 budgetUs, int maxStarts) {
 		}
 		if (best < 0) break;
 		TexEntry& t = s_tex[best];
+#ifdef GTASADS_DEBUG
+		const u32 readT0 = timing::ticks();
+#endif
 		void* buf = mem::alloc(t.size, mem::TAG_TEXTURE);
 		if (!buf) break;
 		Pack& pack = s_txds[t.txd].pad ? streaming::g_interiors : streaming::g_models;
-		if (pack.read(t.offset, buf, t.size) &&
+		const bool readOk = pack.read(t.offset, buf, t.size);
+#ifdef GTASADS_DEBUG
+		s_stats.texReadUs += timing::usSince(readT0);
+#endif
+		if (readOk &&
 		    t.size >= sizeof(ds::TexHeader) && ((const ds::TexHeader*)buf)->magic == DS_FOURCC('D', 'T', 'E', 'X')) {
 			t.staging = buf;
 			t.state = TEX_STAGED;
@@ -937,13 +1005,19 @@ static void stream(u32 budgetUs, int maxStarts) {
 	}
 	int pendingLoads = 0;
 	for (int i = 0; i < WORLD_MODEL_SLOTS; i++) {
-		if (s_slots[i].state != SLOT_LOADING) continue;
-		if (timing::usSince(t0) < budgetUs) worked |= finishLoad(s_slots[i]);
-		pendingLoads += s_slots[i].state == SLOT_LOADING;
+		if (s_slots[i].state == SLOT_LOADING && timing::usSince(t0) < budgetUs) worked |= finishLoad(s_slots[i]);
+		pendingLoads += s_slots[i].state == SLOT_LOADING || s_slots[i].state == SLOT_READING;
 	}
 	for (int i = 0; i < s_numWant && maxStarts > 0 && pendingLoads < MAX_LOADING && timing::usSince(t0) < budgetUs; i++) {
 		if (s_slotOf[s_want[i].model] != NONE) continue;
-		if (!startLoad(s_want[i].model, s_want[i].key)) continue;
+#ifdef GTASADS_DEBUG
+		const u32 startT0 = timing::ticks();
+#endif
+		const bool started = startLoad(s_want[i].model, s_want[i].key);
+#ifdef GTASADS_DEBUG
+		s_stats.startUs += timing::usSince(startT0);
+#endif
+		if (!started) continue;
 		maxStarts--;
 		pendingLoads++;
 		worked = true;
@@ -953,7 +1027,7 @@ static void stream(u32 budgetUs, int maxStarts) {
 	uint16_t ready = 0, loading = 0, texN = 0, texF = 0;
 	for (int i = 0; i < WORLD_MODEL_SLOTS; i++) {
 		ready += s_slots[i].state == SLOT_READY;
-		loading += s_slots[i].state == SLOT_LOADING;
+		loading += s_slots[i].state == SLOT_LOADING || s_slots[i].state == SLOT_READING;
 	}
 	for (int i = 0; i < WORLD_TEX_ENTRIES; i++) {
 		texN += s_tex[i].state == TEX_READY;
@@ -971,7 +1045,15 @@ void update(float x, float y) {
 	if (!ready()) return;
 	const u32 t0 = timing::ticks();
 	s_frame++;
+#ifdef GTASADS_DEBUG
+	s_stats.sectorUs = s_stats.modelReadUs = s_stats.modelParseUs = s_stats.texReadUs =
+		s_stats.compileUs = s_stats.startUs = 0;
+	const u32 sectorT0 = timing::ticks();
+#endif
 	updateSectors(x, y, 2);
+#ifdef GTASADS_DEBUG
+	s_stats.sectorUs = timing::usSince(sectorT0);
+#endif
 	stream(UPDATE_US, 2);
 	s_stats.updateUs = (uint16_t)timing::usSince(t0);
 }
@@ -1121,7 +1203,8 @@ bool initStep() {
 	const bool idle = s_numWant == 0;
 	stream(PRELOAD_US, 4);
 	bool pending = false;
-	for (int i = 0; i < WORLD_MODEL_SLOTS && !pending; i++) pending = s_slots[i].state == SLOT_LOADING;
+	for (int i = 0; i < WORLD_MODEL_SLOTS && !pending; i++)
+		pending = s_slots[i].state == SLOT_LOADING || s_slots[i].state == SLOT_READING;
 	for (int i = 0; i < WORLD_TEX_ENTRIES && !pending; i++) pending = s_tex[i].state == TEX_STAGED;
 	if ((idle && !pending) || timing::vblanks() - s_preloadT0 > PRELOAD_MAX_VBLANKS) {
 		hud::log("world preload: %u models, %u tex %uK, lists %uK", s_stats.modelsReady, s_stats.textures,

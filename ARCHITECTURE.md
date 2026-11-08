@@ -331,9 +331,11 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   models are not loaded until visible. Drawn or visible within 64 m (off-screen
   within 40 m) = protected from LRU; far models skipped by the polygon budget
   can be evicted before foreground ones.
-- **Model streaming** (`world::update`, ~3 ms budget, 2 starts/frame): `startLoad` reads the DMDL
-  into STREAM and queues its textures; textures are found in the model TXD or its txdp parents
-  (4-entry TXD directory cache). At most eight DMDLs may wait for textures; each update
+- **Model streaming** (`world::update`, ~3 ms budget, 2 starts/frame): `startLoad` allocates
+  the DMDL buffer in STREAM, then reads at most two 16 KiB chunks per update in nearest-visible
+  order (READING -> LOADING); after the last chunk it queues textures, found in the model TXD
+  or its txdp parents
+  (4-entry TXD directory cache). At most eight DMDLs may be reading or waiting for textures; each update
   reads up to two queued textures in nearest-visible-instance order, with at most 32 KB staged
   in RAM. Failed allocations defer a load rather than permanently marking a model missing.
   `world::vblank` uploads
@@ -380,6 +382,14 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   idle or 10 s.
 - Stats: PERF tab rows 15-18 (collision 19-20), `world:` / `col:` lines in hudok
   (including model reloads, evictions and budget pops), REND tab toggle + poly budget.
+  DEBUG flicker logs also record per-frame sector-window, model-read, model-parse/TXD lookup,
+  texture-read, list-compile, model-start and vblank-upload times in microseconds.
+  A DS SD DEBUG run over frames 100-850 measured peaks of 43 ms for `world::update`:
+  GX list compile 41 ms, model parse/TXD lookup 20 ms, model chunk reads 16 ms,
+  sector loads 12 ms, texture reads 8 ms and texture uploads 0.6 ms.
+  These phases are synchronous and can each exceed the nominal 3 ms stream budget;
+  the texture upload is not the main source of the stalls. STREAM's largest
+  free block reached 7 KiB, so simply increasing cache budgets is unsafe on DS.
   `GTASADS_WORLDTEST` also reserves 24 KB and crosses a nearby sector at frame 1022; its
   `boundary: ... kept=1 pressure=1` line checks that resident models survive the crossing.
 - Grove Street numbers: ~110 models / 600 instances in the window, ~70 drawn, ~1600 polys,

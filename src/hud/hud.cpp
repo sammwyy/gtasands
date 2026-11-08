@@ -370,14 +370,17 @@ static void flickerTest(int f) {
 	if (f == 800) input::debugHold(0);
 	if (out) {
 		const world::Stats& s = world::stats();
-		fprintf(out, "%d pos=%.1f,%.1f,%.1f sec=%u inst=%u cand=%u drawn=%u budget=%u pops=%lu ready=%u loading=%u lists=%luK free=%luK largest=%luK loads=%lu reloads=%lu evict=%lu polys=%u>%u\n",
+		fprintf(out, "%d pos=%.1f,%.1f,%.1f sec=%u inst=%u cand=%u drawn=%u budget=%u pops=%lu ready=%u loading=%u lists=%luK free=%luK largest=%luK loads=%lu reloads=%lu evict=%lu polys=%u>%u upd=%u sector=%lu mdlread=%lu parse=%lu texread=%lu compile=%lu start=%lu upload=%lu\n",
 		        f, player::g.x, player::g.y, player::g.z, s.sectors, s.instances, s.candidates, s.drawn, s.culledBudget,
 		        (unsigned long)s.budgetPops,
 		        s.modelsReady, s.modelsLoading, (unsigned long)(s.listBytes >> 10),
 		        (unsigned long)((mem::stats(mem::REGION_STREAM).capacity - mem::stats(mem::REGION_STREAM).used) >> 10),
 		        (unsigned long)(mem::stats(mem::REGION_STREAM).largestFree >> 10),
 		        (unsigned long)s.loads, (unsigned long)s.reloads, (unsigned long)s.evictions,
-		        s.polysBefore, s.polysAfter);
+		        s.polysBefore, s.polysAfter, s.updateUs, (unsigned long)s.sectorUs,
+		        (unsigned long)s.modelReadUs, (unsigned long)s.modelParseUs,
+		        (unsigned long)s.texReadUs, (unsigned long)s.compileUs,
+		        (unsigned long)s.startUs, (unsigned long)s.uploadUs);
 		if (f == 850) {
 			fclose(out);
 			out = nullptr;
