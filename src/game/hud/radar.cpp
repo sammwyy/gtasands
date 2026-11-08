@@ -70,7 +70,7 @@ static FullTile* s_full[TILES * TILES];
 static MipTile* s_mip[TILES * TILES];
 static u8 s_present[TILES * TILES];
 static FILE* s_file;
-static u32 s_fullOff, s_mipOff, s_frame;
+static u32 s_fullOff, s_mipOff, s_frame, s_tileLoads;
 
 static float s_range = 180.0f;
 
@@ -177,12 +177,15 @@ int legendTypes(float centerX, float centerY, bool full, u8* out, int capacity) 
 
 int legendRadarTypes(u8* out, int capacity) {
 	bool seen[MAP_TYPE_COUNT] = {};
-	const float reach = s_range * (R - 9) / R, reach2 = reach * reach;
+	const int reach = (int)(s_range * (R - 9) / R), reach2 = reach * reach;
+	const int px = (int)player::g.x, py = (int)player::g.y;
+	const bool all = entryexits::unlocked();
 	for (int i = 0; i < s_pointCount; i++) {
 		const ds::MapPoint& p = s_points[i];
-		if (!entryexits::unlocked() && !missions::pointAllowed(p.x, p.y)) continue;
-		const float dx = p.x - player::g.x, dy = p.y - player::g.y;
-		if (p.icon < MAP_TYPE_COUNT - 2 && dx * dx + dy * dy < reach2) seen[p.icon] = true;
+		if (p.icon >= MAP_TYPE_COUNT - 2 || seen[p.icon]) continue;
+		const int dx = p.x - px, dy = p.y - py;
+		if (dx > reach || dx < -reach || dy > reach || dy < -reach || dx * dx + dy * dy >= reach2) continue;
+		if (all || missions::pointAllowed(p.x, p.y)) seen[p.icon] = true;
 	}
 	seen[MAP_TYPE_COUNT - 2] = true;
 	for (const Blip& b : s_blips) {
@@ -222,6 +225,7 @@ static bool loadTile(int key, mem::Pool<T>& pool, T** map, u32 base, u32& budget
 		return false;
 	}
 	budget -= sizeof(T::px);
+	s_tileLoads++;
 	t->key = (u8)key;
 	t->lastUse = s_frame;
 	map[key] = t;
@@ -261,22 +265,44 @@ static const u16* tile(int tx, int ty, bool mip) {
 	return s_full[key] ? s_full[key]->px : nullptr;
 }
 
-// The map proper: for each fb row of the disc, march across in world space.
-static void drawMap() {
-	const player::State& p = player::g;
+static u32 s_blipVersion;
 
+void update() {
+	const player::State& p = player::g;
 	// dynamic zoom toward speed-based target (DrawMap's range easing);
 	// ~360 at rest — a bit wider than PC's 180 so a couple of blocks show
 	float target = p.speed * 0.6666f + 340.0f;
 	if (target < RMIN) target = RMIN;
 	if (target > RMAX) target = RMAX;
 	s_range += (target - s_range) * 0.06f;
-
-	// mip when a texel would cover more than ~1.4 fb pixels
 	const bool mip = s_range > (float)MIP_RANGE;
 	s_frame++;
 	u32 budget = IO_BUDGET;
 	stream(p.x, p.y, s_range + 150.0f, !mip || s_range < MIP_RANGE + MIP_HYST, mip || s_range > MIP_RANGE - MIP_HYST, budget);
+}
+
+// What the disc shows, quantised (0.5 m, ~0.35 degree, whole range units):
+// the HUD repaints the radar only when this changes.
+u32 signature() {
+	const player::State& p = player::g;
+	u32 h = 0x811C9DC5u;
+	auto mix = [&](u32 v) { h = (h ^ v) * 0x01000193u; };
+	mix((u32)(int)(p.x * 2.0f));
+	mix((u32)(int)(p.y * 2.0f));
+	mix((u32)((int)(p.heading * 32768.0f / (2.0f * 3.14159265f)) >> 6));
+	mix((u32)(int)s_range);
+	mix(s_blipVersion);
+	mix(s_tileLoads);
+	mix((u32)world::area() * 2 + (u32)entryexits::unlocked());
+	mix((u32)missions::completed());
+	return h;
+}
+
+// The map proper: for each fb row of the disc, march across in world space.
+static void drawMap() {
+	const player::State& p = player::g;
+	// mip when a texel would cover more than ~1.4 fb pixels
+	const bool mip = s_range > (float)MIP_RANGE;
 
 	const int tileShift = mip ? 5 : 6;
 	const int tileMask = (1 << tileShift) - 1;
@@ -333,6 +359,12 @@ static void drawMap() {
 	subfb::circle(CX, CY, R, rgb(40, 40, 40));
 }
 
+void streamPauseMap(float centerX, float centerY) {
+	s_frame++;
+	u32 budget = IO_BUDGET;
+	stream(centerX, centerY, 550.0f, true, false, budget);
+}
+
 void drawPauseMap(float centerX, float centerY) {
 	constexpr int step = 4 << 12;
 	const s64 texPerUnit = ((s64)64 << 16) / 500;
@@ -343,9 +375,6 @@ void drawPauseMap(float centerX, float centerY) {
 	const int left = pxQ - (subfb::W / 2) * step;
 	int north = pyQ + (subfb::H / 2) * step;
 	const int U0 = (int)((((s64)left + (3000 << 12)) * texPerUnit) >> 16);
-	s_frame++;
-	u32 budget = IO_BUDGET;
-	stream(centerX, centerY, 550.0f, true, false, budget);
 	u16* fb = subfb::frame();
 	for (int y = 0; y < subfb::H; y++, north -= step) {
 		int U = U0;
@@ -441,13 +470,17 @@ static void drawPoints() {
 	if (world::area() != 0) return;
 	const float c = cosf(player::g.heading), s = sinf(player::g.heading);
 	const float k = R / s_range, reach = s_range * (R - 9) / R;
-	const float reach2 = reach * reach;
+	// integer reject first: soft-float math over every map point added up
+	const int reachI = (int)reach, reach2 = reachI * reachI;
+	const int px = (int)player::g.x, py = (int)player::g.y;
+	const bool all = entryexits::unlocked();
 	for (int i = 0; i < s_pointCount; i++) {
 		const ds::MapPoint& p = s_points[i];
-		if (!entryexits::unlocked() && !missions::pointAllowed(p.x, p.y)) continue;
 		if (p.icon >= MAP_TYPE_COUNT - 2) continue;
+		const int ix = p.x - px, iy = p.y - py;
+		if (ix > reachI || ix < -reachI || iy > reachI || iy < -reachI || ix * ix + iy * iy >= reach2) continue;
+		if (!all && !missions::pointAllowed(p.x, p.y)) continue;
 		const float dx = p.x - player::g.x, dy = p.y - player::g.y;
-		if (dx * dx + dy * dy >= reach2) continue;
 		const subfb::Sprite& icon = s_pointSprites[p.icon];
 		if (icon.col)
 			subfb::blit(icon, CX + (int)((dx * c + dy * s) * k) - icon.w / 2,
@@ -471,6 +504,11 @@ void draw() {
 void setBlip(int id, float x, float y, const char* sprite, u8 r, u8 g, u8 b) {
 	if ((unsigned)id >= 16) return;
 	Blip& bl = s_blips[id];
+	const char* name = sprite ? sprite : "";
+	if (bl.on && bl.x == (s16)x && bl.y == (s16)y && bl.r == r && bl.g == g && bl.b == b &&
+	    !strncmp(bl.spriteName, name, sizeof bl.spriteName - 1))
+		return;   // unchanged: no sprite decode, no radar repaint
+	s_blipVersion++;
 	hudtex::freeSprite(bl.spr);
 	bl = {};
 	bl.on = true;
@@ -485,6 +523,7 @@ void setBlip(int id, float x, float y, const char* sprite, u8 r, u8 g, u8 b) {
 
 void clearBlip(int id) {
 	if ((unsigned)id >= 16) return;
+	if (s_blips[id].on) s_blipVersion++;
 	hudtex::freeSprite(s_blips[id].spr);
 	s_blips[id] = {};
 }
@@ -492,5 +531,6 @@ void clearBlip(int id) {
 float range() { return s_range; }
 
 int tilesCached() { return s_fullPool.count() + s_mipPool.count(); }
+u32 tileLoads() { return s_tileLoads; }
 
 }

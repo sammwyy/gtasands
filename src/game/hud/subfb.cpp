@@ -6,20 +6,25 @@ namespace subfb {
 
 static u16 s_buf[W * H] __attribute__((aligned(4)));  // RAM backbuffer (96KB)
 static u16* s_vram;        // B16 bitmap target in VRAM C
-static inline u16* fb() { return s_buf; }
+static bool s_dirty = true;   // written since the last present
+static inline u16* fb() { s_dirty = true; return s_buf; }
 
 void init() {
 	videoSetModeSub(MODE_5_2D);
 	int id = bgInitSub(3, BgType_Bmp16, BgSize_B16_256x256, 0, 0);
 	bgSetPriority(id, 0);
 	s_vram = bgGetGfxPtr(id);
+	s_dirty = true;
 }
 
 u16* frame() { return fb(); }
 
 // Inside vblank only: flush D-cache then DMA the 192 visible rows into the
-// bitmap. ~0.6ms, well inside the ~4.4ms blanking interval.
+// bitmap. ~0.6ms, well inside the ~4.4ms blanking interval; skipped when
+// nothing drew (the dirty-region HUD standing still, a static menu screen).
 void present() {
+	if (!s_dirty) return;
+	s_dirty = false;
 	DC_FlushRange(s_buf, sizeof s_buf);
 	dmaCopy(s_buf, s_vram, sizeof s_buf);
 }

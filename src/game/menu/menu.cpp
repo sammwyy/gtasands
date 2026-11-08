@@ -556,8 +556,34 @@ void CMenuManager::loadBottomArt() {
 	mem::free(src);
 }
 
+static u32 s_bottomSig;
+static bool s_bottomValid;
+
+void CMenuManager::invalidateBottom() { s_bottomValid = false; }
+
 void CMenuManager::drawBottom() {
 	loadBottomArt();
+	// the bottom screen is static between inputs: repaint (a full clear, the
+	// art copy or the pause map, text) only when what it shows changes
+	const bool map = !m_bMainMenuSwitch;
+	const bool pan = map && m_nCurrentScreen == SCREEN_MAP;
+	u32 sig = 0x811C9DC5u;
+	auto mix = [&](u32 v) { sig = (sig ^ v) * 0x01000193u; };
+	mix((u32)m_bMainMenuSwitch | (u32)m_mapFull << 1 | (u32)(s_globalMap != nullptr) << 2 | (u32)(s_globalFile != nullptr) << 3);
+	mix((u32)m_nCurrentScreen);
+	mix((u32)(uintptr_t)m_bottomArt);
+	mix((u32)m_nPrefsLanguage);
+	const bool global = m_nCurrentScreen == SCREEN_MAP && m_mapFull && s_globalMap && !s_globalFile;
+	if (map && !global) {
+		const float cx = pan ? m_mapX : player::g.x, cy = pan ? m_mapY : player::g.y;
+		radar::streamPauseMap(cx, cy);
+		mix((u32)(int)cx);
+		mix((u32)(int)cy);
+		mix(radar::tileLoads());
+	}
+	if (s_bottomValid && sig == s_bottomSig) return;
+	s_bottomValid = true;
+	s_bottomSig = sig;
 	subfb::clear(subfb::rgb(0, 0, 0));
 	if (m_bMainMenuSwitch) {
 		if (m_bottomArt) memcpy(subfb::frame(), m_bottomArt, subfb::W * subfb::H * sizeof(u16));

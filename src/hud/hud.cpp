@@ -518,10 +518,14 @@ static void pedTest(int f) {
 
 void draw() {
 	if (s_screen == Screen::GAME) {
+		static bool s_menuLast;   // the backbuffer holds the menu's bottom screen
 		if (FrontEndMenuManager.m_bMenuActive) {
+			if (!s_menuLast) FrontEndMenuManager.invalidateBottom();
+			s_menuLast = true;
 			FrontEndMenuManager.drawBottom();
 			return;
 		}
+		s_menuLast = false;
 		if (s_gameActive && chud::ready()) {
 			chud::draw();
 #ifdef GTASADS_DEBUG

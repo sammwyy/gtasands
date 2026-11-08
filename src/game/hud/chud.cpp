@@ -377,9 +377,20 @@ void draw() {
 		               0.46f, 0.66f, c_gold, hudfont::CENTER, 1, c_black);
 		return;
 	}
-	// radar: map + rim + sprites, cleared and redrawn every frame
-	subfb::rect(s_radarBox.x, s_radarBox.y, s_radarBox.w, s_radarBox.h, c_bg);
-	radar::draw();
+	// radar: map + rim + sprites, repainted when what it shows changes (it
+	// was ~half of the HUD's cost every frame, even standing still). Zone /
+	// vehicle names spill into the box while they show, so they force it.
+	radar::update();
+	const bool shown = updateNames();
+	const u32 fps = timing::fps();   // once per second: part of the radar box
+	const u32 rsig = mix(radar::signature(), fps);
+	const bool radarDirty = !s_radarBox.valid || s_radarBox.sig != rsig || shown || s_namesShown;
+	if (radarDirty) {
+		s_radarBox.sig = rsig;
+		s_radarBox.valid = true;
+		subfb::rect(s_radarBox.x, s_radarBox.y, s_radarBox.w, s_radarBox.h, c_bg);
+		radar::draw();
+	}
 
 	// stats column: clock, money, bars, wanted stars
 	const player::State& p = player::g;
@@ -407,7 +418,6 @@ void draw() {
 	// zone / vehicle names: repainted every frame while fading or shown (long
 	// names spill into the radar box, which was just cleared), once more to
 	// erase them
-	const bool shown = updateNames();
 	if (shown || s_namesShown) {
 		subfb::rect(s_namesBox.x, s_namesBox.y, s_namesBox.w, s_namesBox.h, c_bg);
 		drawNames();
@@ -417,7 +427,8 @@ void draw() {
 	if (statsDirty) s_missionBox.valid = false;
 	sig = mix(missions::completed() * 4 + missions::objective(),
 	          (u32)(uintptr_t)missions::instruction());
-	if (dirty(s_missionBox, sig)) {
+	const bool missionDirty = dirty(s_missionBox, sig);
+	if (missionDirty) {
 		const GxtChar* title = (const GxtChar*)missions::title();
 		const GxtChar* instruction = (const GxtChar*)missions::instruction();
 		float titleScale = 0.58f, instructionScale = 0.52f;
@@ -431,15 +442,24 @@ void draw() {
 		               instructionScale, 0.65f, c_lightGray, hudfont::LEFT, 1, c_black);
 	}
 
-	// fps counter in the empty corner the round radar leaves (radar box)
-	char fb[8];
-	snprintf(fb, sizeof fb, "%lu", timing::fps());
-	hudfont::print(hudfont::STYLE_GOTHIC, 5, 178, (const GxtChar*)fb,
-	               0.5f, 0.8f, c_lightGray, hudfont::LEFT, 1, c_black);
+	// fps counter in the empty corner the round radar leaves (radar box,
+	// left of the disc): only when it changes or the box was repainted
+	if (radarDirty) {
+		char fb[8];
+		snprintf(fb, sizeof fb, "%lu", (unsigned long)fps);
+		hudfont::print(hudfont::STYLE_GOTHIC, 5, 178, (const GxtChar*)fb,
+		               0.5f, 0.8f, c_lightGray, hudfont::LEFT, 1, c_black);
+	}
 	if (FrontEndMenuManager.m_bMapLegend) {
 		u8 types[radar::MAP_TYPE_COUNT];
 		const int count = radar::legendRadarTypes(types, radar::MAP_TYPE_COUNT);
 		const int page = count > 2 ? (timing::vblanks() / 240) % ((count + 1) / 2) : 0;
+		static u32 s_legendSig;
+		u32 lsig = mix(0x811C9DC5u, (u32)page * 32 + (u32)count);
+		for (int k = 0; k < count; k++) lsig = mix(lsig, types[k]);
+		// the panel overlaps the mission and names boxes: repainted with them
+		if (!radarDirty && !missionDirty && lsig == s_legendSig) return;
+		s_legendSig = lsig;
 		subfb::rect(120, 128, 136, 30, c_black);
 		for (int row = 0; row < 2 && page * 2 + row < count; row++) {
 			const int type = types[page * 2 + row], y = 128 + row * 15;

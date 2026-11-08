@@ -55,6 +55,7 @@ public:
 	void process();
 	void drawFrontEnd();
 	void drawBottom();
+	void invalidateBottom();   // the bottom framebuffer was drawn by someone else
 
 	uint32_t getNumberOfMenuOptions();
 	void switchToNewScreen(eMenuScreen screen);

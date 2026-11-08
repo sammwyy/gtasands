@@ -11,7 +11,10 @@ namespace radar {
 constexpr int MAP_TYPE_COUNT = 15;
 bool init();
 void prefetch();      // load every tile around the player now (loading screen)
-void draw();          // reads player::g each frame, streams tiles within a byte budget
+void update();        // every frame: range easing + tile streaming within a byte budget
+u32 signature();      // hash of what draw() would show (quantised): repaint only on change
+void draw();          // the disc, points, blips (reads player::g)
+void streamPauseMap(float centerX, float centerY);   // every frame the pause map is up (tile reads)
 void drawPauseMap(float centerX, float centerY);
 void drawFullPoints(int left, int top, int size);
 int legendTypes(float centerX, float centerY, bool full, u8* out, int capacity);
@@ -27,5 +30,6 @@ void clearBlip(int id);
 
 float range();        // current radar range (world units)
 int tilesCached();    // map tiles currently decoded in the cache
+u32 tileLoads();      // tiles read so far (changes when a view can show more)
 
 }
