@@ -349,28 +349,32 @@ void draw() {
 		subfb::clear(c_black);
 		const char* text = cutscene::caption();
 		if (text) {
-			char line[112];
-			for (int row = 0; row < 2 && *text; row++) {
+			char lines[4][112];
+			int rows = 0;
+			while (rows < 4 && *text) {
+				char* line = lines[rows];
 				int n = 0, space = 0;
-				while (text[n] && n < (int)sizeof line - 1) {
+				while (text[n] && n < (int)sizeof lines[rows] - 1) {
 					line[n] = text[n];
 					line[++n] = '\0';
 					if (line[n - 1] == ' ') space = n;
-					if (hudfont::width(hudfont::STYLE_MENU, (const GxtChar*)line, 0.36f) > 226.0f) {
+					if (hudfont::width(hudfont::STYLE_GOTHIC, (const GxtChar*)line, 0.5f) > 226.0f) {
 						n = space ? space : n - 1;
 						break;
 					}
 				}
 				line[n] = '\0';
 				while (n && line[n - 1] == ' ') line[--n] = '\0';
-				hudfont::print(hudfont::STYLE_MENU, 128, 137 + row * 19, (const GxtChar*)line,
-				               0.36f, 0.72f, c_lightGray, hudfont::CENTER, 2, c_black);
 				text += n;
 				while (*text == ' ') text++;
+				rows++;
 			}
+			for (int row = 0; row < rows; row++)
+				hudfont::print(hudfont::STYLE_GOTHIC, 128, 153 - (rows - 1 - row) * 19,
+				               (const GxtChar*)lines[row], 0.5f, 0.85f, c_lightGray, hudfont::CENTER, 1, c_black);
 		}
-		hudfont::print(hudfont::STYLE_MENU, 128, 178, (const GxtChar*)"A / B / START: SKIP",
-		               0.32f, 0.55f, c_gold, hudfont::CENTER, 1, c_black);
+		hudfont::print(hudfont::STYLE_GOTHIC, 128, 178, (const GxtChar*)"A / B / START: SKIP",
+		               0.46f, 0.66f, c_gold, hudfont::CENTER, 1, c_black);
 		return;
 	}
 	// radar: map + rim + sprites, cleared and redrawn every frame
@@ -414,10 +418,17 @@ void draw() {
 	sig = mix(missions::completed() * 4 + missions::objective(),
 	          (u32)(uintptr_t)missions::instruction());
 	if (dirty(s_missionBox, sig)) {
-		hudfont::print(hudfont::STYLE_MENU, 124, 119, (const GxtChar*)missions::title(),
-		               0.36f, 0.65f, c_gold, hudfont::LEFT, 1, c_black);
-		hudfont::print(hudfont::STYLE_MENU, 124, 133, (const GxtChar*)missions::instruction(),
-		               0.30f, 0.55f, c_lightGray, hudfont::LEFT, 1, c_black);
+		const GxtChar* title = (const GxtChar*)missions::title();
+		const GxtChar* instruction = (const GxtChar*)missions::instruction();
+		float titleScale = 0.58f, instructionScale = 0.52f;
+		const float titleWidth = hudfont::rwidth(hudfont::STYLE_GOTHIC, title, titleScale);
+		const float instructionWidth = hudfont::rwidth(hudfont::STYLE_GOTHIC, instruction, instructionScale);
+		if (titleWidth > 128.0f) titleScale *= 128.0f / titleWidth;
+		if (instructionWidth > 128.0f) instructionScale *= 128.0f / instructionWidth;
+		hudfont::print(hudfont::STYLE_GOTHIC, 124, 119, title,
+		               titleScale, 0.7f, c_gold, hudfont::LEFT, 1, c_black);
+		hudfont::print(hudfont::STYLE_GOTHIC, 124, 133, instruction,
+		               instructionScale, 0.65f, c_lightGray, hudfont::LEFT, 1, c_black);
 	}
 
 	// fps counter in the empty corner the round radar leaves (radar box)

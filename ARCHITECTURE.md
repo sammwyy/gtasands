@@ -640,6 +640,10 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   host with an nds.h stub (`shim.cpp`) and dumps PPMs (`./hosthud [frames] [out.ppm]`,
   `./hosthud shots <prefix>`). Glyph quads are 32*sw wide but advance prop*sw: right-anchored text
   must account for the overhang (`hudfont::print RIGHT`).
+- The mission title/objective and cutscene captions use `STYLE_GOTHIC` (`font1`, also used
+  by the main menu's bottom-screen text). Mission lines shrink to fit the 128 px
+  right-hand HUD column; captions wrap into up to four bottom-aligned lines
+  above the skip prompt.
 - `chud::initStep()` is a loading job; `hud::setGameActive()` gates drawing to INGAME;
   `chud::invalidate()` forces a full repaint. `hud::log` keeps a 32-line ring (14 replayed when
   the console is re-initialised on switching back to DEBUG).
