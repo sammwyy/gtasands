@@ -17,6 +17,7 @@
 #ifdef GTASADS_DEBUG
 #include "audio/aehardware.h"
 #include "audio/audioengine.h"
+#include "audio/aeradio.h"
 #include "game/cj.h"
 #include "game/collision.h"
 #include "game/cutscene.h"
@@ -271,6 +272,31 @@ static void vehTest(int f) {
 }
 #endif
 
+#if defined(GTASADS_DEBUG) && defined(GTASADS_RADIOTEST)
+static void radioTest(int f) {
+	static FILE* out;
+	if (f == 600) {
+		player::respawn();
+		dbg::opts.alwaysRadio = true;
+		out = fopen("fat:/gtasads_radiotest.txt", "w");
+	}
+	if (f == 700 || f == 800) input::debugHold(KEY_L | (f == 800 ? KEY_UP : 0));
+	if (f == 703) input::debugHold(0);
+	if (f == 803) input::debugHold(KEY_UP);
+	if (f == 830) input::debugHold(0);
+	if (f == 850) dbg::opts.alwaysRadio = false;
+	if (f == 710) aehw::captureStart(32768, 16384);
+	if (f == 870 && !aehw::captureBusy()) aehw::captureSave("fat:/gtasads_radio.wav");
+	if (out && f >= 620 && f <= 900 && f % 20 == 0) {
+		char ab[320];
+		audio::statsLine(ab, sizeof ab);
+		fprintf(out, "%d car=%d station=%d fps=%lu %s\n", f, player::vehicleId(), aeradio::station(),
+		        (unsigned long)timing::fps(), ab);
+	}
+	if (f == 901 && out) { fclose(out); out = nullptr; }
+}
+#endif
+
 #if defined(GTASADS_DEBUG) && defined(GTASADS_SKIDTEST)
 static void skidTest(int f) {
 	static int id = -1;
@@ -496,6 +522,9 @@ void draw() {
 #ifdef GTASADS_VEHTEST
 			vehTest(s_gameFrames);
 #endif
+#ifdef GTASADS_RADIOTEST
+			radioTest(s_gameFrames);
+#endif
 #ifdef GTASADS_SKIDTEST
 			skidTest(s_gameFrames);
 #endif
@@ -512,7 +541,8 @@ void draw() {
 			// (shot0 at the marker frame, then turn, give streaming 60 frames,
 			// capture), a bird's eye view (shot4), then a teleport 150 m west to
 			// exercise sector streaming + eviction (shot5, gtasads_hudok2.txt)
-#ifndef GTASADS_FLICKERTEST
+#if defined(GTASADS_SCREENSHOTTEST) || defined(GTASADS_COLTEST) || defined(GTASADS_VEHTEST) || \
+    defined(GTASADS_PEDTEST) || defined(GTASADS_WORLDTEST)
 			static const float k_yaw[6] = { 0.0f, 1.5708f, 3.1416f, -1.5708f, 0.0f, 3.1416f };
 			for (int k = 0; k < 6; k++) {
 				const int at = 120 + k * 90;
@@ -564,6 +594,8 @@ void draw() {
 				        (unsigned long)ps.drawUs, (unsigned long)ps.poseUs, (unsigned long)ps.posePeakUs,
 				        (unsigned long)(ps.poseCount ? ps.poseTotalUs / ps.poseCount : 0), ps.wanted);
 			};
+#if defined(GTASADS_SCREENSHOTTEST) || defined(GTASADS_COLTEST) || defined(GTASADS_VEHTEST) || \
+    defined(GTASADS_PEDTEST) || defined(GTASADS_WORLDTEST)
 			if (s_gameFrames == 120 + 5 * 90 + 2) {
 				char mb[128];
 				mem::summary(mb, sizeof mb);
@@ -574,6 +606,7 @@ void draw() {
 					fclose(f);
 				}
 			}
+#endif
 			if (s_gameFrames == 120) {
 				char buf[160], mb[128];
 				chud::stats(buf, sizeof buf);

@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 // CAEStreamingChannel + CAEAudioHardware::PlayTrack reduced to one mono
-// track at a time on aehw::STREAM_CHANNEL (ambience; radio would be next).
+// track at a time on aehw::STREAM_CHANNEL (ambience or SD radio).
 // Tracks live in audio/streams/*.dsst as one long DSND each. The hardware
 // ADPCM decoder cannot be fed a ring (its loop restores the state saved at
 // the loop point), so the track is decoded in software (IMA-ADPCM, same
@@ -15,7 +15,11 @@ namespace aestream {
 // Starts trackId (TrakLkup.dat index). Resuming the track that was stopped
 // last continues where it left off (m_PrevAmbiencePlayTimeMs); otherwise
 // it starts at the beginning. Returns false if the track is not in the build.
-bool play(uint32_t trackId, float volumeDb, bool loop, bool resume = true);
+bool play(uint32_t trackId, float volumeDb, bool loop, bool resume = true, uint32_t startMs = 0);
+// Radio station index 0..10, in the order CH CO CR DS HC MH MR NJ RE RG TK.
+bool radioPack(int station);
+uint32_t radioDurationMs(int station, uint32_t trackId);
+bool reserve();
 void stop();
 bool playing();
 uint32_t track();                 // current track id (~0u when stopped)

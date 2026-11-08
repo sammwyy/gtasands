@@ -31,6 +31,7 @@ struct Options {
 	bool water = true;       // water.dat surfaces (game/waterlevel)
 	bool skidmarks = true;   // CSkidmarks strips
 	bool vehLights = true;   // head / tail light coronas + the headlight pool on the ground
+	bool alwaysRadio = false;
 	// peds (REND tab)
 	bool peds = true;        // random ped population (spawning; live peds keep going when off)
 	int pedDensity = 100;    // % of the popcycle.dat ped count (CPopulation::PedDensityMultiplier)

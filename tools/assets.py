@@ -136,6 +136,7 @@ def main():
     b.add_argument('--limit', type=int, default=0, help='only first N entries per section (quick tests)')
     s = sp.add_parser('sync')
     s.add_argument('--dry-run', action='store_true')
+    s.add_argument('sections', nargs='*')
     sp.add_parser('report')
     i = sp.add_parser('info')
     i.add_argument('spec')
@@ -148,13 +149,17 @@ def main():
     ls.add_argument('-n', type=int, default=30)
     a = ap.parse_args()
     cfg = Config(a.config)
+    if a.cmd in ('sync', 'build') and getattr(a, 'sections', []) == ['radio_streams']:
+        cfg.out = ROOT / 'build' / 'radio' / 'gtasads'
+        cfg.report = ROOT / 'build' / 'radio' / 'report.json'
+        cfg.manifest = ROOT / 'build' / 'radio' / 'manifest.json'
     if a.cmd == 'build':
         unknown = [x for x in a.sections if x not in cfg.sections]
         if unknown:
             sys.exit(f'unknown sections: {unknown}; available: {list(cfg.sections)}')
         Builder(cfg, a.jobs, a.force, a.limit).build(a.sections)
     elif a.cmd == 'sync':
-        sync(cfg, a.dry_run)
+        sync(cfg, a.dry_run, a.sections)
     elif a.cmd == 'report':
         print_report(cfg)
     elif a.cmd == 'info':

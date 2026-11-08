@@ -94,6 +94,7 @@ extern State g;
 extern unsigned g_clockH, g_clockM, g_clockDay, g_clockMonth;
 extern int g_weekday;
 unsigned clockSeconds();    // CClock::ms_nGameClockSeconds, 0..59
+uint32_t gameMinutesPassed(); // monotonic game-time counter for radio auto-retune
 float minutesToday();       // CClock::GetMinutesToday (fractional, 0..1440)
 void setClock(unsigned h, unsigned m);   // CClock::SetGameClock (seconds reset)
 

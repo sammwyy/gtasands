@@ -60,6 +60,12 @@ at the spawn (~15-25 while driving).
   The embedded variant uses an empty SD root and reads assets from NitroFS.
 - `make sync` / `make assets` wrap `tools/assets.py sync|build`. `make compdb`, `make clean`,
   `make distclean` (also removes `nitrofs/`).
+- Full radio is SD-only: `make radio-sync` copies the original PC station packs,
+  `make radio-assets` converts them to `build/radio/gtasads/`, then `make stage-sd`
+  stages them with normal assets in `build/gtasads/`. Neither the default asset
+  build nor embedded ROM includes them; User Tracks is excluded. The
+  `game/audio/radio_config/TrakLkup.dat` must match the station packs (not
+  necessarily `game/audio/CONFIG/TrakLkup.dat`).
 
 ## Verification
 - Smoke: `timeout -s INT 8 melonds build/fat-gtasads.nds` must not crash (exit 124 = still running).
@@ -79,11 +85,13 @@ at the spawn (~15-25 while driving).
   For DSi use `build-sd-dsi` / `run-sd`; a verified DSi DEBUG run reported
   `str 2134/14782K ... heapok=1` in
   `build/emulator/dsi-sd/sd-root/gtasads_hudok.txt`.
-- Headless screenshots (DEBUG): the hudok block captures the 3D screen at frames 120 + k*90
+- Headless screenshots (DEBUG with `-DGTASADS_SCREENSHOTTEST`, or COLTEST/VEHTEST/PEDTEST/WORLDTEST):
+  the hudok block captures the 3D screen at frames 120 + k*90
   (`build/emulator/ds-sd/sd-root/gtasads_shot0..5.dscr`: N, W, S, E, bird's eye, 150 m west after a teleport) and writes
   `gtasads_hudok2.txt` after the teleport. Convert + look at them: `python3 tools/dsshot.py
   build/emulator/ds-sd/sd-root/gtasads_shot0.dscr /tmp/shot0.png`, then read the PNG. Needs ~100 s of emulator time
-  (`timeout -s INT 100`). The capture borrows VRAM D (textures there are garbage afterwards).
+  (`timeout -s INT 100`). The capture borrows VRAM D (textures there are garbage afterwards);
+  ordinary DEBUG runs do not capture, so opening pause does not inherit corrupted textures.
 - To test a specific state headless (time, weather...), add a temporary `#ifdef` hook in a loading
   job and pass it through `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DMYHOOK=..."`;
   remove it afterwards.
@@ -94,11 +102,16 @@ at the spawn (~15-25 while driving).
   `gtasads_coltest.txt` (pos, camera distance, near list per 20 frames) + shot6 / shot7.
   Needs `timeout -s INT 140`. `tools/dsshot.py IN OUT --scale 3` zooms to check 1-px outlines.
 - Audio test (DEBUG): `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DGTASADS_AUDTEST"`
-  runs, jumps, punches, rain + lightning, M4 bursts, sandstorm after the screenshot sequence;
+  runs, jumps, punches, rain + lightning, M4 bursts, sandstorm after frame 600;
   `gtasads_audtest.txt` = `aud:` stats per phase, `gtasads_aud_<phase>.wav` = the real mixer output
   (capture units). `python3 tools/audwav.py build/emulator/ds-sd/sd-root/gtasads_aud_run.wav [--png out.png]` prints
   peak/RMS/clipping. Needs `timeout -s INT 170`; don't rebuild the ROM while it runs, and keep the
   melonDS window unfocused (key presses there move CJ and skew the numbers).
+- Radio test (DEBUG, SD assets staged): `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DGTASADS_RADIOTEST"`
+  enables Always Radio at frame 600 and taps L twice (second tap while moving), then disables it.
+  `gtasads_radiotest.txt` reports station / track / stream service µs / FPS, and
+  `gtasads_radio.wav` captures the real mixer. Use `timeout -s INT 145`; `make stage-sd`
+  stages the separately built radio packs before `make run-sd-ds`.
 - Vehicle test (DEBUG): `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DGTASADS_VEHTEST"` spawns a
   Greenwood, presses Y (walk to door, open, getin, close), drives west into a second car, brakes, gets out,
   sets the health under 250 (fire -> explosion). `gtasads_vehtest.txt` (car/CJ state per 20 frames, crash damage

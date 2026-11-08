@@ -32,10 +32,11 @@ struct Pad {
 };
 
 // Once per frame, before the simulation steps.
-void update(const input::State& in);
+void update(const input::State& in, bool driving = false);
 const Pad& get();
 // The real buttons even while an override is set.
 const Pad& raw();
+bool hornHeld();
 // A scripted stick for the simulation (CJ walking to a car door), nullptr = off.
 void setOverride(const Pad* p);
 // Fixed-step loops: edge flags fire on the first step only.

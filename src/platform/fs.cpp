@@ -154,6 +154,22 @@ bool init() {
 bool ready() { return s_ready; }
 const char* backend() { return s_ready ? (s_fat ? s_base : "nitrofs") : "none"; }
 
+const char* radioRoot() {
+	if (!s_ready) return nullptr;
+	static bool triedMount, mounted;
+	if (!s_fat && !triedMount) { mounted = fatInitDefault(); triedMount = true; }
+	if (!s_fat && !mounted) return nullptr;
+	static char root[80];
+	char path[112];
+	for (const char* vol : { "sd", "fat" }) {
+		snprintf(root, sizeof root, "%s:/gtasads/audio/streams", vol);
+		snprintf(path, sizeof path, "%s/ch.dsst", root);
+		FILE* f = fopen(path, "rb");
+		if (f) { fclose(f); return root; }
+	}
+	return nullptr;
+}
+
 long readText(const char* path, char* buf, size_t cap) {
 	char full[256];
 	snprintf(full, sizeof full, "nitro:/%s", path);

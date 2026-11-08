@@ -18,6 +18,7 @@
 #include "game/entryexits.h"
 #include "game/hud/chud.h"
 #include "game/hud/radar.h"
+#include "game/menu/menu.h"
 #include "game/pedmodel.h"
 #include "game/peds.h"
 #include "game/player.h"
@@ -747,6 +748,13 @@ static void pageCheats(bool inGame) {
 		line(8, "Vehicle lights");
 		c = 17;
 		if (button(8, c, dbg::opts.vehLights ? "ON" : "OFF")) dbg::opts.vehLights = !dbg::opts.vehLights;
+		line(9, "Always radio");
+		c = 17;
+		if (button(9, c, dbg::opts.alwaysRadio ? "ON" : "OFF")) dbg::opts.alwaysRadio = !dbg::opts.alwaysRadio;
+		line(10, "Radio station %2d", FrontEndMenuManager.m_nRadioStation);
+		c = 22;
+		if (button(10, c, "<")) FrontEndMenuManager.scrollRadioStations(-1);
+		if (button(10, c, ">")) FrontEndMenuManager.scrollRadioStations(1);
 	} else if (s_cheatCat == 2) {
 		line(2, "Peds          %d", peds::count());
 		c = 20;

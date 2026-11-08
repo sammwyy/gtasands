@@ -318,6 +318,15 @@ audio = { sample_rate = 11025, track_ids = [706, 708] }
 # remove = false
 # audio = { sample_rate = 11025, max_tracks = 10 }
 
+[radio_streams]
+kind = "streams"
+sd_only = true
+src = "audio"
+lookup_dir = "radio_config"
+out = "audio/streams"
+keep = ["CH", "CO", "CR", "DS", "HC", "MH", "MR", "NJ", "RE", "RG", "TK"]
+audio = { sample_rate = 11025, format = "adpcm", seekable = true }
+
 [movies]                  # intro/logo videos -> DVID frames + PCM16 audio
 kind = "intro"
 src = ["movies/Logo.mpg", "movies/GTAtitles.mpg"]

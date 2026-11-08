@@ -65,7 +65,7 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `game/loadscreen.*` | CLoadingScreen + resumable init jobs |
 | `game/zones.*` | info.zon -> zone GXT names |
 | `game/sfx.*`, `game/intro.*` | frontend audio entity (menu beeps, whoosh, loading tune) on `src/audio`; DVID movie player |
-| `audio/` | audio engine (section 8b): hardware channels, bank/sound cache, sound manager, stream channel, ped / weapon / weather / vehicle entities, ambience tracks, audio zones |
+| `audio/` | audio engine (section 8b): hardware channels, bank/sound cache, sound manager, stream channel, ped / weapon / weather / vehicle entities, ambience tracks, SD radio, audio zones |
 | `game/menu/` | CMenuManager port (PC screens table minus Quit in title/pause) |
 | `game/text/` | CText (GXT), CFont |
 | `game/hud/` | CHud/CRadar ports on a CPU framebuffer (`subfb`), `hudtex`, `hudfont` |
@@ -749,15 +749,60 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   ACT_LAND; ACT_PUNCH phase 0.2; fireOne / reload) and `weather.cpp`.
 - **Stream** (`aestream`, CAEStreamingChannel): one mono track from `audio/streams/*.dsst`,
   software IMA-ADPCM into a 16 KB PCM16 ring (the mixer's ADPCM can't loop a ring); play position
-  from the CPU timer and the channel timer. ~16k samples/s, ~0.5 ms/frame. Resumes the last track.
+  from the CPU timer and the channel timer. ~16k samples/s for ambience; the SD radio uses 11.025k.
+  Resumes the last ambience track. DSST v2 (radio only) has 20-byte entries pointing to decoder
+  checkpoints every 8192 samples, allowing direct entry mid-song with <8192 samples of decode.
+  Its 16 KB PCM ring is reserved during audio loading and retained across track
+  changes, so entering a car cannot fail to allocate it after the world fills
+  and fragments the DS heap.
 - **Ambience** (`aeambience`, CAEAmbienceTrackManager): sandstorm -> track 167, else the active
   audio zone's track (`audiozones`, `data/maps/audiozon.ipl`, all interiors so far); fades
-  -0.4 dB/frame out, starts at -34 dB, +1 dB/frame in. No radio / water tracks.
+  -0.4 dB/frame out, starts at -34 dB, +1 dB/frame in. Yields the stream channel to
+  vehicle radio; no water tracks.
+- **Radio** (`aeradio`, CAERadioTrackManager subset): L tap while driving cycles 11 original
+  stations + OFF; hold L to sound the horn (after the tap window), so a station
+  change never triggers it. On foot L still cycles weapons. The radio stream
+  starts at -2 dB before the menu music fader instead of -8 dB. Radio-only
+  PCM gets a 1.5x gain below 18,000 with a soft knee above it, keeping decoded
+  samples below full scale even at maximum menu volume; ambience and cutscenes
+  retain their original levels. Music IDs/order come from
+  `third_party/gta-reversed/source/game_sa/Audio/Config/RadioStreamsPC.h`. A common
+  unpaused real-time counter advances even outside a car, so retuning joins the current
+  song rather than restarting it. The 60-second / five-game-hour auto-retune window uses
+  `player::gameMinutesPassed` (CClock, one game minute per second); the song timeline uses
+  real vblanks, not accelerated CClock time. The station remains on each vehicle, and
+  missing SD packs fall back to ambience. This is currently a music-only schedule:
+  the original randomized DJ banter, adverts, idents and mission-dependent WCTR
+  selection are not sequenced, although all original station tracks are converted.
+  `audio::initGameStep` loads one station directory per loading-screen slice.
+  While paused, selecting Radio Volume or Radio Station in Sound Options
+  previews that station at the current music-fader level, even on foot; it
+  stops on leaving either option, and normal gameplay radio resumes from
+  the shared station timeline rather than retaining the preview's playhead.
+  DEBUG 3D screenshots that overwrite VRAM D are opt-in, preventing those
+  captures from corrupting pause-menu textures during normal debugging.
+  Debug CHTS > VEH page 2 has an Always Radio toggle and station selector; when
+  enabled on foot, L tap cycles radio instead of weapons, without spawning a car.
+- **SD radio assets**: `radio_streams` in `resources.toml` converts the full CH/CO/CR/DS/
+  HC/MH/MR/NJ/RE/RG/TK packs to `build/radio/gtasads/audio/streams/` with DSST v2
+  checkpoints. Its `audio/radio_config/TrakLkup.dat` must belong to the same
+  source streams: the stock `audio/CONFIG/TrakLkup.dat` may have different
+  offsets. Explicit `make radio-sync` and `make radio-assets` are separate from the
+  normal ROM build (the 448 MB NitroFS budget stays unchanged); `make stage-sd` copies
+  them into `build/gtasads/` when present. At runtime `fs::radioRoot()` opens the
+  packs from `sd:/gtasads/` or `fat:/gtasads/`, even with an embedded game ROM.
+  User Tracks are excluded from both the menu cycle and the radio pack list.
 - Loading job `jobAudio` (`audio::initGameStep`: surfaud, audio zones, preload). `EventVol.dat`
   (`[audio_config]` copy section) gives GetDefaultVolume per event.
 - Cost: ~0.4 ms/frame idle (4 ambient loops), ~0.6 rain, ~0.9 under M4 fire; soft-float bound.
 - Debug: PERF rows 21-22, MEM rows 17-18, `aud:` line in hudok / coltest; `GTASADS_AUDTEST`
   (AGENTS.md) records the mixer with the capture units to WAVs (`tools/audwav.py`).
+  `GTASADS_RADIOTEST` enables Always Radio, retunes twice and records the track,
+  streaming cost and mixer output. In a DEBUG DS SD run with the full 259 MB
+  radio packs, stream service was usually ~0.5-0.7 ms, with occasional ~4.8 ms
+  SD read spikes, no underruns; 2-second capture peak -15.9 dBFS, RMS -30 dBFS,
+  clipping 0. DEBUG on-foot scene FPS was ~17-20 with radio and ~19-20 off,
+  not a controlled release-build performance comparison.
 
 ## 9. Memory (`src/mem/`)
 
@@ -827,7 +872,7 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
 - Changing a binary layout: edit the writer AND `ds_formats.h`, bump that format's version.
 - Known gaps: 2dfx, night vertex colours, second UV set, material effects, COL face groups and
   shadow meshes, IFP beats; GXT/FXP/SCM copied raw; no tex4x4; DSPK ignores hash collisions;
-  `las.ifp` (ANPK) unsupported. Disabled by default: speech paks, radio, cutscenes.
+  `las.ifp` (ANPK) unsupported. Disabled by default: speech paks; radio requires a separate SD build.
 - The source install is modded: `data/timecyc.dat` is a modded timecycle (both it and
   `_timecyc.dat` differ from stock); runtime uses `timecyc.dat` like the game.
 

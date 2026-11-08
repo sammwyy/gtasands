@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "audio/aepedaudio.h"
+#include "audio/aeradio.h"
 #include "audio/aeweaponaudio.h"
 #include "game/cj.h"
 #include "game/collision.h"
@@ -153,6 +154,7 @@ static int s_lastTx, s_lastTy;
 
 static uint32_t s_lastVbl;
 static uint32_t s_clockAcc;      // vblanks toward the next game minute
+static uint32_t s_gameMinutes;
 static int s_hoursNoEat;         // CPlayerInfo::m_nNumHoursDidntEat
 static bool s_hungryTold;
 
@@ -507,6 +509,7 @@ static void exercise(bool sprinting, bool running, uint32_t ms) {
 }
 
 unsigned clockSeconds() { return s_clockAcc; }   // 60 vblanks per game minute -> 1 vblank = 1 game second
+uint32_t gameMinutesPassed() { return s_gameMinutes; }
 float minutesToday() { return (float)(g_clockH * 60 + g_clockM) + (float)s_clockAcc / 60.0f; }
 void setClock(unsigned h, unsigned m) {
 	g_clockH = h % 24;
@@ -519,6 +522,7 @@ static void tickClock(uint32_t vblanks) {
 	s_clockAcc += vblanks * (uint32_t)dbg::opts.clockRate;
 	while (s_clockAcc >= 60) { // 60 vblanks = 1 real second = 1 game minute
 		s_clockAcc -= 60;
+		s_gameMinutes++;
 		g_clockM++;
 		if (g_clockM < 60) continue;
 		g_clockM = 0;
@@ -782,7 +786,7 @@ static void updateMove() {
 	const bool inAction = s_action != ACT_NONE;
 
 	g.aiming = pd.target && !inAction && !g.inVehicle;
-	if (pd.nextWeaponJustDown) nextWeapon();
+	if (pd.nextWeaponJustDown && !dbg::opts.alwaysRadio) nextWeapon();
 	const Slot& wep = s_slots[s_slot];
 	const bool melee = wep.melee || wep.type == WEAPON_UNARMED;
 
@@ -1214,7 +1218,7 @@ static void driveStep(veh::Vehicle& v) {
 		c.accel = (held & (KEY_UP | KEY_A)) ? 1.0f : 0.0f;
 		c.brake = (held & (KEY_DOWN | KEY_B)) ? 1.0f : 0.0f;
 		c.handbrake = held & KEY_R;
-		c.horn = held & KEY_L;
+		c.horn = pad::hornHeld();
 	}
 	if (pd.enterExitJustDown) s_wantExit = true;
 	if (s_wantExit) { c.accel = 0.0f; c.brake = v.speedFwd > 0.0f && !flying ? 1.0f : 0.0f; c.steer = 0.0f; }
@@ -1507,6 +1511,7 @@ void init() {
 	s_hoursNoEat = 0;
 	s_hungryTold = false;
 	s_clockAcc = 0;
+	s_gameMinutes = 0;
 	s_lastVbl = timing::vblanks();
 	memset(s_slots, 0, sizeof s_slots);
 	s_slots[0].type = WEAPON_UNARMED;
@@ -1523,7 +1528,8 @@ void init() {
 }
 
 void update() {
-	pad::update(input::get());
+	pad::update(input::get(), s_carTask == CT_DRIVE || dbg::opts.alwaysRadio);
+	if ((s_carTask == CT_DRIVE || dbg::opts.alwaysRadio) && pad::raw().nextWeaponJustDown) aeradio::nextStation();
 	g.vehicleRequest = pad::get().enterExitJustDown;
 	// inVehicle stays false until a car exists to enter. Y is the edge the
 	// vehicle port will consume; pressing it on foot changes nothing else.

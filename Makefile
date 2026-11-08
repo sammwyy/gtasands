@@ -177,7 +177,7 @@ else
   endif
 endif
 
-.PHONY: all build single build-ds build-dsi build-sd-ds build-sd-dsi stage-sd clean run run-ds run-sd run-sd-ds build-quick sdcard dldi sd assets sync distclean compdb
+.PHONY: all build single build-ds build-dsi build-sd-ds build-sd-dsi stage-sd clean run run-ds run-sd run-sd-ds build-quick sdcard dldi sd assets sync distclean compdb radio-assets radio-sync
 
 .DEFAULT_GOAL := all
 .NOTPARALLEL: build
@@ -216,6 +216,12 @@ assets:
 sync:
 	@python3 tools/assets.py sync
 
+radio-sync:
+	@python3 tools/assets.py sync radio_streams
+
+radio-assets:
+	@python3 tools/assets.py build radio_streams
+
 run: build-dsi
 	@python3 tools/run.py dsi rom "$(EMU)"
 run-ds: build-ds
@@ -234,6 +240,7 @@ build-quick:
 stage-sd: $(NITRO)/.stamp
 	@mkdir -p build/gtasads
 	@cp -au $(NITRO)/. build/gtasads/
+	@if test -d build/radio/gtasads/audio/streams; then cp -au build/radio/gtasads/. build/gtasads/; fi
 
 sdcard: build-sd-ds build-sd-dsi stage-sd
 

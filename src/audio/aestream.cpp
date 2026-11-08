@@ -11,6 +11,7 @@
 #include "audio/aesoundmanager.h"
 #include "hud/hud.h"
 #include "mem/mem.h"
+#include "platform/fs.h"
 #include "platform/timing.h"
 
 namespace aestream {
@@ -23,12 +24,16 @@ static const char* const k_packs[] = {
 	"nitro:/audio/streams/ambience.dsst", "nitro:/audio/streams/aa.dsst",
 	"nitro:/audio/streams/cutscene.dsst"
 };
-static constexpr int NUM_PACKS = sizeof k_packs / sizeof k_packs[0];
+static const char* const k_radioPacks[] = { "ch", "co", "cr", "ds", "hc", "mh", "mr", "nj", "re", "rg", "tk" };
+static const uint16_t k_radioFirst[] = { 231, 365, 513, 827, 981, 1111, 1259, 1399, 1542, 1706, 1829, 1922 };
+static constexpr int BASE_PACKS = sizeof k_packs / sizeof k_packs[0];
+static constexpr int NUM_PACKS = BASE_PACKS + sizeof k_radioPacks / sizeof k_radioPacks[0];
 
 struct Pack {
 	FILE* f;
 	ds::StreamTrack* tracks;
 	uint16_t n;
+	bool seekable;
 	bool tried;
 };
 static Pack s_packs[NUM_PACKS];
@@ -64,7 +69,7 @@ static uint32_t s_playedBase;        // samples played before the last timer cha
 static uint64_t s_playedTicks;       // CPU ticks since then
 static uint32_t s_lastTick;
 static bool s_loop, s_on;
-static bool s_cutscene;
+static bool s_cutscene, s_radio;
 static float s_volDb, s_freq = 1.0f, s_musicDb;
 static uint16_t s_hwVol;
 static Stats s_stats = { 0, 0, 0, ~0u };
@@ -76,17 +81,53 @@ static Pack* openPack(int i) {
 	Pack& p = s_packs[i];
 	if (p.tried) return p.f ? &p : nullptr;
 	p.tried = true;
-	p.f = fopen(k_packs[i], "rb");
+	char path[112];
+	const char* name = i < BASE_PACKS ? k_packs[i] : nullptr;
+	if (!name) {
+		const char* root = fs::radioRoot();
+		if (!root) return nullptr;
+		snprintf(path, sizeof path, "%s/%s.dsst", root, k_radioPacks[i - BASE_PACKS]);
+		name = path;
+	}
+	p.f = fopen(name, "rb");
 	ds::StreamPackHeader h;
-	if (p.f && fread(&h, sizeof h, 1, p.f) == 1 && h.magic == DS_FOURCC('D', 'S', 'S', 'T')) {
-		p.tracks = (ds::StreamTrack*)mem::perm(h.numTracks * sizeof(ds::StreamTrack), mem::TAG_AUDIO);
-		if (p.tracks && fread(p.tracks, sizeof(ds::StreamTrack), h.numTracks, p.f) == h.numTracks) p.n = h.numTracks;
+	if (p.f && fread(&h, sizeof h, 1, p.f) == 1 && h.magic == DS_FOURCC('D', 'S', 'S', 'T') &&
+	    h.numTracks <= 256 && h.version == (i < BASE_PACKS ? 1 : 2)) {
+		p.seekable = h.version == 2;
+		const unsigned stride = p.seekable ? sizeof(ds::StreamTrackSeek) : sizeof(ds::StreamTrack);
+		p.tracks = (ds::StreamTrack*)mem::alloc(h.numTracks * stride, mem::TAG_AUDIO);
+		if (p.tracks && fread(p.tracks, stride, h.numTracks, p.f) == h.numTracks) p.n = h.numTracks;
 	}
 	if (!p.n && p.f) {
 		fclose(p.f);
 		p.f = nullptr;
+		mem::free(p.tracks);
+		p.tracks = nullptr;
 	}
 	return p.f ? &p : nullptr;
+}
+
+static const ds::StreamTrack* findTrack(const Pack& p, uint32_t id) {
+	for (unsigned k = 0; k < p.n; k++) {
+		const ds::StreamTrack* t = p.seekable
+			? (const ds::StreamTrack*)((const ds::StreamTrackSeek*)p.tracks + k) : p.tracks + k;
+		if (t->trackId == id) return t;
+	}
+	return nullptr;
+}
+
+bool radioPack(int station) {
+	return (unsigned)station < sizeof k_radioPacks / sizeof k_radioPacks[0] && openPack(BASE_PACKS + station);
+}
+
+uint32_t radioDurationMs(int station, uint32_t trackId) {
+	if (!radioPack(station)) return 0;
+	Pack& p = s_packs[BASE_PACKS + station];
+	const ds::StreamTrack* t = findTrack(p, trackId);
+	ds::SoundHeader h;
+	if (!t || fseek(p.f, t->offset, SEEK_SET) || fread(&h, sizeof h, 1, p.f) != 1 ||
+	    h.magic != DS_FOURCC('D', 'S', 'N', 'D') || !h.sampleRate) return 0;
+	return (uint32_t)((uint64_t)h.numSamples * 1000 / h.sampleRate);
 }
 
 // Positions the file + buffer at sample d.done (nibble d.done of the track).
@@ -164,6 +205,13 @@ static void writeAhead(uint32_t upto) {
 		uint32_t n = upto - s_written;
 		if (n > RING_SAMPLES - at) n = RING_SAMPLES - at;
 		decode(s_dec, s_ring + at, n);
+		if (s_radio)
+			for (uint32_t i = 0; i < n; i++) {
+				const int v = s_ring[at + i];
+				const int mag = v < 0 ? -v : v;
+				const int boosted = mag <= 18000 ? mag + mag / 2 : 27000 + (mag - 18000) / 4;
+				s_ring[at + i] = (int16_t)(v < 0 ? -boosted : boosted);
+			}
 		DC_FlushRange(s_ring + at, n * 2);   // the mixer DMA reads RAM
 		s_written += n;
 		s_stats.decoded += n;
@@ -179,20 +227,25 @@ static unsigned hwHz() {
 	return (unsigned)((float)s_rate * f);
 }
 
-bool play(uint32_t trackId, float volumeDb, bool loop, bool resume) {
-	if (s_on && s_trackId == trackId) return true;
+bool play(uint32_t trackId, float volumeDb, bool loop, bool resume, uint32_t startMs) {
+	if (s_on && s_trackId == trackId && !startMs) return true;
 	stop();
 	if (!resume) s_haveSaved = false;
 	Pack* pack = nullptr;
 	const ds::StreamTrack* t = nullptr;
-	for (int i = 0; i < NUM_PACKS && !t; i++) {
-		Pack* p = openPack(i);
-		for (uint16_t k = 0; p && k < p->n; k++)
-			if (p->tracks[k].trackId == trackId) {
-				pack = p;
-				t = &p->tracks[k];
+	const bool radio = trackId >= k_radioFirst[0] && trackId < k_radioFirst[11] && trackId != 706 && trackId != 708;
+	int first = 0, last = BASE_PACKS;
+	if (radio) {
+		for (int i = 0; i < 11; i++)
+			if (trackId >= k_radioFirst[i] && trackId < k_radioFirst[i + 1]) {
+				first = BASE_PACKS + i;
+				last = first + 1;
 				break;
 			}
+	}
+	for (int i = first; i < last && !t; i++) {
+		Pack* p = openPack(i);
+		if (p && (t = findTrack(*p, trackId))) pack = p;
 	}
 	if (!t) {
 		hud::log("\x1b[33mstream: track %lu missing\x1b[39m", (unsigned long)trackId);
@@ -203,8 +256,7 @@ bool play(uint32_t trackId, float volumeDb, bool loop, bool resume) {
 	if (fseek(pack->f, t->offset, SEEK_SET) != 0 || fread(&h, sizeof h, 1, pack->f) != 1 ||
 	    h.magic != DS_FOURCC('D', 'S', 'N', 'D') || h.format != ds::SND_ADPCM || fread(adpcmHdr, 4, 1, pack->f) != 1)
 		return false;
-	if (!s_ring) s_ring = (int16_t*)mem::alloc(RING_SAMPLES * 2, mem::TAG_AUDIO, 32);
-	if (!s_ring) return false;
+	if (!reserve()) return false;
 	if (s_haveSaved && s_lastTrack == trackId) {
 		s_dec = s_saved;     // m_PrevAmbiencePlayTimeMs: carry on from where it stopped
 		s_dec.f = pack->f;
@@ -218,8 +270,28 @@ bool play(uint32_t trackId, float volumeDb, bool loop, bool resume) {
 		s_dec.idx0 = adpcmHdr[2] > 88 ? 88 : adpcmHdr[2];
 		restart(s_dec);
 	}
+	if (startMs && pack->seekable) {
+		const auto* st = (const ds::StreamTrackSeek*)t;
+		uint32_t sample = (uint32_t)((uint64_t)startMs * h.sampleRate / 1000);
+		if (sample >= h.numSamples) sample = h.numSamples ? h.numSamples - 1 : 0;
+		const uint32_t ck = sample / 8192;
+		uint8_t state[4];
+		if (ck < st->seekCount && fseek(pack->f, st->seekOffset + ck * 4, SEEK_SET) == 0 &&
+		    fread(state, sizeof state, 1, pack->f) == 1) {
+			s_dec.done = ck * 8192;
+			s_dec.pred = (int16_t)(state[0] | state[1] << 8);
+			s_dec.idx = state[2] > 88 ? 88 : state[2];
+			seekTo(s_dec);
+			int16_t discard[256];
+			while (s_dec.done < sample) {
+				const uint32_t n = sample - s_dec.done < 256 ? sample - s_dec.done : 256;
+				decode(s_dec, discard, n);
+			}
+		}
+	}
 	s_loop = loop;
 	s_cutscene = trackId == 706 || trackId == 708;
+	s_radio = radio;
 	s_rate = h.sampleRate;
 	s_volDb = volumeDb;
 	s_trackId = trackId;
@@ -236,6 +308,11 @@ bool play(uint32_t trackId, float volumeDb, bool loop, bool resume) {
 	return true;
 }
 
+bool reserve() {
+	if (!s_ring) s_ring = (int16_t*)mem::alloc(RING_SAMPLES * 2, mem::TAG_AUDIO, 32);
+	return s_ring != nullptr;
+}
+
 void stop() {
 	if (!s_on) return;
 	aehw::stop(aehw::STREAM_CHANNEL);
@@ -247,8 +324,7 @@ void stop() {
 	s_on = false;
 	s_trackId = ~0u;
 	s_stats.trackId = ~0u;
-	mem::free(s_ring);
-	s_ring = nullptr;
+	s_stats.serviceUs = 0;
 }
 
 bool playing() { return s_on; }

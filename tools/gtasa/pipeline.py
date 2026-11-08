@@ -165,7 +165,7 @@ class Builder:
             for name, sec in cfg.sections.items():
                 if only and name not in only:
                     continue
-                if not sec.get('enabled', True):
+                if not sec.get('enabled', True) or (sec.get('sd_only') and not only):
                     print(f'[{name}] disabled')
                     continue
                 st = self.report[name] = {'kind': sec['kind'], 'in': 0, 'out': 0, 'files': 0, 'removed': 0,
@@ -180,9 +180,10 @@ class Builder:
         prev.update(self.report)
         cfg.report.parent.mkdir(parents=True, exist_ok=True)
         cfg.report.write_text(json.dumps(prev, indent=1))
-        (cfg.out / '.stamp').touch()
+        if not only:
+            (cfg.out / '.stamp').touch()
         print(f'done in {time.time() - t0:.1f}s')
-        print_report(cfg, prev)
+        print_report(cfg, prev, only == ['radio_streams'])
 
     # -- helpers
     def _emit(self, rel, data):
@@ -332,7 +333,7 @@ class Builder:
 
     def do_sfx(self, name, sec, st):
         root = self.cfg.game / sec.get('src', 'audio')
-        cfgdir = root / 'CONFIG'
+        cfgdir = root / sec.get('lookup_dir', 'CONFIG')
         if not (cfgdir / 'BankLkup.dat').exists():
             st['errors'].append(f'missing {cfgdir} (run: tools/assets.py sync)')
             return
@@ -377,7 +378,7 @@ class Builder:
 
     def do_streams(self, name, sec, st):
         root = self.cfg.game / sec.get('src', 'audio')
-        cfgdir = root / 'CONFIG'
+        cfgdir = root / sec.get('lookup_dir', 'CONFIG')
         if not (cfgdir / 'TrakLkup.dat').exists():
             st['errors'].append(f'missing {cfgdir} (run: tools/assets.py sync)')
             return
@@ -411,15 +412,8 @@ class Builder:
             self._account(st, pn, stats.get('bytes_in', 0), len(out))
         out_dir = Path(sec.get('out', 'audio/streams'))
         for pn, items in sorted(per.items()):
-            items.sort()
-            blob = bytearray(struct.pack('<4sHH', b'DSST', 1, len(items)))
-            off = len(blob) + 12 * len(items)
-            for ti, b in items:
-                blob += struct.pack('<III', ti, off, len(b))
-                off += len(b)
-            for _, b in items:
-                blob += b
-            st['out'] += self._emit(out_dir / f'{pn.lower()}.dsst', bytes(blob))
+            st['out'] += self._emit(out_dir / f'{pn.lower()}.dsst',
+                                    audio.pack_streams(items, bool(sec.get('audio', {}).get('seekable'))))
             st['files'] += 1
 
     def do_radar(self, name, sec, st):
@@ -524,14 +518,14 @@ class Builder:
 
 # ---------------------------------------------------------------------------- sync / report
 
-def sync(cfg, dry=False):
+def sync(cfg, dry=False, only=()):
     """Copies from the PC install into game/ only what enabled sections need."""
     src = cfg.source
     if not src.is_dir():
         sys.exit(f'source not found: {src} (set [global].source)')
     want = set()
     for name, sec in cfg.sections.items():
-        if not sec.get('enabled', True):
+        if (only and name not in only) or not sec.get('enabled', True) or (sec.get('sd_only') and not only):
             continue
         k = sec['kind']
         if k in ('img', 'radar'):
@@ -561,7 +555,17 @@ def sync(cfg, dry=False):
                          for r in [p.relative_to(src)] if not (match(str(r), rm) or match(r.name, rm))}
         elif k in ('sfx', 'streams'):
             base = Path(sec.get('src', 'audio'))
-            want |= {p.relative_to(src) for p in (src / base / 'CONFIG').glob('*.dat')}
+            config_files = (src / base / 'CONFIG').glob('*.dat')
+            if k == 'streams' and sec.get('lookup_dir'):
+                for p in config_files:
+                    dest = cfg.game / base / sec['lookup_dir'] / p.name
+                    if dry:
+                        print(f'  copy {p.relative_to(src)} -> {dest.relative_to(cfg.game)}')
+                    else:
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(p, dest)
+            else:
+                want |= {p.relative_to(src) for p in config_files}
             sub = 'SFX' if k == 'sfx' else 'STREAMS'
             d = next((p for p in (src / base).iterdir() if p.name.upper() == sub), None)
             for p in (d.iterdir() if d else []):
@@ -575,14 +579,17 @@ def sync(cfg, dry=False):
             print(f'  ? missing in source: {rel}')
             continue
         total += s.stat().st_size
+        if d.is_symlink():
+            print(f'  skip linked asset {rel} ({d.resolve()})')
+            continue
         if d.exists() and d.stat().st_size == s.stat().st_size and d.stat().st_mtime >= s.stat().st_mtime:
             continue
         print(f'  copy {rel} ({_mb(s.stat().st_size)})')
         if not dry:
             d.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(s, d)
-    for sec in cfg.sections.values():
-        if not sec.get('enabled', True) or not sec.get('from_img'):
+    for name, sec in cfg.sections.items():
+        if (only and name not in only) or not sec.get('enabled', True) or (sec.get('sd_only') and not only) or not sec.get('from_img'):
             continue
         archive = next((p for p in cfg.game.glob(sec['from_img'], case_sensitive=False) if p.is_file()), None)
         if archive is None:
@@ -606,7 +613,7 @@ def _mb(n):
     return f'{n / 1048576:.1f}MB'
 
 
-def print_report(cfg, rep=None):
+def print_report(cfg, rep=None, sd_only=False):
     rep = rep if rep is not None else json.loads(cfg.report.read_text())
     print(f'\n{"section":<16}{"files":>7}{"in":>11}{"out":>11}{"ratio":>7}  stats')
     total = 0
@@ -621,6 +628,9 @@ def print_report(cfg, rep=None):
             print(f'  ! {e}')
         if len(st['errors']) > 3:
             print(f'  ! ... {len(st["errors"]) - 3} more errors (build/assets_report.json)')
+    if sd_only:
+        print(f'{"TOTAL SD RADIO":<16}{"":>7}{"":>11}{_mb(total):>11}   external SD assets')
+        return
     budget = cfg.g.get('budget_mb', 448)
     flag = 'OK' if total / 1048576 <= budget else 'OVER BUDGET'
     print(f'{"TOTAL":<16}{"":>7}{"":>11}{_mb(total):>11}   budget {budget}MB -> {flag}')

@@ -8,6 +8,7 @@
 #include "audio/aebankloader.h"
 #include "audio/aehardware.h"
 #include "audio/aepedaudio.h"
+#include "audio/aeradio.h"
 #include "audio/aesoundmanager.h"
 #include "audio/aestream.h"
 #include "audio/aeweaponaudio.h"
@@ -72,9 +73,13 @@ bool initGameStep() {
 		hud::log("audio: %u sounds %luK resident", (unsigned)aebank::stats().resident,
 		         (unsigned long)(aebank::stats().bytes >> 10));
 		break;
+	case 4:
+		aestream::reserve();
+		return aeradio::initStep();
 	default: return true;
 	}
-	return ++s_gameStep > 3;
+	++s_gameStep;
+	return false;
 }
 
 void setGameActive(bool on) {
@@ -83,6 +88,7 @@ void setGameActive(bool on) {
 	if (!on) {
 		aeweather::reset();
 		aeambience::reset();
+		aeradio::reset();
 		aesound::cancelOwner(aesound::OWNER_PED);
 		aesound::cancelOwner(aesound::OWNER_WEAPON);
 		aesound::cancelOwner(aesound::OWNER_SPEECH);
@@ -120,7 +126,7 @@ void service() {
 			audiozones::update(false, player::g.x, player::g.y, s_listenerZ);
 			aeweather::service();
 		}
-		aeambience::service(paused);
+		if (!aeradio::service(paused, paused && FrontEndMenuManager.radioPreviewActive())) aeambience::service(paused);
 	}
 	aebank::service(s_game ? 1500 : 4000);
 	aesound::service();

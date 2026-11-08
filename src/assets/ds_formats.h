@@ -465,6 +465,10 @@ struct StreamTrack {
 	uint32_t trackId;        // global SA track id (TrakLkup.dat index)
 	uint32_t offset, size;   // -> SoundHeader
 };
+struct StreamTrackSeek {
+	uint32_t trackId, offset, size;
+	uint32_t seekOffset, seekCount;
+};
 
 static_assert(sizeof(PackHeader) == 16 && sizeof(PackEntry) == 16);
 static_assert(sizeof(TxdEntry) == 40 && sizeof(TexHeader) == 16);
@@ -480,6 +484,7 @@ static_assert(sizeof(WorldColIndex) == 12 && sizeof(WorldCol) == 24 && sizeof(Wo
               sizeof(WorldColBox) == 16 && sizeof(WorldColNode) == 16 && sizeof(WorldColFace) == 16);
 static_assert(sizeof(VehHeader) == 184 && sizeof(VehInfo) == 380 && sizeof(VehSurface) == 4);
 static_assert(sizeof(WaterPoly) == 28 && sizeof(TrackInfo) == 8 && sizeof(TrackNode) == 8);
-static_assert(sizeof(SoundHeader) == 24 && sizeof(SfxPakBank) == 12 && sizeof(BankLookupHeader) == 12 && sizeof(StreamTrack) == 12);
+static_assert(sizeof(SoundHeader) == 24 && sizeof(SfxPakBank) == 12 && sizeof(BankLookupHeader) == 12 &&
+              sizeof(StreamTrack) == 12 && sizeof(StreamTrackSeek) == 20);
 
 }

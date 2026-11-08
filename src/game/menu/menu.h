@@ -63,6 +63,7 @@ public:
 	void processMenuOptions(int8_t lr, bool& cancel, bool accept);
 	void checkSliderMovement(int8_t lr);
 	void scrollRadioStations(int8_t n);
+	bool radioPreviewActive() const;
 	void startNewGame();
 
 private:

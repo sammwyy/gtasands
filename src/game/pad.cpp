@@ -13,7 +13,7 @@ static bool s_lMoved;         // a direction was used while L was held (walk, no
 // switch fires on release, only if the press was short and nothing moved.
 static constexpr uint32_t TAP_FRAMES = 15;
 
-void update(const input::State& in) {
+void update(const input::State& in, bool driving) {
 	Pad& p = s_pad;
 	const bool l = in.held & KEY_L;
 	const int dx = (in.held & KEY_RIGHT ? 1 : 0) - (in.held & KEY_LEFT ? 1 : 0);
@@ -24,7 +24,7 @@ void update(const input::State& in) {
 	p.nextWeaponJustDown = false;
 	if (l) {
 		s_lFrames++;
-		if (dx || dy) s_lMoved = true;
+		if (!driving && (dx || dy)) s_lMoved = true;
 	} else {
 		if (s_lFrames && s_lFrames <= TAP_FRAMES && !s_lMoved) p.nextWeaponJustDown = true;
 		s_lFrames = 0;
@@ -43,6 +43,7 @@ void update(const input::State& in) {
 
 const Pad& get() { return s_override ? *s_override : s_pad; }
 const Pad& raw() { return s_pad; }
+bool hornHeld() { return s_lFrames > TAP_FRAMES; }
 void setOverride(const Pad* p) { s_override = p; }
 
 void consumeEdges() {

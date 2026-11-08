@@ -72,6 +72,7 @@ struct Vehicle {
 	bool inWater;               // hull / body in water (boats float, the rest drown)
 	int audio;                  // aevehicle entity handle
 	bool npcDriver, playerOwned;
+	uint8_t radioStation;
 };
 
 void init();

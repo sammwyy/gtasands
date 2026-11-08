@@ -79,12 +79,14 @@ def resample(s, sr, dr):
     return out, dr
 
 
-def adpcm_encode(s):
+def adpcm_encode(s, checkpoints=None):
     pred = s[0] if s else 0
     idx = 0
     out = bytearray(struct.pack('<hBB', pred, 0, 0))
     lo = -1
-    for x in s:
+    for i, x in enumerate(s):
+        if checkpoints is not None and i % 8192 == 0:
+            checkpoints.extend(struct.pack('<hBB', pred, idx, 0))
         step = STEP[idx]
         d = x - pred
         code = 0
@@ -124,9 +126,9 @@ def make_sound(pcm, rate, p, loop=-1, headroom=0):
     elif fmt == 1:
         data = pcm.tobytes()
     else:
-        data = adpcm_encode(pcm)
+        data = adpcm_encode(pcm, p.get('checkpoints'))
     hdr = struct.pack('<4sBBHIihHI', b'DSND', fmt, 0, new_rate, len(pcm), loop if loop < len(pcm) else -1, headroom, 0, len(data))
-    return hdr + pad4(data)
+    return hdr + pad4(data) + (p.get('checkpoints') or b'')
 
 
 def convert_bank(raw, p):
@@ -159,4 +161,23 @@ def convert_track(enc, file_pos, p):
     if r.returncode:
         raise RuntimeError(r.stderr.decode(errors='replace').strip()[:200])
     pcm = array('h', r.stdout[:len(r.stdout) & ~1])
+    if p.get('seekable'):
+        p = {**p, 'checkpoints': bytearray()}
     return make_sound(pcm, p['sample_rate'], p), {'bytes_in': len(enc)}
+
+
+def pack_streams(items, seekable=False):
+    items = sorted(items)
+    blob = bytearray(struct.pack('<4sHH', b'DSST', 2 if seekable else 1, len(items)))
+    off = len(blob) + (20 if seekable else 12) * len(items)
+    for ti, b in items:
+        if seekable:
+            data_size, = struct.unpack_from('<I', b, 20)
+            seek_at = 24 + ((data_size + 3) & ~3)
+            blob += struct.pack('<IIIII', ti, off, len(b), off + seek_at, (len(b) - seek_at) // 4)
+        else:
+            blob += struct.pack('<III', ti, off, len(b))
+        off += len(b)
+    for _, b in items:
+        blob += b
+    return bytes(blob)

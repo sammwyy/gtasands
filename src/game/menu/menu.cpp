@@ -8,6 +8,7 @@
 
 #include "assets/texture.h"
 #include "assets/txdfile.h"
+#include "audio/aeradio.h"
 #include "game/text/font.h"
 #include "game/text/gxt.h"
 #include "game/hud/hudfont.h"
@@ -274,14 +275,16 @@ void CMenuManager::switchToNewScreen(eMenuScreen screen) {
 }
 
 void CMenuManager::scrollRadioStations(int8_t n) {
-	static const char* stationGxt[] = {
-		"AA", "ADVERTS", "AMBIENCE", "BEATS", "CH", "CO", "CR", "CUTSCENE", "DS", "HC",
-		"MH", "MR", "NJ", "RE", "RG", "TK", "OFF"
-	};
 	m_nRadioStation += n;
-	if (m_nRadioStation <= 0) m_nRadioStation = 16;
-	if (m_nRadioStation > 16) m_nRadioStation = 1;
-	(void)stationGxt;
+	if (m_nRadioStation <= 0) m_nRadioStation = 12;
+	if (m_nRadioStation > 12) m_nRadioStation = 1;
+	aeradio::selectStation(m_nRadioStation);
+}
+
+bool CMenuManager::radioPreviewActive() const {
+	if (!m_bMenuActive || m_bMainMenuSwitch || m_nCurrentScreen != SCREEN_AUDIO_SETTINGS) return false;
+	const auto action = aScreens[m_nCurrentScreen].m_aItems[m_nCurrentScreenItem].m_nActionType;
+	return action == MENU_ACTION_RADIO_VOL || action == MENU_ACTION_RADIO_STATION;
 }
 
 void CMenuManager::setLanguage(eLanguage l) {
