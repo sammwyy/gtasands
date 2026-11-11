@@ -56,7 +56,7 @@ static Stats s_stats;
 
 void init() {
 	if (s_lookup) return;
-	FILE* f = fopen("nitro:/audio/sfx/banks.dsbl", "rb");
+	FILE* f = fopen("game:/audio/sfx/banks.dsbl", "rb");
 	if (!f) {
 		hud::log("\x1b[33maudio: banks.dsbl missing\x1b[39m");
 		return;
@@ -90,7 +90,7 @@ static Pak* pakFor(uint16_t bank, uint16_t& index) {
 		char path[64];
 		char lower[16];
 		for (int i = 0; i < 16; i++) lower[i] = (char)(p.name[i] >= 'A' && p.name[i] <= 'Z' ? p.name[i] + 32 : p.name[i]);
-		snprintf(path, sizeof path, "nitro:/audio/sfx/%s.dsfx", lower);
+	snprintf(path, sizeof path, "game:/audio/sfx/%s.dsfx", lower);
 		p.f = fopen(path, "rb");
 		ds::SfxPakHeader ph;
 		if (p.f && fread(&ph, sizeof ph, 1, p.f) == 1 && ph.magic == DS_FOURCC('D', 'S', 'F', 'X')) {

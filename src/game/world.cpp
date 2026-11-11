@@ -1241,7 +1241,7 @@ bool preloadAreaStep(float x, float y, float z) {
 // Init / preload
 // ----------------------------------------------------------------------------
 static bool open() {
-	s_file = fopen("nitro:/data/world.dwld", "rb");
+	s_file = fopen("game:/data/world.dwld", "rb");
 	if (!s_file) return false;
 	if (fread(&s_hdr, sizeof s_hdr, 1, s_file) != 1 || s_hdr.magic != DS_FOURCC('D', 'W', 'L', 'D') ||
 	    s_hdr.version != 6 || !s_hdr.numModels) {

@@ -18,7 +18,7 @@ namespace animstore {
 constexpr int NO_BLOCK = -1;
 
 void init();
-// Loose DANM file ("nitro:/anim/ped.ifp"); the file stays open.
+// Loose DANM file ("game:/anim/ped.ifp"); the file stays open.
 int openFile(const char* path);
 // DANM entry inside an open pack (anim.dspk: "fat.ifp"). The pack must
 // outlive the block.

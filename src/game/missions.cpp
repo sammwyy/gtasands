@@ -59,7 +59,7 @@ static bool scriptPresent(FILE* f, uint32_t offset, const char* name) {
 }
 
 static bool checkScripts() {
-	FILE* f = fopen("nitro:/data/script/main.scm", "rb");
+	FILE* f = fopen("game:/data/script/main.scm", "rb");
 	if (!f) return false;
 	uint8_t chunk[24];
 	bool ok = fread(chunk, 1, 8, f) == 8 &&

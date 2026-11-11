@@ -60,7 +60,7 @@ static void loadFontValues(const char* path) {
 }
 
 void init() {
-	loadFontValues("nitro:/data/fonts.dat");
+	loadFontValues("game:/data/fonts.dat");
 	for (FontData& d : s_data)
 		if (!d.prop[0]) for (uint8_t& v : d.prop) v = 12;
 	s_data[0].prop[208] = 10;

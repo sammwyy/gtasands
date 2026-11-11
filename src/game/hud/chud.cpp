@@ -303,7 +303,7 @@ bool initStep() {
 	c_black = rgb(0, 0, 0);
 	radar::init();
 	TxdFile hud;
-	if (hud.open("nitro:/models/hud.txd")) {
+	if (hud.open("game:/models/hud.txd")) {
 		mem::Scratch scratch;
 		hudtex::decodeSprite(hud.load("fist", scratch), s_fist);
 	}

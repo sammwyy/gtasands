@@ -26,7 +26,8 @@ def main():
     mode, storage, emulator = sys.argv[1:]
     root = Path(__file__).resolve().parent.parent
     extension = "dsi" if mode == "dsi" else "nds"
-    rom = root / "build" / (("fat-" if storage == "rom" else "") + f"gtasads.{extension}")
+    rom = Path(os.environ["GTASADS_ROM"]).resolve() if "GTASADS_ROM" in os.environ else root / "build" / (
+        ("fat-" if storage == "rom" else "") + f"gtasads.{extension}")
     config = Path(os.environ.get("MELONDS_CONFIG", Path.home() / ".config/melonDS/melonDS.toml"))
     source = config.read_text() if config.exists() else ""
     settings = tomllib.loads(source)
@@ -60,7 +61,7 @@ def main():
         for key, name in ds_files.items():
             source = set_value(source, "DS", key, f'"{firmware / name}"')
         ds_firmware_source = firmware / "dsfirmware.bin"
-    profile = root / "build" / "emulator" / f"{mode}-{storage}"
+    profile = root / "build" / "emulator" / f"{mode}-{storage}{os.environ.get('GTASADS_PROFILE', '')}"
     (profile / "melonDS").mkdir(parents=True, exist_ok=True)
     if nand_source:
         nand = profile / "nand.bin"

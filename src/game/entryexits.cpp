@@ -143,7 +143,7 @@ bool init() {
 	s_virtual = false;
 	memset(s_failed, 0, sizeof s_failed);
 	if (s_entries) return true;
-	FILE* f = fopen("nitro:/data/entry_exits.denx", "rb");
+	FILE* f = fopen("game:/data/entry_exits.denx", "rb");
 	ds::EntryExitHeader h;
 	if (!f) return false;
 	const bool valid = fread(&h, sizeof h, 1, f) == 1 &&

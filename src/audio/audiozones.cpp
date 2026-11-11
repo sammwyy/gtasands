@@ -29,7 +29,7 @@ bool load() {
 	if (s_zones) return true;
 	s_zones = (Zone*)mem::perm(MAX_ZONES * sizeof(Zone), mem::TAG_WORLD);
 	if (!s_zones) return true;
-	FILE* f = fopen("nitro:/data/maps/audiozon.ipl", "rb");
+	FILE* f = fopen("game:/data/maps/audiozon.ipl", "rb");
 	if (!f) {
 		hud::log("\x1b[33maudiozon.ipl missing\x1b[39m");
 		return true;

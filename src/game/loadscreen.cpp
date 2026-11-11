@@ -82,34 +82,34 @@ static bool jobFreeFrontend() {
 static bool jobSplash() {
 	char name[16], path[64];
 	snprintf(name, sizeof name, "loadsc%d", rand() % NUM_SPLASHES);
-	snprintf(path, sizeof path, "nitro:/models/txd/%s.txd", name);
+	snprintf(path, sizeof path, "game:/models/txd/%s.txd", name);
 	s_splash = loadSplash(path, name);
 	hud::log("loadscreen: %s %s", name, s_splash ? "ok" : "FAILED");
 	return true;
 }
 static bool jobTune() { return sfx::tuneStep(); }
 static bool jobOpenModels() {
-	const bool ok = streaming::g_models.open("nitro:/models/gta3.dspk");
+	const bool ok = streaming::g_models.open("game:/models/gta3.dspk");
 	hud::log("gta3.dspk: %u entries", ok ? (unsigned)streaming::g_models.count() : 0u);
 	return true;
 }
 static bool jobOpenCutsceneModels() {
-	streaming::g_cutscene.open("nitro:/models/cutscene.dspk");
+	streaming::g_cutscene.open("game:/models/cutscene.dspk");
 	return true;
 }
 // gta3's TOC is 256 KB: only a sparse index is built, 16 KB per slice
 static bool jobIndexModels() { return !streaming::g_models.isOpen() || streaming::g_models.indexStep(16); }
 static bool jobOpenInteriors() {
-	const bool ok = streaming::g_interiors.open("nitro:/models/gta_int.dspk");
+	const bool ok = streaming::g_interiors.open("game:/models/gta_int.dspk");
 	hud::log("gta_int.dspk: %u entries", ok ? (unsigned)streaming::g_interiors.count() : 0u);
 	return true;
 }
 static bool jobIndexInteriors() { return !streaming::g_interiors.isOpen() || streaming::g_interiors.indexStep(16); }
-static bool jobOpenPlayer() { streaming::g_player.open("nitro:/models/player.dspk"); return true; }
-static bool jobOpenAnim() { streaming::g_anim.open("nitro:/anim/anim.dspk"); return true; }
+static bool jobOpenPlayer() { streaming::g_player.open("game:/models/player.dspk"); return true; }
+static bool jobOpenAnim() { streaming::g_anim.open("game:/anim/anim.dspk"); return true; }
 static bool jobPedBlock() {
 	if (animstore::findBlock("ped") == animstore::NO_BLOCK &&
-	    animstore::openFile("nitro:/anim/ped.ifp") == animstore::NO_BLOCK)
+	    animstore::openFile("game:/anim/ped.ifp") == animstore::NO_BLOCK)
 		hud::log("\x1b[31mped.ifp MISSING\x1b[39m");
 	return true;
 }
@@ -137,7 +137,7 @@ static bool jobCol() {                                 // collision index + reco
 }
 static bool jobMissions() { missions::init(); return true; }
 static bool jobPrologueText() {
-	if (missions::newGame() && !TheText.loadMission("nitro:/text/american.gxt", "INTRO1"))
+	if (missions::newGame() && !TheText.loadMission("game:/text/american.gxt", "INTRO1"))
 		hud::log("cutscene: INTRO1 text unavailable");
 	return true;
 }
@@ -224,7 +224,7 @@ void beginTitle() {
 	s_phase = Phase::FADE_IN;
 	s_progress = 0.0f;
 	s_t0 = timing::vblanks();
-	s_splash = loadSplash("nitro:/models/txd/loadscs.txd", "title_pc_US");
+	s_splash = loadSplash("game:/models/txd/loadscs.txd", "title_pc_US");
 	hud::log("title: %s", s_splash ? "ok" : "FAILED");
 }
 

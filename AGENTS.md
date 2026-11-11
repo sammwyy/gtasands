@@ -1,6 +1,6 @@
 # gtasads - GTA San Andreas port to Nintendo DS
 
-C++17 ARM9 homebrew (devkitARM + libnds/calico), porting the gta-reversed decompilation, with a
+C++17 ARM9 homebrew (BlocksDS/libnds/picolibc), porting the gta-reversed decompilation, with a
 Python asset pipeline that converts the PC game files into DS-native formats packed in NitroFS.
 
 **Read `ARCHITECTURE.md` first** - it maps every directory/system (frame loop, render engine and
@@ -23,7 +23,12 @@ gangs + cops, CWanted chaos, money drops; ped/road paths paged from the global g
 at the spawn (~15-25 while driving).
 
 ## Toolchain
-- devkitPro at `~/devkitpro` (`source ~/devkitpro/devkitarm.sh`).
+- BlocksDS v1.24.0 (ARM9 libnds/picolibc and the `arm7_minimal.elf` core). If the SDK
+  is installed, set `BLOCKSDS` and optionally `WONDERFUL_TOOLCHAIN` and use `make`.
+  Otherwise `make` automatically builds with pinned Docker image
+  `skylyrac/blocksds:slim-v1.24.0`, while asset conversion and the emulator run
+  on the host. `JOBS=16` controls parallel compilation in Docker. The root
+  `Makefile` dispatches to `Makefile.blocksds`; there is no devkitPro build.
 - Emulator: melonDS at `~/bin/melonds` (AppImage wrapper). Override with `EMU=...`. It ignores
   SIGTERM sometimes: use `timeout -s INT` and `pkill -f -i melonds` if a run hangs around.
 - Python 3.12 stdlib only (no pip/venv, no numpy/PIL). `ffmpeg` is used for OGG streams/movies.
@@ -35,18 +40,20 @@ at the spawn (~15-25 while driving).
 - `make build -j16` -> `build/fat-gtasads.nds`, `build/fat-gtasads.dsi`,
   `build/gtasads.nds`, `build/gtasads.dsi`, `build/gtasads/` (SD assets).
   `fat-` means assets embedded in the ROM; the unprefixed variants need `build/gtasads/`
-  copied to the SD root. `.dsi` boots DSi mode and gets ~16 MB RAM (the existing
-  heap manager uses the extra RAM) and the faster ARM9 clock. Runs the asset build
+  copied to the SD root. `.dsi` boots DSi mode and gets ~16 MB RAM (STREAM TLSF
+  uses the extra RAM) and the faster ARM9 clock. Runs the asset build
   first if `resources.toml` or `tools/**.py`
   changed. **Must stay warning-free** (`-Wall -Wextra`, libnds headers are `-isystem`).
 - `make ASSETS=0 build` skips the asset pipeline (fast code iteration).
   `make ASSETS=0 build-sd-dsi` builds one variant; other targets are `build-ds`,
   `build-dsi`, `build-sd-ds`. `DEBUG=1` = `-Og -DGTASADS_DEBUG`.
 - `make build-quick` (= `QUICKTEST=1`): skips intro movies, auto-starts the game, forces the GAME
-  HUD screen. Per-variant `build/tmp/*/.optsig` forces recompilation when flags change (no `make clean` needed).
+  HUD screen. Per-variant `build/tmp/*/.optsig` forces recompilation when flags change.
   Note: every make invocation must repeat the same flags, or it rebuilds with the default ones.
-- `STORAGE=sd`: assets not embedded, read from `sd:/gtasads/` (`nitro:` -> `fat:` redirect);
-  ~450 KB .nds that boots under TWiLight Menu++ (the ~400 MB NitroFS build crashes nds-bootstrap).
+- `STORAGE=sd`: assets not embedded; the registered read-only `game:` device
+  routes to `sd:/gtasads/` on DSi or `fat:/gtasads/` via DLDI on DS. The
+  ~615 KB ROM boots under TWiLight Menu++ (the ~390 MB NitroFS build is for
+  direct launch, not nds-bootstrap).
 - SD ROMs are DLDI-patched automatically. `make sdcard` builds both SD ROMs and stages
   `build/gtasads/`. `make run` launches DSi embedded; `make run-ds` DS embedded;
   `make run-sd` DSi SD; `make run-sd-ds` DS SD. Run profiles live in
@@ -58,8 +65,7 @@ at the spawn (~15-25 while driving).
   Keep melonDS's DSi SD emulation enabled for both DSi variants: without it,
   `run` stalls on a black/blue screen even when all assets are embedded in the ROM.
   The embedded variant uses an empty SD root and reads assets from NitroFS.
-- `make sync` / `make assets` wrap `tools/assets.py sync|build`. `make compdb`, `make clean`,
-  `make distclean` (also removes `nitrofs/`).
+- `make sync` / `make assets` wrap `tools/assets.py sync|build`.
 - Full radio is SD-only: `make radio-sync` copies the original PC station packs,
   `make radio-assets` converts them to `build/radio/gtasads/`, then `make stage-sd`
   stages them with normal assets in `build/gtasads/`. Neither the default asset
@@ -82,9 +88,12 @@ at the spawn (~15-25 while driving).
   `tools/run.py` creates an isolated melonDS profile with `[DLDI] Enable=true,
   FolderSync=true, FolderPath=<repo>/build/emulator/ds-sd/sd-root, ImagePath=<repo>/build/emulator/ds-sd/dldi.bin` (SIGINT, not TERM:
   melonDS only writes the image on a clean exit). Recreate it if /tmp was wiped.
-  For DSi use `build-sd-dsi` / `run-sd`; a verified DSi DEBUG run reported
-  `str 2134/14782K ... heapok=1` in
-  `build/emulator/dsi-sd/sd-root/gtasads_hudok.txt`.
+  For DSi use `build-sd-dsi` / `run-sd`. melonDS 1.1 has a DSi SD/MMC write
+  bug: the BlocksDS DEBUG filesystem marker blocks while writing `sd:/`, so
+  DSi DEBUG file-based tests need a newer melonDS or hardware. DSi release
+  SD and embedded ROMs reach the game in melonDS; DS DEBUG SD reaches gameplay
+  with `heapok=1`. `-DGTASADS_NO_FS_PROBE` disables only the early filesystem
+  marker when testing DSi DEBUG in melonDS 1.1.
 - Headless screenshots (DEBUG with `-DGTASADS_SCREENSHOTTEST`, or COLTEST/VEHTEST/PEDTEST/WORLDTEST):
   the hudok block captures the 3D screen at frames 120 + k*90
   (`build/emulator/ds-sd/sd-root/gtasads_shot0..5.dscr`: N, W, S, E, bird's eye, 150 m west after a teleport) and writes
@@ -93,43 +102,46 @@ at the spawn (~15-25 while driving).
   (`timeout -s INT 100`). The capture borrows VRAM D (textures there are garbage afterwards);
   ordinary DEBUG runs do not capture, so opening pause does not inherit corrupted textures.
 - To test a specific state headless (time, weather...), add a temporary `#ifdef` hook in a loading
-  job and pass it through `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DMYHOOK=..."`;
+  job and pass it through `OPT="-Og -DMYHOOK=..." DEBUG=1 QUICKTEST=1`;
   remove it afterwards.
 - Fat-backend probe: `strings dldi.bin | grep probe` -> `probe ok`.
-- Collision test (DEBUG): `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DGTASADS_COLTEST"`
+- Collision test (DEBUG): `DEBUG=1 QUICKTEST=1 OPT="-Og -DGTASADS_COLTEST"`
   turns the skeleton + collision overlays on for all shots, then after the screenshot sequence
   runs CJ north / west with a held d-pad (`input::debugHold`), drops him from 6 m and writes
   `gtasads_coltest.txt` (pos, camera distance, near list per 20 frames) + shot6 / shot7.
   Needs `timeout -s INT 140`. `tools/dsshot.py IN OUT --scale 3` zooms to check 1-px outlines.
-- Audio test (DEBUG): `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DGTASADS_AUDTEST"`
+- Audio test (DEBUG): `DEBUG=1 QUICKTEST=1 OPT="-Og -DGTASADS_AUDTEST"`
   runs, jumps, punches, rain + lightning, M4 bursts, sandstorm after frame 600;
   `gtasads_audtest.txt` = `aud:` stats per phase, `gtasads_aud_<phase>.wav` = the real mixer output
   (capture units). `python3 tools/audwav.py build/emulator/ds-sd/sd-root/gtasads_aud_run.wav [--png out.png]` prints
   peak/RMS/clipping. Needs `timeout -s INT 170`; don't rebuild the ROM while it runs, and keep the
   melonDS window unfocused (key presses there move CJ and skew the numbers).
-- Radio test (DEBUG, SD assets staged): `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DGTASADS_RADIOTEST"`
+  Native BlocksDS capture may halve the requested duration when both buffers
+  no longer fit in STREAM; a DS run recorded 1.25 s, L/R peaks -15 dBFS and
+  zero clipped samples.
+- Radio test (DEBUG, SD assets staged): `DEBUG=1 QUICKTEST=1 OPT="-Og -DGTASADS_RADIOTEST"`
   enables Always Radio at frame 600 and taps L twice (second tap while moving), then disables it.
   `gtasads_radiotest.txt` reports station / track / stream service µs / FPS, and
   `gtasads_radio.wav` captures the real mixer. Use `timeout -s INT 145`; `make stage-sd`
   stages the separately built radio packs before `make run-sd-ds`.
-- Vehicle test (DEBUG): `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DGTASADS_VEHTEST"` spawns a
+- Vehicle test (DEBUG): `DEBUG=1 QUICKTEST=1 OPT="-Og -DGTASADS_VEHTEST"` spawns a
   Greenwood, presses Y (walk to door, open, getin, close), drives west into a second car, brakes, gets out,
   sets the health under 250 (fire -> explosion). `gtasads_vehtest.txt` (car/CJ state per 20 frames, crash damage
   lines), shot6..shot10. Needs `timeout -s INT 200`.
-- Ped test (DEBUG): `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DGTASADS_PEDTEST"` places a ped in
+- Ped test (DEBUG): `DEBUG=1 QUICKTEST=1 OPT="-Og -DGTASADS_PEDTEST"` places a ped in
   front of CJ (shot0), punches it (its gang mate joins), gives a pistol and shoots the other; `gtasads_pedtest.txt` =
   CJ + every ped's task / health / distance per 20 frames. Needs `timeout -s INT 110`. Peds look flat in captures
   (their textures are in VRAM D, borrowed by the capture).
-- World/path test (DEBUG): `OPT="-Og -DGTASADS_DEBUG -DGTASADS_FAT -DGTASADS_QUICKTEST -DGTASADS_WORLDTEST"`
+- World/path test (DEBUG): `DEBUG=1 QUICKTEST=1 OPT="-Og -DGTASADS_WORLDTEST"`
   teleports from Ganton through San Fierro, Las Venturas, its northern outskirts and a countryside town;
   `gtasads_worldtest.txt` records loaded path/road nodes, population, traffic, render and memory counts,
   including the path-read time and `heapok`. Allow `timeout -s INT 200` and inspect `gtasads_world_*.dscr`.
-- Cutscene skip regression: add `-DGTASADS_CUTSKIPTEST` to a DEBUG QUICKTEST SD build's
-  `OPT` (with the appropriate DS/DSi flags). It starts PROLOG1 despite a
+- Cutscene skip regression: use `DEBUG=1 QUICKTEST=1 CUTSKIPTEST=1` on an SD
+  build. It starts PROLOG1 despite a
   pre-existing save, skips at frame 40, and the usual `gtasads_hudok.txt` /
   `gtasads_shot0.dscr` should show exterior world models at CJ's restored spawn.
-- World flicker regression: add `-DGTASADS_FLICKERTEST` to a DEBUG QUICKTEST SD
-  build's `OPT`, plus `-DGTASADS_FAT` and `-DGTASADS_DSI` for DSi. Run the
+- World flicker regression: add `-DGTASADS_FLICKERTEST` to `OPT` on a
+  `DEBUG=1 QUICKTEST=1` SD build. Run the
   matching `run-sd-ds` or `run-sd` target with the same flags for ~100 s,
   interrupting melonDS with SIGINT so the virtual SD syncs. The test holds
   westward movement from frame 100 to 800, stops an opening cutscene if one
@@ -179,7 +191,7 @@ while tuning. Current total ~387 MB of the 448 MB budget.
 - Never write VRAM C outside vblank (bottom screen) and never toggle 3D control/fog/clear registers
   mid-frame (use `video::setFog/setClearColor/setManualSort`).
 - Changing a binary layout: writer + `src/assets/ds_formats.h` + bump version.
-- Source basenames must be unique (objects are flattened into `build/`).
+- Objects preserve their `src/` paths under `build/tmp/{ds,dsi}-{rom,sd}/`.
 
 ## Roadmap (suggested order)
 1. World data + streaming: exterior and interior IPLs with HD/LOD links (ARCHITECTURE 6b),

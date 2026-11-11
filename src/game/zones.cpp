@@ -34,7 +34,7 @@ static bool parse(const char* line, Zone& z) {
 // block instead of a growing realloc'd array.
 static void load() {
 	s_loaded = true;
-	FILE* f = fopen("nitro:/data/info.zon", "r");
+	FILE* f = fopen("game:/data/info.zon", "r");
 	if (!f) return;
 	char line[256];
 	Zone z;

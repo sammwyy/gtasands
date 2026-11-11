@@ -79,7 +79,7 @@ static void closeGlobalMap() {
 
 static bool openGlobalMap() {
 	closeGlobalMap();
-	FILE* f = fopen("nitro:/models/fronten2.txd", "rb");
+	FILE* f = fopen("game:/models/fronten2.txd", "rb");
 	ds::TxdHeader h;
 	if (!f || fread(&h, sizeof h, 1, f) != 1 || h.magic != DS_FOURCC('D', 'T', 'X', 'D') ||
 	    h.count > 128) {
@@ -119,7 +119,7 @@ static void streamGlobalMap() {
 
 static bool openTxd(TxdFile& txd, const char* name) {
 	char path[96];
-	snprintf(path, sizeof path, "nitro:/models/%s.txd", name);
+	snprintf(path, sizeof path, "game:/models/%s.txd", name);
 	if (txd.open(path)) return true;
 	hud::log("fe: %s.txd missing", name);
 	return false;
@@ -290,7 +290,7 @@ bool CMenuManager::radioPreviewActive() const {
 
 void CMenuManager::setLanguage(eLanguage l) {
 	m_nPrefsLanguage = l;
-	TheText.load(l == eLanguage::SPANISH ? "nitro:/text/spanish.gxt" : "nitro:/text/american.gxt");
+	TheText.load(l == eLanguage::SPANISH ? "game:/text/spanish.gxt" : "game:/text/american.gxt");
 }
 
 void CMenuManager::startNewGame() {

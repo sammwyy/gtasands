@@ -25,15 +25,23 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 - Code is a port of gta-reversed (`third_party/gta-reversed/source/game_sa/`, reference only,
   never compiled). Same class/function names in comments (`CTimeCycle::CalcColoursForPoint`) so
   the original can be found by grep. RenderWare calls are replaced by our GX code + DS formats.
+- BlocksDS v1.24.0 is the sole toolchain: the root `Makefile` uses a local SDK
+  or the pinned Docker image and `Makefile.blocksds` builds DS/DSi, NitroFS/SD.
+  The ARM7 core is `arm7_minimal.elf`, audio uses BlocksDS/libnds channels,
+  filesystem access uses a `device_io_t` device named `game:` to route
+  read-only asset paths to NitroFS, DSi SD or DLDI FAT, and picolibc keeps
+  its own heap above STREAM TLSF. All four ROM variants compile without
+  warnings; DSi release SD and embedded reach the game in melonDS 1.1,
+  while DEBUG DSi SD marker writes hang due to its SD/MMC emulation bug.
 
-## 2. Source layout (`src/`, every subdir auto-discovered, object basenames must be unique)
+## 2. Source layout (`src/`, every subdir auto-discovered, objects preserve source paths)
 
 | Path | What |
 |---|---|
 | `main.cpp` | AppState machine (TITLE/MENU/LOADING/INGAME), per-frame order (see 3.) |
 | `platform/video.*` | screen/VRAM setup, projection constants (`FOV_Y`, `NEAR_PLANE`, `FAR_PLANE`, `TAN_HALF_FOV_*`), per-frame render environment (fog, clear colour, manual translucent sort) applied in vblank, `depth15()` z-buffer helpers, DEBUG `requestCapture()` screenshots |
 | `platform/input.*` | key/touch polling, edges (`consumeEdges`) |
-| `platform/fs.*` | NitroFS or `nitro:`->SD redirect (STORAGE=sd), debug `fsok` marker |
+| `platform/fs.*` | Native `device_io_t` registered as `game:`; forwards reads to NitroFS or SD/DLDI, debug `fsok` marker |
 | `platform/timing.*` | timers 0+1, `vblanks()`, `ticks()`, `usSince()`, per-section CPU (`SEC_3D/SIM/HUD`) |
 | `mem/` | memory manager (budget.h regions, TLSF, scratch stack, perm arena, `Pool<T>`) |
 | `assets/ds_formats.h` | every binary layout (mirrors the Python writers, static_asserts) |
@@ -750,10 +758,16 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
 
 ## 8b. Audio (`src/audio/`, CAudioEngine & co)
 
-- **Hardware** (`aehardware`, CAEAudioHardware): calico's ARM7 driver directly (`soundPreparePcm`,
-  auto-updated `soundGetActiveChannels`). Channels 0..13 = sound manager, 14 = stream. DSND
+- **Hardware** (`aehardware`, CAEAudioHardware): BlocksDS/libnds `soundPlaySampleChannel`
+  and `soundCaptureStart` over the native ARM7 core. Channels 0..13 = sound
+  manager, 14 = stream; channel lifetime is tracked from the sample duration
+  because BlocksDS doesn't expose calico's `soundGetActiveChannels`. DSND
   IMA-ADPCM plays natively; loops restart at `1 + loopStart/8` words (the mixer saves the ADPCM
-  state there). Volumes are linear 11-bit (`aesound::volumeFromDb`, quarter-dB table).
+  state there). Volumes use the hardware 7-bit scale converted from the
+  engine's linear 11-bit volume (`aesound::volumeFromDb`, quarter-dB table).
+  The DS DEBUG audio test captured a 1.25-second stereo WAV with peaks near
+  -15 dBFS and no clipped samples; capture halves its requested length if
+  STREAM cannot hold both stereo buffers after the world has loaded.
 - **Bank loader** (`aebankloader`, CAEBankLoader): per *sound*, not per bank slot. `banks.dsbl`
   + pak bank tables resident (PERM), pak files stay open, bank offset tables in a 16-entry LRU.
   `find(bank, id)` = resident handle or -1 + a queued read (EnsureSoundBankIsLoaded returning
@@ -837,15 +851,16 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
 
 ## 9. Memory (`src/mem/`)
 
-- Regions carved once from the heap (`budget.h`): SYS (TLSF for libc malloc/new), SCRATCH (LIFO
+- Regions carved once from the heap (`budget.h`): SYS (picolibc malloc/new), SCRATCH (LIFO
   `mem::Scratch` RAII, spills to STREAM), PERM (bump, never freed), STREAM (TLSF, everything else).
 - Every allocation is tagged (`mem::alloc(n, TAG_x)`): sys text model tex anim audio radar hud
   pack world col ped temp. `mem::summary/stats/check`. `mem::Pool<T>` (CPool port) for fixed-count objects.
 - Temp file reads go to scratch. Static BSS ~130 KB; STREAM ~2.9 MB. Typical in-game:
   STREAM ~600 KB used, PERM 231/320 KB.
 - PERM is never freed: allocate there only once per boot (guard with a pointer, e.g. timecycle).
-- libc `_malloc_r` & co are replaced in `mem.cpp` (newlib dlmalloc/sbrk are not linked).
-  `tlsf.cpp` is portable and passed a 400k-op host stress test (git history); keep it portable.
+- `mem::init` uses BlocksDS `reduceHeapSize()` to reserve SCRATCH, PERM and STREAM,
+  leaving a separate 256 KB picolibc heap for stdio/FAT/libstdc++. `tlsf.cpp`
+  is portable and passed a 400k-op host stress test (git history); keep it portable.
 - Pool budgets for peds/vehicles/objects are already declared in `budget.h`, plus the world ones
   (`WORLD_*`: 192 model slots, 720 KB lists, 320 texture entries, 280 KB map VRAM (rest: vehicles), 96 sectors),
   collision `COL_CACHE_BYTES` 192 KB / `COL_NEAR_MAX` 48 (tag `col`).
@@ -897,7 +912,7 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   upper-arm matrix with half the twist vs the clavicle). Skipping it = boxy shoulders.
 - Intro converter note: ffmpeg's rawvideo pal8 output appends a 1024 B palette per frame; the
   converter detects the stride (slicing at W*H drifts 4 rows/frame).
-- `tex4x4` is not used yet; `nds_texcompress` exists in `~/devkitpro/tools/bin`.
+- `tex4x4` is not used yet.
 - Pipeline outputs: `build/assets_cache/` (safe to delete), `build/assets_report.json` (per-entry
   errors), `build/assets_manifest.json` (stale outputs pruned on full builds), `build/preview/`.
 - Changing a binary layout: edit the writer AND `ds_formats.h`, bump that format's version.

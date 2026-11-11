@@ -6,7 +6,9 @@
 #include <string.h>
 #include <initializer_list>
 #include <errno.h>
-#include <sys/iosupport.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <nds/arm9/device_io.h>
 #include <sys/stat.h>
 
 namespace fs {
@@ -15,88 +17,92 @@ static bool s_ready;
 static bool s_fat;
 
 // When the assets live on the SD card instead of inside the ROM (small .nds +
-// /gtasads/ dir at the card root), this device maps "nitro:/x" to the real
+// /gtasads/ dir at the card root), this device maps "game:/x" to the real
 // path so every fopen() call site stays unchanged. Read-only: the game only
 // reads data. The volume name depends on the environment: libnds mounts the
 // DSi SD as "sd:", a DLDI driver (melonDS, flashcarts) as "fat:" - fs::init
 // picks whichever actually holds our dir.
 static char s_base[64] = "fat:/gtasads";
-static char s_path[256];
+static int s_files[64];
 
-static const char* resolve(const char* path) {
-	// devoptab hands us the path unmodified ("nitro:/x"); strip the device
-	// name if present, then any leading slash
-	const char* rel = strrchr(path, ':');
+static void resolve(const char* path, char* out, size_t size) {
+	const char* rel = strchr(path, ':');
 	rel = rel ? rel + 1 : path;
 	if (*rel == '/') ++rel;
-	snprintf(s_path, sizeof s_path, "%s/%s", s_base, rel);
-	return s_path;
+	snprintf(out, size, "%s/%s", s_base, rel);
 }
 
-static int fatNitroOpen(_reent* r, void* fileStruct, const char* path, int, int) {
-	FILE* f = fopen(resolve(path), "rb");
-	if (!f) { r->_errno = ENOENT; return -1; }
-	*(FILE**)fileStruct = f;
-	return 0;
+static bool gameDrive(const char* name) { return strcmp(name, "game") == 0; }
+static int gameOpen(const char* path, int flags, mode_t) {
+	if ((flags & O_ACCMODE) != O_RDONLY) { errno = EROFS; return -1; }
+	char real[256];
+	resolve(path, real, sizeof real);
+	int fd = open(real, O_RDONLY);
+	if (fd < 0) return -1;
+	for (unsigned i = 0; i < sizeof s_files / sizeof s_files[0]; i++) {
+		if (s_files[i] < 0) { s_files[i] = fd; return (i + 1) << 2; }
+	}
+	close(fd);
+	errno = EMFILE;
+	return -1;
 }
-static int fatNitroClose(_reent*, void* fileStruct) {
-	return fclose(*(FILE**)fileStruct);
+static int file(int fd) {
+	const unsigned i = (unsigned)(fd >> 2);
+	if (i > 0 && i <= sizeof s_files / sizeof s_files[0] && s_files[i - 1] >= 0) return s_files[i - 1];
+	errno = EBADF;
+	return -1;
 }
-static ssize_t fatNitroRead(_reent* r, void* fileStruct, char* ptr, size_t len) {
-	ssize_t ret = (ssize_t)fread(ptr, 1, len, *(FILE**)fileStruct);
-	if (ret < 0) r->_errno = EIO;
-	return ret;
+static int gameClose(int fd) {
+	const int real = file(fd);
+	if (real < 0) return -1;
+	s_files[(fd >> 2) - 1] = -1;
+	return close(real);
 }
-static off_t fatNitroSeek(_reent* r, void* fileStruct, off_t pos, int dir) {
-	FILE* f = *(FILE**)fileStruct;
-	if (fseek(f, pos, dir) < 0) { r->_errno = EINVAL; return -1; }
-	return ftell(f);
+static ssize_t gameRead(int fd, void* ptr, size_t len) {
+	const int real = file(fd);
+	return real < 0 ? -1 : read(real, ptr, len);
 }
-static int fatNitroFstat(_reent*, void* fileStruct, struct stat* st) {
-	FILE* f = *(FILE**)fileStruct;
-	long cur = ftell(f);
-	fseek(f, 0, SEEK_END);
-	st->st_size = ftell(f);
-	st->st_mode = S_IFREG;
-	fseek(f, cur, SEEK_SET);
-	return 0;
+static off_t gameSeek(int fd, off_t pos, int whence) {
+	const int real = file(fd);
+	return real < 0 ? -1 : lseek(real, pos, whence);
 }
-static int fatNitroStat(_reent* r, const char* path, struct stat* st) {
-	FILE* f = fopen(resolve(path), "rb");
-	if (!f) { r->_errno = ENOENT; return -1; }
-	fseek(f, 0, SEEK_END);
-	st->st_size = ftell(f);
-	st->st_mode = S_IFREG;
-	fclose(f);
-	return 0;
+static int gameFstat(int fd, struct stat* st) {
+	const int real = file(fd);
+	return real < 0 ? -1 : fstat(real, st);
 }
+static int gameStat(const char* path, struct stat* st) {
+	char real[256];
+	resolve(path, real, sizeof real);
+	return stat(real, st);
+}
+static device_io_t s_gameDevice = {};
 
-static devoptab_t s_fatNitro;
-
-static void installFatNitro() {
-	s_fatNitro.name = "nitro";
-	s_fatNitro.structSize = sizeof(FILE*);
-	s_fatNitro.open_r = fatNitroOpen;
-	s_fatNitro.close_r = fatNitroClose;
-	s_fatNitro.read_r = fatNitroRead;
-	s_fatNitro.seek_r = fatNitroSeek;
-	s_fatNitro.fstat_r = fatNitroFstat;
-	s_fatNitro.stat_r = fatNitroStat;
-	AddDevice(&s_fatNitro);
+static bool installGameDevice() {
+	for (int& fd : s_files) fd = -1;
+	s_gameDevice.isdrive = gameDrive;
+	s_gameDevice.open = gameOpen;
+	s_gameDevice.close = gameClose;
+	s_gameDevice.read = gameRead;
+	s_gameDevice.lseek = gameSeek;
+	s_gameDevice.fstat = gameFstat;
+	s_gameDevice.stat = gameStat;
+	return deviceIoAdd(&s_gameDevice) >= 0;
 }
 
 bool init() {
 #ifndef GTASADS_FAT
 	// Assets embedded in the .nds (emulator, flashcarts with argv or card reads).
 	s_ready = nitroFSInit(NULL);
-	if (s_ready) return true;
+	if (s_ready) {
+		strcpy(s_base, "nitro:");
+		return s_ready = installGameDevice();
+	}
 #endif
 	// Assets as loose files on the SD (TWiLight/nds-bootstrap can't load
 	// a huge NitroFS homebrew): fat: is provided by the launcher/DSi SD
 	// (hb bootstrap) or by a DLDI driver patched into the .nds (melonDS).
 	s_ready = fatInitDefault();
 	if (s_ready) {
-		installFatNitro();
 		s_fat = true;
 		// pick the volume that really has the dir ("sd:" on a DSi, "fat:" via DLDI)
 		struct stat st;
@@ -109,8 +115,9 @@ bool init() {
 			snprintf(s_base, sizeof s_base, "%s:/gtasads",
 			         stat("sd:/", &st) == 0 ? "sd" : "fat");
 		}
+		s_ready = installGameDevice();
 	}
-#ifdef GTASADS_DEBUG
+#if defined(GTASADS_DEBUG) && !defined(GTASADS_NO_FS_PROBE)
 	if (s_fat) {
 		// boot probe: proves the SD path works when there's no screen to read,
 		// and reports per-file status (readable back on the PC from the real SD)
@@ -126,12 +133,10 @@ bool init() {
 			if (f) break;
 		}
 		if (f) {
-			struct stat st;
-			fprintf(f, "base=%s sdroot=%d fatroot=%d\n", s_base,
-			        stat("sd:/", &st) == 0, stat("fat:/", &st) == 0);
+			fprintf(f, "base=%s\n", s_base);
 			char path[96];
 			for (unsigned i = 0; i < sizeof probe / sizeof probe[0]; i++) {
-				snprintf(path, sizeof path, "nitro:/%s", probe[i]);
+				snprintf(path, sizeof path, "game:/%s", probe[i]);
 				FILE* t = fopen(path, "rb");
 				long sz = -1, magic = -1;
 				if (t) {
@@ -172,7 +177,7 @@ const char* radioRoot() {
 
 long readText(const char* path, char* buf, size_t cap) {
 	char full[256];
-	snprintf(full, sizeof full, "nitro:/%s", path);
+	snprintf(full, sizeof full, "game:/%s", path);
 	FILE* f = fopen(full, "rb");
 	if (!f) return -1;
 	size_t n = fread(buf, 1, cap - 1, f);

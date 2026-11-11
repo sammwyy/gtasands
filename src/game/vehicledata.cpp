@@ -88,7 +88,7 @@ uint8_t skidmark(uint8_t surface) {
 bool initStep() {
 	if (s_tried) return true;
 	s_tried = true;
-	s_file = fopen("nitro:/data/vehicles.dveh", "rb");
+	s_file = fopen("game:/data/vehicles.dveh", "rb");
 	if (!s_file || fread(&s_hdr, sizeof s_hdr, 1, s_file) != 1 || s_hdr.magic != DS_FOURCC('D', 'V', 'E', 'H') ||
 	    s_hdr.version != 2 || !s_hdr.numVehicles) {
 		hud::log("\x1b[33mvehicles.dveh missing: no vehicles\x1b[39m");

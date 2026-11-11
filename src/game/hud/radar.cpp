@@ -95,7 +95,7 @@ bool init() {
 	memset(s_full, 0, sizeof s_full);
 	memset(s_mip, 0, sizeof s_mip);
 	memset(s_present, 0, sizeof s_present);
-	if (s_hudTxd.open("nitro:/models/hud.txd")) {
+	if (s_hudTxd.open("game:/models/hud.txd")) {
 		mem::Scratch scratch;
 		if (!s_arrow.col) hudtex::decodeSprite(s_hudTxd.load("radar_centre", scratch), s_arrow);
 		if (!s_north.col) hudtex::decodeSprite(s_hudTxd.load("radar_north", scratch), s_north);
@@ -106,7 +106,7 @@ bool init() {
 		}
 	}
 	if (!s_points) {
-		FILE* f = fopen("nitro:/data/map_points.dpoi", "rb");
+		FILE* f = fopen("game:/data/map_points.dpoi", "rb");
 		ds::PointHeader h;
 		if (f && fread(&h, sizeof h, 1, f) == 1 && h.magic == DS_FOURCC('D', 'P', 'O', 'I') &&
 		    h.version == 2 && h.count <= 1024) {
@@ -124,7 +124,7 @@ bool init() {
 		s_fullPool.init(mem::budget::RADAR_TILE_SLOTS, mem::TAG_RADAR);
 		s_mipPool.init(mem::budget::RADAR_MIP_SLOTS, mem::TAG_RADAR);
 	}
-	if (!s_file) s_file = fopen("nitro:/models/radar.dsrt", "rb");
+	if (!s_file) s_file = fopen("game:/models/radar.dsrt", "rb");
 	ds::RadarHeader h;
 	if (s_file && fread(&h, sizeof h, 1, s_file) == 1 && h.magic == DS_FOURCC('D', 'S', 'R', 'T') &&
 	    h.grid == TILES && h.tileSize == 64 && h.mipSize == 32 &&

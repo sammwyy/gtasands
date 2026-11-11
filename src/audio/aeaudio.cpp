@@ -15,7 +15,7 @@ static constexpr int EVENT_VOLUMES = 256;
 static int8_t s_eventVol[EVENT_VOLUMES];
 
 void loadEventVolumes() {
-	FILE* f = fopen("nitro:/audio/config/eventvol.dat", "rb");
+	FILE* f = fopen("game:/audio/config/eventvol.dat", "rb");
 	if (!f) {
 		hud::log("\x1b[33maudio: eventvol.dat missing\x1b[39m");
 		return;

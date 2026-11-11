@@ -122,7 +122,7 @@ const tex::Texture* puffTexture() { return s_cloud; }
 bool loadStep() {
 	if (s_star) return true;
 	TxdFile txd;
-	if (!txd.open("nitro:/models/particle.txd")) {
+	if (!txd.open("game:/models/particle.txd")) {
 		hud::log("\x1b[31msky: particle.txd missing\x1b[39m");
 		return true;
 	}

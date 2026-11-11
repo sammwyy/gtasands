@@ -3,9 +3,9 @@
 #include <stdint.h>
 
 // CAEAudioHardware reduced to the DS mixer: 16 hardware channels driven
-// through calico's ARM7 sound driver (soundPreparePcm & co). Samples are
+// through BlocksDS's libnds ARM7 sound driver. Samples are
 // played as stored (IMA-ADPCM is the hardware format, see game/sfx history),
-// volumes are linear 11-bit (calico picks the channel divider itself).
+// volumes are linear 11-bit converted to the mixer's 7-bit hardware range.
 namespace aehw {
 
 constexpr int NUM_CHANNELS = 16;
@@ -25,7 +25,7 @@ struct Sample {
 	uint32_t lengthMs() const { return rate ? numSamples * 1000u / rate : 0; }
 };
 
-void init();                 // power on + auto-updated channel state
+void init();                 // power on + channel tracking
 // Starts `s` on channel `ch` (anything playing there is replaced).
 void play(int ch, const Sample& s, unsigned vol, unsigned pan, unsigned hz);
 // Looped PCM16 ring (stream channel), restarts from its start.
@@ -34,7 +34,7 @@ void setVolume(int ch, unsigned vol);   // 0..VOL_MAX
 void setPan(int ch, unsigned pan);      // 0..127, 64 = centre
 void setFreq(int ch, unsigned hz);
 void stop(int ch);
-uint32_t activeMask();       // channels the driver reports as playing (192 Hz updates)
+uint32_t activeMask();       // channels tracked as playing
 void setMasterVolume(unsigned v);   // mixer 0..127
 // SFX channels the sound manager may use (all of 0..13 unless a debug
 // capture holds 1 and 3, the capture units' timer channels)

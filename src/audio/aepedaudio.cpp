@@ -24,7 +24,7 @@ static uint16_t s_surface[MAX_SURFACES];
 static int s_numSurfaces;
 
 bool loadSurfaceAudio() {
-	FILE* f = fopen("nitro:/data/surfaud.dat", "rb");
+	FILE* f = fopen("game:/data/surfaud.dat", "rb");
 	if (!f) {
 		hud::log("\x1b[33msurfaud.dat missing\x1b[39m");
 		return true;

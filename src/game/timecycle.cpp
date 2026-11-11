@@ -79,7 +79,7 @@ bool loadStep() {
 		if (!s_tab) return true;
 		memset(s_tab, 0, sizeof(Colours) * NUM_HOURS * weather::NUM_WEATHERS);
 	}
-	if (!s_file && !(s_file = fopen("nitro:/data/timecyc.dat", "r"))) {
+	if (!s_file && !(s_file = fopen("game:/data/timecyc.dat", "r"))) {
 		hud::log("\x1b[31mtimecyc.dat missing\x1b[39m");
 		s_loadWeather = weather::NUM_WEATHERS;   // all-zero table: black sky, no fog
 		return true;

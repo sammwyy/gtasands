@@ -35,12 +35,12 @@ static void dump(const char* path) {
 }
 
 int main(int argc, char** argv) {
-	// the game opens "nitro:/..." paths: resolve them to nitrofs/ via a local
+	// the game opens "game:/..." paths: resolve them to nitrofs/ via a local
 	// symlink (gitignored — recreated here so it never needs committing)
-	if (symlink("nitrofs", "nitro:") != 0 && errno != EEXIST)
-		printf("WARN: can't create nitro: symlink (%s)\n", strerror(errno));
-	if (!TheText.load("nitro:/text/american.gxt")) printf("WARN: gxt missing\n");
-	if (!streaming::g_models.open("nitro:/models/gta3.dspk")) printf("WARN: dspk missing\n");
+	if (symlink("nitrofs", "game:") != 0 && errno != EEXIST)
+		printf("WARN: can't create game: symlink (%s)\n", strerror(errno));
+	if (!TheText.load("game:/text/american.gxt")) printf("WARN: gxt missing\n");
+	if (!streaming::g_models.open("game:/models/gta3.dspk")) printf("WARN: dspk missing\n");
 	subfb::init();
 	player::init();
 	if (!chud::init()) { printf("chud init failed\n"); return 1; }

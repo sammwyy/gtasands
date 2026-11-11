@@ -297,7 +297,7 @@ bool preloadOriginal(const char* name) {
 		if (!(*p >= 'a' && *p <= 'z') && !(*p >= '0' && *p <= '9')) return false;
 	char path[64], line[256];
 	s_stage = strcmp(name, "prolog1") == 0 ? 0 : 1;
-	snprintf(path, sizeof path, "nitro:/anim/cuts/%s.cut", name);
+	snprintf(path, sizeof path, "game:/anim/cuts/%s.cut", name);
 	FILE* f = fopen(path, "rb");
 	bool offset = false;
 	bool inText = false;
@@ -320,7 +320,7 @@ bool preloadOriginal(const char* name) {
 	}
 	if (f) fclose(f);
 	if (!offset) return false;
-	snprintf(path, sizeof path, "nitro:/anim/cuts/%s.dat", name);
+	snprintf(path, sizeof path, "game:/anim/cuts/%s.dat", name);
 	f = fopen(path, "rb");
 	bool camera = f != nullptr;
 	for (int i = 0; camera && i < 4; i++) camera = readTrack(f, i);
@@ -328,7 +328,7 @@ bool preloadOriginal(const char* name) {
 	if (!camera || !s_camCount[0] || !s_camCount[1]) return false;
 	s_total = s_camera[0][s_camCount[0] - 1].time;
 	if (s_total < 60 || s_total > 60 * 120) return false;
-	snprintf(path, sizeof path, "nitro:/anim/cuts/%s.ifp", name);
+	snprintf(path, sizeof path, "game:/anim/cuts/%s.ifp", name);
 	s_animBlock = animstore::findBlock(name);
 	if (s_animBlock == animstore::NO_BLOCK) s_animBlock = animstore::openFile(path);
 	animstore::Clip* clip = animstore::acquire(s_animBlock, "csplay");

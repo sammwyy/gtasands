@@ -1,6 +1,5 @@
 #include "mem/mem.h"
 
-#include <reent.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -8,9 +7,8 @@
 
 #ifdef ARM9
 #include <nds.h>
-extern "C" char *fake_heap_start, *fake_heap_end;
-#define MEM_LOCK() ArmIrqState mem_irq_ = armIrqLockByPsr()
-#define MEM_UNLOCK() armIrqUnlockByPsr(mem_irq_)
+#define MEM_LOCK() int mem_irq_ = enterCriticalSection()
+#define MEM_UNLOCK() leaveCriticalSection(mem_irq_)
 #else
 // host builds (tools/hosthud): a plain static arena stands in for the heap
 alignas(32) static uint8_t s_hostHeap[12 * 1024 * 1024];
@@ -20,7 +18,7 @@ alignas(32) static uint8_t s_hostHeap[12 * 1024 * 1024];
 
 namespace mem {
 
-static Tlsf s_sys, s_stream;
+static Tlsf s_stream;
 static uint8_t *s_permBase, *s_permTop, *s_permEnd;
 static uint8_t *s_scrBase, *s_scrTop, *s_scrEnd, *s_scrPeak;
 static uint32_t s_permTag[TAG_COUNT];
@@ -34,10 +32,13 @@ static inline uint8_t* alignUp(uint8_t* p, size_t a) {
 
 void init() {
 	if (s_ready) return;
-	s_ready = true;
 #ifdef ARM9
-	uint8_t* lo = (uint8_t*)fake_heap_start;
-	uint8_t* hi = (uint8_t*)fake_heap_end;
+	uint8_t* hi = getHeapLimit();
+	const size_t space = hi - getHeapEnd();
+	const size_t reserved = space > 256 * 1024 ? (space - 256 * 1024) & ~(size_t)31 : 0;
+	if (reserved < budget::SCRATCH_BYTES + budget::PERM_BYTES + 256 * 1024 ||
+	    reduceHeapSize(reserved) != 0) __builtin_trap();
+	uint8_t* lo = getHeapLimit();
 #else
 	uint8_t* lo = s_hostHeap;
 	uint8_t* hi = s_hostHeap + sizeof s_hostHeap;
@@ -45,8 +46,6 @@ void init() {
 	lo = alignUp(lo, 32);
 	hi = (uint8_t*)((uintptr_t)hi & ~(uintptr_t)31);
 	s_total = hi - lo;
-	s_sys.init(lo, budget::SYS_BYTES);
-	lo += budget::SYS_BYTES;
 	s_scrBase = s_scrTop = s_scrPeak = lo;
 	s_scrEnd = lo + budget::SCRATCH_BYTES;
 	lo = s_scrEnd;
@@ -54,6 +53,7 @@ void init() {
 	s_permEnd = lo + budget::PERM_BYTES;
 	lo = s_permEnd;
 	s_stream.init(lo, hi - lo);
+	s_ready = true;
 }
 
 void* alloc(size_t n, Tag tag, size_t align) {
@@ -82,7 +82,6 @@ void free(void* p) {
 	if (!p) return;
 	MEM_LOCK();
 	if (s_stream.owns(p)) s_stream.free(p);
-	else if (s_sys.owns(p)) s_sys.free(p);
 	MEM_UNLOCK();
 }
 
@@ -136,7 +135,13 @@ static RegionStats tlsfStats(const Tlsf& h) {
 RegionStats stats(Region r) {
 	init();
 	switch (r) {
-	case REGION_SYS: return tlsfStats(s_sys);
+	case REGION_SYS:
+#ifdef ARM9
+		return { (size_t)(getHeapLimit() - getHeapStart()), (size_t)(getHeapEnd() - getHeapStart()),
+		         (size_t)(getHeapEnd() - getHeapStart()), (size_t)(getHeapLimit() - getHeapEnd()), 0, 0 };
+#else
+		return {};
+#endif
 	case REGION_STREAM: return tlsfStats(s_stream);
 	case REGION_SCRATCH:
 		return { (size_t)(s_scrEnd - s_scrBase), (size_t)(s_scrTop - s_scrBase), (size_t)(s_scrPeak - s_scrBase),
@@ -169,67 +174,9 @@ void summary(char* buf, int n) {
 
 bool check() {
 	MEM_LOCK();
-	const bool ok = s_sys.check() && s_stream.check();
+	const bool ok = s_stream.check();
 	MEM_UNLOCK();
 	return ok;
 }
 
 }
-
-// ---------------------------------------------------------------------------
-// libc allocator replacement. newlib's malloc/free/realloc/calloc/memalign
-// are thin wrappers over these reentrant entry points, so defining them here
-// keeps newlib's own dlmalloc (and its sbrk heap) out of the link entirely.
-// SYS overflows into STREAM rather than failing.
-#ifdef ARM9
-using mem::s_stream;
-using mem::s_sys;
-
-static void* sysAlloc(size_t n, size_t align) {
-	mem::init();
-	MEM_LOCK();
-	void* p = s_sys.allocAligned(n, align, mem::TAG_SYS);
-	if (!p) p = s_stream.allocAligned(n, align, mem::TAG_SYS);
-	MEM_UNLOCK();
-	return p;
-}
-
-extern "C" {
-
-void* _malloc_r(struct _reent*, size_t n) { return sysAlloc(n, 8); }
-
-void _free_r(struct _reent*, void* p) { mem::free(p); }
-
-void* _calloc_r(struct _reent*, size_t a, size_t b) {
-	const size_t n = a * b;
-	if (b && n / b != a) return nullptr;
-	void* p = sysAlloc(n, 8);
-	if (p) memset(p, 0, n);
-	return p;
-}
-
-void* _memalign_r(struct _reent*, size_t align, size_t n) { return sysAlloc(n, align); }
-
-size_t _malloc_usable_size_r(struct _reent*, void* p) {
-	if (s_sys.owns(p)) return s_sys.usable(p);
-	return s_stream.owns(p) ? s_stream.usable(p) : 0;
-}
-
-void* _realloc_r(struct _reent*, void* p, size_t n) {
-	if (!p) return sysAlloc(n, 8);
-	if (!n) { mem::free(p); return nullptr; }
-	mem::Tlsf* h = s_sys.owns(p) ? &s_sys : &s_stream;
-	MEM_LOCK();
-	void* q = h->realloc(p, n, h->tagOf(p));
-	MEM_UNLOCK();
-	if (q) return q;
-	q = sysAlloc(n, 8);
-	if (q) {
-		memcpy(q, p, h->usable(p));
-		mem::free(p);
-	}
-	return q;
-}
-
-}
-#endif

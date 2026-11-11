@@ -21,8 +21,8 @@ static constexpr uint32_t LEAD_SAMPLES = RING_SAMPLES * 3 / 4;   // decoded ahea
 static constexpr uint32_t BUS_HZ = 33513982;                       // timing::ticks() rate
 
 static const char* const k_packs[] = {
-	"nitro:/audio/streams/ambience.dsst", "nitro:/audio/streams/aa.dsst",
-	"nitro:/audio/streams/cutscene.dsst"
+	"game:/audio/streams/ambience.dsst", "game:/audio/streams/aa.dsst",
+	"game:/audio/streams/cutscene.dsst"
 };
 static const char* const k_radioPacks[] = { "ch", "co", "cr", "ds", "hc", "mh", "mr", "nj", "re", "rg", "tk" };
 static const uint16_t k_radioFirst[] = { 231, 365, 513, 827, 981, 1111, 1259, 1399, 1542, 1706, 1829, 1922 };
@@ -305,7 +305,7 @@ bool play(uint32_t trackId, float volumeDb, bool loop, bool resume, uint32_t sta
 	s_stats.trackId = trackId;
 	s_written = 0;
 	writeAhead(LEAD_SAMPLES);
-	s_timer = soundTimerFromHz(hwHz());
+	s_timer = 16756991u / hwHz();
 	s_playedBase = 0;
 	s_playedTicks = 0;
 	s_lastTick = timing::ticks();
@@ -346,7 +346,7 @@ void service() {
 	const u32 t0 = timing::ticks();
 	s_playedTicks += (u32)(t0 - s_lastTick);
 	s_lastTick = t0;
-	const unsigned timer = soundTimerFromHz(hwHz());
+	const unsigned timer = 16756991u / hwHz();
 	if (timer != s_timer) {
 		s_playedBase = playedSamples();
 		s_playedTicks = 0;

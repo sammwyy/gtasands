@@ -176,7 +176,7 @@ bool initStep() {
 	bool ok = true;
 	switch (s_step++) {
 	case 0:
-		s_file = fopen("nitro:/data/peds.dped", "rb");
+		s_file = fopen("game:/data/peds.dped", "rb");
 		if (!s_file || fread(&s_hdr, sizeof s_hdr, 1, s_file) != 1 || s_hdr.magic != DS_FOURCC('D', 'P', 'E', 'D') ||
 		    s_hdr.version != 5) {
 			hud::log("\x1b[33mpeds.dped missing/old (make assets)\x1b[39m");

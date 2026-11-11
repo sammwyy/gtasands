@@ -76,7 +76,7 @@ static void releaseTex(uint16_t i) {
 static void openGeneric() {
 	if (s_genericTried) return;
 	s_genericTried = true;
-	FILE* f = fopen("nitro:/models/generic/vehicle.txd", "rb");
+	FILE* f = fopen("game:/models/generic/vehicle.txd", "rb");
 	ds::TxdHeader th;
 	if (!f || fread(&th, sizeof th, 1, f) != 1 || th.magic != DS_FOURCC('D', 'T', 'X', 'D')) {
 		if (f) fclose(f);

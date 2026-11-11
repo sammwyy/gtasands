@@ -7,8 +7,7 @@
 // split by LIFETIME so short-lived data never punches holes between
 // long-lived blocks:
 //
-//   SYS      TLSF   libc/libstdc++ malloc+new (stdio buffers, libfat cache,
-//                   NitroFS). Our own code never mallocs directly.
+//   SYS      libc   picolibc heap for stdio, FAT cache and libstdc++.
 //   SCRATCH  stack  temporary staging inside one call (file reads before an
 //                   upload/decode, display-list build). LIFO, mem::Scratch.
 //   PERM     bump   loaded once, never freed (HUD fonts, glyph cache, SFX
@@ -22,7 +21,6 @@
 // allocated once from STREAM -> no per-object heap traffic at all.
 namespace mem::budget {
 
-constexpr size_t SYS_BYTES = 160 * 1024;
 constexpr size_t SCRATCH_BYTES = 128 * 1024;
 constexpr size_t PERM_BYTES = 256 * 1024;
 

@@ -64,10 +64,10 @@ static void boot() {
 	hud::log("fs: %s", fs::backend());
 #ifndef GTASADS_QUICKTEST
 	// boot sequence: rockstar logo + SA intro cinematic (skippable)
-	intro::play("nitro:/movies/logo.dvid");
-	intro::play("nitro:/movies/gtatitles.dvid");
+	intro::play("game:/movies/logo.dvid");
+	intro::play("game:/movies/gtatitles.dvid");
 #endif
-	if (!TheText.load("nitro:/text/american.gxt")) {
+	if (!TheText.load("game:/text/american.gxt")) {
 		hud::log("\x1b[31mamerican.gxt missing (make assets)\x1b[39m");
 		return;
 	}
@@ -84,7 +84,7 @@ int main() {
 	hud::setScreen(hud::Screen::GAME);
 #endif
 
-	while (pmMainLoop()) {
+	while (true) {
 		timing::frameStart();
 		input::poll();
 		const input::State& in = input::get();
@@ -163,7 +163,7 @@ int main() {
 				if (scene) {
 #if defined(GTASADS_DEBUG) && defined(GTASADS_CUTSKIPTEST)
 					static int sceneFrames;
-					cutscene::update(++sceneFrames == 40 ? KEY_B : in.down);
+					cutscene::update(++sceneFrames == 40 ? (u32)KEY_B : in.down);
 #else
 					cutscene::update(in.down);
 #endif

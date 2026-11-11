@@ -1,0 +1,101 @@
+BLOCKSDS ?= /opt/wonderful/thirdparty/blocksds/core
+WONDERFUL_TOOLCHAIN ?= /opt/wonderful
+TOOLBIN := $(WONDERFUL_TOOLCHAIN)/toolchain/gcc-arm-none-eabi/bin
+CXX := $(TOOLBIN)/arm-none-eabi-g++
+MODE ?= ds
+STORAGE ?= rom
+DEBUG ?= 0
+QUICKTEST ?= 0
+CUTSKIPTEST ?= 0
+EMU ?= melonds
+DLDI ?= tools/dldi/r4tfv2.dldi
+OUT := build/tmp/$(MODE)-$(STORAGE)
+SPECS := $(BLOCKSDS)/sys/crts/$(if $(filter dsi,$(MODE)),dsi,ds)_arm9.specs
+FLAGS := -marm -mcpu=arm946e-s+nofp -ffunction-sections -fdata-sections -DARM9 -Isrc -isystem $(BLOCKSDS)/libs/libnds/include -specs=$(SPECS)
+ifeq ($(MODE),dsi)
+FLAGS += -DGTASADS_DSI
+endif
+ifeq ($(STORAGE),sd)
+FLAGS += -DGTASADS_FAT
+endif
+ifeq ($(DEBUG),1)
+OPT ?= -Og
+FLAGS += -DGTASADS_DEBUG
+else
+OPT ?= -O2
+endif
+FLAGS += $(OPT)
+ifeq ($(QUICKTEST),1)
+FLAGS += -DGTASADS_QUICKTEST
+endif
+ifeq ($(CUTSKIPTEST),1)
+FLAGS += -DGTASADS_CUTSKIPTEST
+endif
+rwildcard = $(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
+SOURCES := $(call rwildcard,src,*.cpp)
+OBJECTS := $(patsubst %.cpp,$(OUT)/%.o,$(SOURCES))
+NITRO_FILES := $(if $(filter rom,$(STORAGE)),$(call rwildcard,nitrofs,*))
+ELF := $(OUT)/gtasads.elf
+ROM := build/$(if $(filter rom,$(STORAGE)),fat-,)gtasads.$(if $(filter dsi,$(MODE)),dsi,nds)
+ASSET_DEPS := resources.toml $(filter-out tools/run.py,$(wildcard tools/*.py tools/gtasa/*.py))
+ifeq ($(ASSETS),0)
+nitrofs/.stamp:
+	@mkdir -p nitrofs && touch $@
+else
+nitrofs/.stamp: $(ASSET_DEPS)
+	python3 tools/assets.py build
+endif
+.PHONY: all build build-ds build-dsi build-sd-ds build-sd-dsi build-quick stage-sd sdcard dldi sd run run-ds run-sd run-sd-ds assets sync radio-sync radio-assets force
+.DEFAULT_GOAL := all
+all: build
+.NOTPARALLEL: build
+build: build-ds build-dsi build-sd-ds build-sd-dsi stage-sd
+build-ds:
+	@$(MAKE) -f Makefile.blocksds --no-print-directory MODE=ds STORAGE=rom single
+build-dsi:
+	@$(MAKE) -f Makefile.blocksds --no-print-directory MODE=dsi STORAGE=rom single
+build-sd-ds:
+	@$(MAKE) -f Makefile.blocksds --no-print-directory MODE=ds STORAGE=sd single
+build-sd-dsi:
+	@$(MAKE) -f Makefile.blocksds --no-print-directory MODE=dsi STORAGE=sd single
+build-quick:
+	@$(MAKE) -f Makefile.blocksds --no-print-directory QUICKTEST=1 build
+assets:
+	python3 tools/assets.py build
+sync:
+	python3 tools/assets.py sync
+radio-sync:
+	python3 tools/assets.py sync radio_streams
+radio-assets:
+	python3 tools/assets.py build radio_streams
+stage-sd: nitrofs/.stamp
+	@mkdir -p build/gtasads
+	@cp -au nitrofs/. build/gtasads/
+	@if test -d build/radio/gtasads/audio/streams; then cp -au build/radio/gtasads/. build/gtasads/; fi
+sdcard: build-sd-ds build-sd-dsi stage-sd
+sd: sdcard
+dldi: build-sd-ds build-sd-dsi
+run: build-dsi
+	python3 tools/run.py dsi rom "$(EMU)"
+run-ds: build-ds
+	python3 tools/run.py ds rom "$(EMU)"
+run-sd: build-sd-dsi stage-sd
+	python3 tools/run.py dsi sd "$(EMU)"
+run-sd-ds: build-sd-ds stage-sd
+	python3 tools/run.py ds sd "$(EMU)"
+single: $(ROM)
+force:
+$(OUT)/.optsig: force
+	@mkdir -p $(OUT)
+	@printf '%s\n' '$(FLAGS)' | cmp -s - $@ || printf '%s\n' '$(FLAGS)' > $@
+$(OUT)/src/%.o: src/%.cpp $(OUT)/.optsig
+	@mkdir -p $(dir $@)
+	$(CXX) $(FLAGS) -std=gnu++17 -fno-rtti -fno-exceptions -Wall -Wextra -MMD -MP -c $< -o $@
+$(ELF): $(OBJECTS)
+	$(CXX) $(OBJECTS) -marm -mcpu=arm946e-s+nofp -specs=$(SPECS) -L$(BLOCKSDS)/libs/libnds/lib -Wl,-Map,$(OUT)/gtasads.map -Wl,-u,gettimeofday -Wl,--start-group -lnds9 -lstdc++ -lc -lm -Wl,--end-group -o $@
+$(ROM): $(ELF) icon.bmp $(if $(filter rom,$(STORAGE)),nitrofs/.stamp $(NITRO_FILES))
+	$(BLOCKSDS)/tools/ndstool/ndstool -c $@ -9 $< -7 $(BLOCKSDS)/sys/arm7/main_core/arm7_minimal.elf -b icon.bmp "GTA: San Andreas DS;Port by Sammwy" $(if $(filter rom,$(STORAGE)),-d nitrofs)
+ifeq ($(STORAGE),sd)
+	$(BLOCKSDS)/tools/dlditool/dlditool $(DLDI) $@
+endif
+-include $(OBJECTS:.o=.d)

@@ -7,7 +7,7 @@
 
 // Custom memory manager (see mem/budget.h for the region plan). Every
 // allocation in src/ goes through here with a tag, so the debug HUD can show
-// where the RAM is going. libc's malloc/free/new are routed to the SYS heap.
+// where the RAM is going. picolibc uses its own separate SYS heap.
 namespace mem {
 
 enum Tag : uint8_t {

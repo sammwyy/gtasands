@@ -54,7 +54,7 @@ static int s_initStep;
 
 bool initStep() {
 	if (s_ok) return true;
-	if (s_initStep == 0 && !s_txd.open("nitro:/models/fonts.txd")) return false;
+	if (s_initStep == 0 && !s_txd.open("game:/models/fonts.txd")) return false;
 	if (s_initStep <= 1) {
 		mem::Scratch scratch;
 		const int fi = s_initStep;   // [0]=font2, [1]=font1
@@ -66,7 +66,7 @@ bool initStep() {
 	s_txd.close();
 	if (!s_arena) s_arena = (u8*)mem::perm(ARENA_BYTES, mem::TAG_HUD);
 	if (!s_arena) return false;
-	loadProp("nitro:/data/fonts.dat");
+	loadProp("game:/data/fonts.dat");
 	for (int i = 0; i < 2; i++)
 		if (!s_prop[i][0]) for (u8& v : s_prop[i]) v = 12;
 	s_prop[0][208] = s_prop[1][208] = 10;
