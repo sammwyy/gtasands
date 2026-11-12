@@ -156,6 +156,7 @@ static void audTest(int f) {
 		aehw::captureSave(capPath);
 		capPath[0] = 0;
 	}
+	if (f == 1) cutscene::stop();
 	if (f == 600) {
 		player::respawn();
 		player::debugSetView(0.0f, 0.42f);
@@ -220,10 +221,11 @@ static void vehTest(int f) {
 		        (unsigned long)vs.drawUs, timing::fps(), renderer::polyCount());
 		const world::Stats& ws = world::stats();
 		const col::Stats& cs = col::stats();
-		fprintf(out, " | 3d=%lu sim=%lu hud=%lu wu=%u wd=%u cu=%u cq=%u\n", (unsigned long)timing::sectionUs(timing::SEC_3D),
+		fprintf(out, " | 3d=%lu sim=%lu hud=%lu wu=%lu wd=%lu cu=%u cq=%u\n", (unsigned long)timing::sectionUs(timing::SEC_3D),
 		        (unsigned long)timing::sectionUs(timing::SEC_SIM), (unsigned long)timing::sectionUs(timing::SEC_HUD),
-		        ws.updateUs, ws.drawUs, cs.updateUs, cs.queryUs);
+		        (unsigned long)ws.updateUs, (unsigned long)ws.drawUs, cs.updateUs, cs.queryUs);
 	};
+	if (f == 1) cutscene::stop();
 	if (f == 600) {
 		player::respawn();
 		player::debugSetView(0.0f, 0.42f);
@@ -286,6 +288,7 @@ static void vehSpawnTest(int f) {
 	static FILE* out;
 	static int id = -1;
 	static float sx, sy;
+	if (f == 1) cutscene::stop();
 	if (f < 600) return;
 	const int run = (f - 600) / 480, t = (f - 600) % 480;
 	if (run >= 8) {
@@ -337,6 +340,7 @@ static void vehSpawnTest(int f) {
 // frames into gtasads_menutest.txt, closes it and walks on.
 static void menuAudTest(int f) {
 	static FILE* out;
+	if (f == 1) cutscene::stop();
 	if (f == 600) out = fopen("fat:/gtasads_menutest.txt", "w");
 	if (f == 610 || f == 1100) input::debugHold(KEY_START);
 	if (f == 612 || f == 1102) input::debugHold(0);
@@ -349,9 +353,9 @@ static void menuAudTest(int f) {
 	if (out && f >= 600 && f <= 1300 && f % 30 == 0) {
 		char ab[320];
 		audio::statsLine(ab, sizeof ab);
-		fprintf(out, "%d menu=%d scr=%d tl=%lu ready=%u evict=%lu drawn=%u wu=%u fps=%lu cpu=%lu (3d %lu sim %lu hud %lu) %s\n", f,
+		fprintf(out, "%d menu=%d scr=%d tl=%lu ready=%u evict=%lu drawn=%u wu=%lu fps=%lu cpu=%lu (3d %lu sim %lu hud %lu) %s\n", f,
 		        (int)FrontEndMenuManager.m_bMenuActive, (int)FrontEndMenuManager.m_nCurrentScreen, (unsigned long)radar::tileLoads(), world::stats().modelsReady, (unsigned long)world::stats().evictions,
-		        world::stats().drawn, world::stats().updateUs,
+		        world::stats().drawn, (unsigned long)world::stats().updateUs,
 		        (unsigned long)timing::fps(), (unsigned long)timing::frameUs(), (unsigned long)timing::sectionUs(timing::SEC_3D),
 		        (unsigned long)timing::sectionUs(timing::SEC_SIM), (unsigned long)timing::sectionUs(timing::SEC_HUD), ab);
 	}
@@ -446,6 +450,7 @@ static void skidTest(int f) {
 static void worldTest(int f) {
 	static FILE* out;
 	static void* pressure;
+	if (f == 1) cutscene::stop();
 	if (f == 600) {
 		out = fopen("fat:/gtasads_worldtest.txt", "w");
 		player::g.x = -2150.0f; player::g.y = 550.0f; player::g.z = 34.5f;
@@ -523,23 +528,27 @@ static void flickerTest(int f) {
 #endif
 	if (out) {
 		const world::Stats& s = world::stats();
-		fprintf(out, "%d pos=%.1f,%.1f,%.1f sec=%u inst=%u cand=%u drawn=%u budget=%u pops=%lu ready=%u loading=%u lists=%luK free=%luK largest=%luK loads=%lu reloads=%lu evict=%lu polys=%u>%u upd=%u sector=%lu mdlread=%lu parse=%lu texread=%lu compile=%lu start=%lu upload=%lu fail=%u:%u:%lu veh=%u:%u:%u:%u peds=%u:%u trafficTry=%lu:%u:%lu:%lu:%lu\n",
+		fprintf(out, "%d pos=%.1f,%.1f,%.1f sec=%u inst=%u cand=%u drawn=%u budget=%u pops=%lu ready=%u loading=%u lists=%luK free=%luK largest=%luK loads=%lu reloads=%lu evict=%lu polys=%u>%u upd=%lu sector=%lu mdlread=%lu mseek=%lu mdata=%lu parse=%lu texread=%lu tseek=%lu tdata=%lu compile=%lu start=%lu upload=%lu fail=%u:%u:%lu veh=%u:%u:%u:%u peds=%u:%u trafficTry=%lu:%u:%lu:%lu:%lu player=%lu pedus=%lu audio=%lu\n",
 		        f, player::g.x, player::g.y, player::g.z, s.sectors, s.instances, s.candidates, s.drawn, s.culledBudget,
 		        (unsigned long)s.budgetPops,
 		        s.modelsReady, s.modelsLoading, (unsigned long)(s.listBytes >> 10),
 		        (unsigned long)((mem::stats(mem::REGION_STREAM).capacity - mem::stats(mem::REGION_STREAM).used) >> 10),
 		        (unsigned long)(mem::stats(mem::REGION_STREAM).largestFree >> 10),
 		        (unsigned long)s.loads, (unsigned long)s.reloads, (unsigned long)s.evictions,
-		        s.polysBefore, s.polysAfter, s.updateUs, (unsigned long)s.sectorUs,
-		        (unsigned long)s.modelReadUs, (unsigned long)s.modelParseUs,
-		        (unsigned long)s.texReadUs, (unsigned long)s.compileUs,
+		        s.polysBefore, s.polysAfter, (unsigned long)s.updateUs, (unsigned long)s.sectorUs,
+		        (unsigned long)s.modelReadUs, (unsigned long)s.modelSeekUs, (unsigned long)s.modelDataUs,
+		        (unsigned long)s.modelParseUs,
+		        (unsigned long)s.texReadUs, (unsigned long)s.texSeekUs, (unsigned long)s.texDataUs,
+		        (unsigned long)s.compileUs,
 		        (unsigned long)s.startUs, (unsigned long)s.uploadUs,
 		        s.compileFailModel, s.compileFailReason, (unsigned long)s.compileFailBytes,
 		        veh::stats().active, veh::stats().traffic, veh::stats().spawned, veh::stats().drawn,
 		        peds::stats().live, peds::stats().drawn,
 		        (unsigned long)veh::stats().trafficAttempts, veh::stats().trafficCandidates,
 		        (unsigned long)veh::stats().trafficSpots, (unsigned long)veh::stats().trafficModelMiss,
-		        (unsigned long)veh::stats().trafficSpawnFail);
+		        (unsigned long)veh::stats().trafficSpawnFail,
+		        timing::sectionUs(timing::SEC_PLAYER), (unsigned long)peds::stats().updateUs,
+		        timing::sectionUs(timing::SEC_AUDIO));
 		if (f == 850) {
 			fclose(out);
 			out = nullptr;
@@ -572,6 +581,7 @@ static void pedTest(int f) {
 		}
 		fputc('\n', out);
 	};
+	if (f == 1) cutscene::stop();
 	if (f == 90) {   // shot0 (frame 120, before any capture borrows VRAM D) shows a ped up close
 		const int c = peds::spawnNear(player::g.x, player::g.y, player::g.z);
 		peds::debugPlace(c, player::g.x + 0.6f, player::g.y + 2.2f, player::g.z, 3.1416f);
@@ -705,14 +715,14 @@ void draw() {
 			const world::Stats& ws = world::stats();
 			auto worldLine = [&](FILE* f) {
 				fprintf(f, "world: sec=%u inst=%u cand=%u drawn=%u cullF=%u cullB=%u ready=%u loading=%u "
-				        "tex=%u fail=%u lists=%luK texvram=%luK loads=%lu reloads=%lu evict=%lu pops=%lu up=%lu polys=%u>%u upd=%uus draw=%uus scan=%uus\n",
+				        "tex=%u fail=%u lists=%luK texvram=%luK loads=%lu reloads=%lu evict=%lu pops=%lu up=%lu polys=%u>%u upd=%luus draw=%luus scan=%luus\n",
 				        ws.sectors, ws.instances, ws.candidates, ws.drawn, ws.culledFrustum, ws.culledBudget,
 				        ws.modelsReady, ws.modelsLoading, ws.textures, ws.texFailed,
 				        (unsigned long)(ws.listBytes >> 10), (unsigned long)(ws.texVram >> 10),
 				        (unsigned long)ws.loads, (unsigned long)ws.reloads, (unsigned long)ws.evictions,
 				        (unsigned long)ws.budgetPops,
 				        (unsigned long)ws.uploads, ws.polysBefore, ws.polysAfter,
-				        ws.updateUs, ws.drawUs, ws.scanUs);
+				        (unsigned long)ws.updateUs, (unsigned long)ws.drawUs, (unsigned long)ws.scanUs);
 				const col::Stats& cs = col::stats();
 				fprintf(f, "col: models=%u bytes=%luK near=%u wants=%u miss=%u loads=%lu upd=%uus query=%uus push=%uus "
 				        "ftests=%lu dbgfaces=%u pos=%.2f,%.2f,%.2f viewz=%.2f camdist=%.2f\n",
@@ -756,9 +766,10 @@ void draw() {
 				mem::summary(mb, sizeof mb);
 				FILE* f = fopen("fat:/gtasads_hudok.txt", "w");
 				if (f) {
-					fprintf(f, "%s\n%s fps=%lu cpu=%luus (3d %lu sim %lu hud %lu) heapok=%d\n", buf, mb, timing::fps(),
+					fprintf(f, "%s\n%s fps=%lu cpu=%luus (3d %lu sim %lu hud %lu player %lu audio %lu) heapok=%d\n", buf, mb, timing::fps(),
 					        timing::frameUs(), timing::sectionUs(timing::SEC_3D), timing::sectionUs(timing::SEC_SIM),
-					        timing::sectionUs(timing::SEC_HUD), (int)mem::check());
+					        timing::sectionUs(timing::SEC_HUD), timing::sectionUs(timing::SEC_PLAYER),
+					        timing::sectionUs(timing::SEC_AUDIO), (int)mem::check());
 					fprintf(f, "tags:");
 					for (int t = 0; t < mem::TAG_COUNT; t++)
 						fprintf(f, " %s=%uK", mem::tagName((mem::Tag)t), (unsigned)(mem::tagBytes((mem::Tag)t) >> 10));

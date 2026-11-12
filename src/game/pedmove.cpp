@@ -1,6 +1,10 @@
 #include "game/pedmove.h"
 
 #include <math.h>
+#ifdef ARM9
+#include <nds/arm9/math.h>
+#endif
+#include "game/trig.h"
 
 namespace pedmove {
 
@@ -31,6 +35,14 @@ static void approach(float& v, float target, float step) {
 	else if (v > target) v = v - step > target ? v - step : target;
 }
 
+static float stickLength(float x, float y) {
+#ifdef ARM9
+	return hw_sqrtf(x * x + y * y);
+#else
+	return sqrtf(x * x + y * y);
+#endif
+}
+
 void reset(State& s) {
 	s = {};
 	s.w[W_IDLE] = 1.0f;
@@ -38,8 +50,8 @@ void reset(State& s) {
 
 bool control(State& s, const Input& in, float timestep, float& aimHeading) {
 	s.prevBlend = s.moveBlend;
-	float target = sqrtf(in.walkLR * in.walkLR + in.walkUD * in.walkUD) * STICK_TO_BLEND;
-	if (!in.allowed) target = 0.0f;
+	float target = in.allowed && (in.walkLR != 0.0f || in.walkUD != 0.0f)
+	                   ? stickLength(in.walkLR, in.walkUD) * STICK_TO_BLEND : 0.0f;
 	if (in.pedWalk && target > 1.0f) target = 1.0f;
 	if (target <= 0.0f) {
 		// releasing the stick drops the blend at once (the stop clip and
@@ -51,8 +63,10 @@ bool control(State& s, const Input& in, float timestep, float& aimHeading) {
 	if (target > BLEND_MAX) target = BLEND_MAX;
 	// stick in camera space: GetRadianAngleBetweenPoints(0,0,-x,y) - cam
 	const float ix = in.walkLR / 128.0f, iy = in.walkUD / 128.0f;
-	const float dx = -sinf(in.camYaw) * iy + cosf(in.camYaw) * ix;
-	const float dy = cosf(in.camYaw) * iy + sinf(in.camYaw) * ix;
+	float sy, cy;
+	trig::sincos(in.camYaw, sy, cy);
+	const float dx = -sy * iy + cy * ix;
+	const float dy = cy * iy + sy * ix;
 	aimHeading = atan2f(-dx, dy);
 	approach(s.moveBlend, target, BLEND_RATE * timestep);
 	s.moveState = s.moveBlend > 1.0f ? PEDMOVE_RUN : PEDMOVE_WALK;

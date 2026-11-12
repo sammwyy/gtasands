@@ -1,6 +1,7 @@
 #include "audio/aesoundmanager.h"
 
 #include <math.h>
+#include <nds/arm9/math.h>
 #include <string.h>
 
 #include "audio/aeaudio.h"
@@ -91,7 +92,7 @@ static void relative(float x, float y, float z, float& rx, float& ry, float& rz)
 float distanceToListener(float x, float y, float z) {
 	float rx, ry, rz;
 	relative(x, y, z, rx, ry, rz);
-	return sqrtf(rx * rx + ry * ry + rz * rz);
+	return hw_sqrtf(rx * rx + ry * ry + rz * rz);
 }
 
 void Sound::setSpeed(float s) {
@@ -216,7 +217,7 @@ static void calculate(Sound& s, int headroom) {
 	} else {
 		float rx, ry, rz;
 		relative(s.p.x, s.p.y, s.p.z, rx, ry, rz);
-		const float d = sqrtf(rx * rx + ry * ry + rz * rz);
+		const float d = hw_sqrtf(rx * rx + ry * ry + rz * rz);
 		// GetDirectionalMikeAttenuation: -6 dB behind, cut-off at 45 degrees
 		const float c = d > 0.001f ? ry / d : 1.0f;
 		constexpr float CUT = 0.70710678f;

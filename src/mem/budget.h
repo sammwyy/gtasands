@@ -21,6 +21,7 @@
 // allocated once from STREAM -> no per-object heap traffic at all.
 namespace mem::budget {
 
+constexpr size_t SYS_BYTES = 192 * 1024;
 constexpr size_t SCRATCH_BYTES = 128 * 1024;
 constexpr size_t PERM_BYTES = 256 * 1024;
 

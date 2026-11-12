@@ -19,6 +19,7 @@ public:
 	static constexpr int PAGE_CACHE = 4;
 
 	bool open(const char* path);
+	bool initLookupCache(uint32_t maxBytes);
 	// Builds the sparse index a few pages per call; true once lookups work.
 	// Resident packs are ready right after open().
 	bool indexStep(uint32_t pages = 16);
@@ -34,12 +35,19 @@ public:
 	void* load(const ds::PackEntry& e, mem::Tag tag) const;
 	// Raw read at an absolute file offset (partial entry reads).
 	bool read(uint32_t offset, void* dst, uint32_t size) const;
+#if defined(GTASADS_DEBUG) && defined(ARM9)
+	uint32_t lastSeekUs() const { return m_lastSeekUs; }
+	uint32_t lastDataUs() const { return m_lastDataUs; }
+#endif
 	size_t residentBytes() const;
 
 private:
 	const ds::PackEntry* page(uint32_t p) const;
 
 	FILE* m_file = nullptr;
+#if defined(GTASADS_DEBUG) && defined(ARM9)
+	mutable uint32_t m_lastSeekUs = 0, m_lastDataUs = 0;
+#endif
 	uint32_t m_count = 0;
 	uint32_t m_pages = 0, m_indexed = 0;
 	ds::PackEntry* m_toc = nullptr;      // resident mode

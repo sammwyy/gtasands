@@ -93,6 +93,11 @@ static bool jobOpenModels() {
 	hud::log("gta3.dspk: %u entries", ok ? (unsigned)streaming::g_models.count() : 0u);
 	return true;
 }
+static bool jobCacheModels() {
+	if (streaming::g_models.isOpen() && !streaming::g_models.initLookupCache(16 * 1024))
+		hud::log("gta3.dspk: seek cache unavailable");
+	return true;
+}
 static bool jobOpenCutsceneModels() {
 	streaming::g_cutscene.open("game:/models/cutscene.dspk");
 	return true;
@@ -102,6 +107,11 @@ static bool jobIndexModels() { return !streaming::g_models.isOpen() || streaming
 static bool jobOpenInteriors() {
 	const bool ok = streaming::g_interiors.open("game:/models/gta_int.dspk");
 	hud::log("gta_int.dspk: %u entries", ok ? (unsigned)streaming::g_interiors.count() : 0u);
+	return true;
+}
+static bool jobCacheInteriors() {
+	if (streaming::g_interiors.isOpen() && !streaming::g_interiors.initLookupCache(8 * 1024))
+		hud::log("gta_int.dspk: seek cache unavailable");
 	return true;
 }
 static bool jobIndexInteriors() { return !streaming::g_interiors.isOpen() || streaming::g_interiors.indexStep(16); }
@@ -169,9 +179,11 @@ static bool (*const s_jobs[])() = {
 	jobSplash,
 	jobTune,
 	jobOpenModels,
+	jobCacheModels,
 	jobIndexModels,
 	jobOpenCutsceneModels,
 	jobOpenInteriors,
+	jobCacheInteriors,
 	jobIndexInteriors,
 	jobOpenPlayer,
 	jobOpenAnim,

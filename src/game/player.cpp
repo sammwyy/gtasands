@@ -17,6 +17,7 @@
 #include "game/pedmove.h"
 #include "game/peds.h"
 #include "game/timecycle.h"
+#include "game/trig.h"
 #include "game/vehicle.h"
 #include "game/vehicledata.h"
 #include "game/vehiclemodel.h"
@@ -864,7 +865,8 @@ static void updateMove() {
 		cj::advance(s_action == ACT_LAND ? s_landSpeed : 1);
 		float mx, my;
 		cj::rootDelta(mx, my);
-		const float c = cosf(g.heading), s = sinf(g.heading);
+		float s, c;
+		trig::sincos(g.heading, s, c);
 		const float wx = mx * c - my * s;
 		const float wy = mx * s + my * c;
 		g.x += wx;
@@ -876,7 +878,7 @@ static void updateMove() {
 		// glide still integrates s_jumpVX; the launch's carry is root motion.
 		const float vx = wx / DT + (s_action == ACT_GLIDE ? s_jumpVX : 0.0f);
 		const float vy = wy / DT + (s_action == ACT_GLIDE ? s_jumpVY : 0.0f);
-		g.speed = sqrtf(vx * vx + vy * vy);
+		g.speed = hw_sqrtf(vx * vx + vy * vy);
 		if (FrontEndMenuManager.m_cameraFollowDpad && !looking && !g.aiming &&
 		    camFollows(pd.walkUD, hasMoveInput)) followCam(g.heading);
 		else { s_betaSpeed = 0.0f; s_betaSign = 0; }
@@ -892,10 +894,13 @@ static void updateMove() {
 			// Stick relative to the aim heading: forward / back / strafe
 			// (ControlGunMove / the fight shuffle).
 			const float ix = pd.walkLR / 128.0f, iy = pd.walkUD / 128.0f;
-			const float fx = -sinf(g.heading), fy = cosf(g.heading);
-			const float rx = cosf(g.heading), ry = sinf(g.heading);
-			const float dx = -sinf(s_camYaw) * iy + cosf(s_camYaw) * ix;
-			const float dy =  cosf(s_camYaw) * iy + sinf(s_camYaw) * ix;
+			float s, c, camS, camC;
+			trig::sincos(g.heading, s, c);
+			trig::sincos(s_camYaw, camS, camC);
+			const float fx = -s, fy = c;
+			const float rx = c, ry = s;
+			const float dx = -camS * iy + camC * ix;
+			const float dy = camC * iy + camS * ix;
 			const float fwd = dx * fx + dy * fy;
 			const float side = dx * rx + dy * ry;
 			if (melee) {
@@ -924,12 +929,13 @@ static void updateMove() {
 	}
 	mx *= dbg::opts.playerSpeedQ * 0.25f;
 	my *= dbg::opts.playerSpeedQ * 0.25f;
-	const float c = cosf(g.heading), s = sinf(g.heading);
+	float s, c;
+	trig::sincos(g.heading, s, c);
 	const float wx = mx * c - my * s;
 	const float wy = mx * s + my * c;
 	g.x += wx;
 	g.y += wy;
-	g.speed = sqrtf(wx * wx + wy * wy) / DT;
+	g.speed = hw_sqrtf(wx * wx + wy * wy) / DT;
 	s_stepVX = wx / DT;
 	s_stepVY = wy / DT;
 
@@ -990,9 +996,12 @@ static void updateCamera() {
 	const float want = inCar ? s_camCarDist : dbg::opts.camDist;
 	float d = want;
 	if (physics()) {
-		const float cp = cosf(s_camPitch), sp = sinf(s_camPitch), len = want + CAM_MARGIN;
+		float sp, cp, sy, cy;
+		trig::sincos(s_camPitch, sp, cp);
+		trig::sincos(s_camYaw, sy, cy);
+		const float len = want + CAM_MARGIN;
 		const float a[3] = { g.x, g.y, s_viewZ + s_lookH };
-		const float b[3] = { a[0] + sinf(s_camYaw) * cp * len, a[1] - cosf(s_camYaw) * cp * len, a[2] + sp * len };
+		const float b[3] = { a[0] + sy * cp * len, a[1] - cy * cp * len, a[2] + sp * len };
 		col::Hit h;
 		if (col::castSegment(a, b, h)) d = h.t * len - CAM_MARGIN;
 		if (d < 0.5f) d = 0.5f;
@@ -1260,7 +1269,7 @@ static bool carStep() {
 		// scripted stick (camera-relative, like the real pad)
 		float w[3];
 		veh::toWorld(*v, door, w);
-		const float dx = w[0] - g.x, dy = w[1] - g.y, d = sqrtf(dx * dx + dy * dy);
+	const float dx = w[0] - g.x, dy = w[1] - g.y, d = hw_sqrtf(dx * dx + dy * dy);
 		const float reach = s_style == ES_DIRECT ? 1.2f : 0.45f;
 		if (d < reach || s_taskSteps > 240) {
 			pad::setOverride(nullptr);
@@ -1349,7 +1358,7 @@ void explosionDamage(float x, float y, float, float damage) {
 	g.health -= damage;
 	if (g.health < 0.0f) g.health = 0.0f;
 	if (s_carTask != CT_NONE) return;
-	const float dx = g.x - x, dy = g.y - y, d = sqrtf(dx * dx + dy * dy) + 0.1f;
+	const float dx = g.x - x, dy = g.y - y, d = hw_sqrtf(dx * dx + dy * dy) + 0.1f;
 	s_action = ACT_GLIDE;
 	s_jumpVX = dx / d * 6.0f;
 	s_jumpVY = dy / d * 6.0f;
@@ -1464,7 +1473,7 @@ static void updateCarCamera(const veh::Vehicle& v, bool looking) {
 	const vehmdl::Model* m = vehmdl::get(v.model);
 	const float len = m ? m->bmax[1] - m->bmin[1] : 4.5f;
 	const float top = m ? m->bmax[2] : 1.0f;
-	const float sp = sqrtf(v.moveSpeed[0] * v.moveSpeed[0] + v.moveSpeed[1] * v.moveSpeed[1]);
+	const float sp = hw_sqrtf(v.moveSpeed[0] * v.moveSpeed[0] + v.moveSpeed[1] * v.moveSpeed[1]);
 	const bool flying = v.cls == veh::CLS_HELI || v.cls == veh::CLS_PLANE;
 	float target = veh::heading(v);
 	if (sp > 0.05f && v.speedFwd > 0.0f && v.cls != veh::CLS_HELI) target = atan2f(-v.moveSpeed[0], v.moveSpeed[1]);

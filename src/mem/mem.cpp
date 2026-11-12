@@ -35,8 +35,8 @@ void init() {
 #ifdef ARM9
 	uint8_t* hi = getHeapLimit();
 	const size_t space = hi - getHeapEnd();
-	const size_t reserved = space > 256 * 1024 ? (space - 256 * 1024) & ~(size_t)31 : 0;
-	if (reserved < budget::SCRATCH_BYTES + budget::PERM_BYTES + 256 * 1024 ||
+	const size_t reserved = space > budget::SYS_BYTES ? (space - budget::SYS_BYTES) & ~(size_t)31 : 0;
+	if (reserved < budget::SCRATCH_BYTES + budget::PERM_BYTES + budget::SYS_BYTES ||
 	    reduceHeapSize(reserved) != 0) __builtin_trap();
 	uint8_t* lo = getHeapLimit();
 #else

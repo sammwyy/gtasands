@@ -1,6 +1,10 @@
 #include "assets/pack.h"
 
 #include <string.h>
+#include "platform/fs.h"
+#if defined(GTASADS_DEBUG) && defined(ARM9)
+#include "platform/timing.h"
+#endif
 
 bool Pack::open(const char* path) {
 	close();
@@ -34,6 +38,10 @@ bool Pack::open(const char* path) {
 		m_cache[i].stamp = 0;
 	}
 	return true;
+}
+
+bool Pack::initLookupCache(uint32_t maxBytes) {
+	return m_file && fs::initLookupCache(m_file, maxBytes) == 0;
 }
 
 bool Pack::indexStep(uint32_t pages) {
@@ -121,7 +129,19 @@ bool Pack::find(const char* name, ds::PackEntry& out) const {
 
 bool Pack::read(uint32_t offset, void* dst, uint32_t size) const {
 	if (!m_file) return false;
-	return fseek(m_file, (long)offset, SEEK_SET) == 0 && fread(dst, 1, size, m_file) == size;
+#if defined(GTASADS_DEBUG) && defined(ARM9)
+	const uint32_t seekStart = timing::ticks();
+#endif
+	const bool seekOk = fseek(m_file, (long)offset, SEEK_SET) == 0;
+#if defined(GTASADS_DEBUG) && defined(ARM9)
+	m_lastSeekUs = timing::usSince(seekStart);
+	const uint32_t readStart = timing::ticks();
+#endif
+	const bool readOk = seekOk && fread(dst, 1, size, m_file) == size;
+#if defined(GTASADS_DEBUG) && defined(ARM9)
+	m_lastDataUs = seekOk ? timing::usSince(readStart) : 0;
+#endif
+	return readOk;
 }
 
 void* Pack::load(const ds::PackEntry& e, mem::Tag tag) const {

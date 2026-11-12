@@ -12,6 +12,7 @@
 #include "game/peds.h"
 #include "game/player.h"
 #include "game/timecycle.h"
+#include "game/trig.h"
 #include "game/vehicle.h"
 #include "game/weather.h"
 #include "game/world.h"
@@ -81,10 +82,13 @@ void draw() {
 	// keeps the view matrix inside the s20.12 range.
 	const float dist = player::camDist(), lookH = player::camLookH();
 	const float vz = player::viewZ();
-	const float horiz = cosf(pitch) * dist;
-	float elx = sinf(yaw) * horiz;
-	float ely = -cosf(yaw) * horiz;
-	float eyeH = lookH + sinf(pitch) * dist;
+	float sy, cy, sp, cp;
+	trig::sincos(yaw, sy, cy);
+	trig::sincos(pitch, sp, cp);
+	const float horiz = cp * dist;
+	float elx = sy * horiz;
+	float ely = -cy * horiz;
+	float eyeH = lookH + sp * dist;
 	float eye[3], target[3];
 	if (cutscene::view(eye, target)) {
 		elx = eye[0] - px;

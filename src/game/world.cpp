@@ -16,6 +16,7 @@
 #include "game/streaming.h"
 #include "hud/hud.h"
 #include "mem/mem.h"
+#include "platform/fs.h"
 #include "platform/timing.h"
 #include "platform/video.h"
 #include "render/gxlist.h"
@@ -462,7 +463,7 @@ static inline s32 atomicPos(const mdl::Geometry& g, int v, int k, const s32 mat[
 // light0 = timecycle world light is set once per frame. DIF_AMB + NORMAL are
 // only emitted when the colour changes. Texture registers are baked in
 // (repeat on), so the textures must stay put while the list lives.
-static bool compile(Slot& s) {
+static ITCM_CODE bool compile(Slot& s) {
 	const mdl::Model* m = s.view;
 	s32 maxAbs = 1;
 	s32 lo[3] = { INT_MAX, INT_MAX, INT_MAX }, hi[3] = { INT_MIN, INT_MIN, INT_MIN };
@@ -511,12 +512,15 @@ static bool compile(Slot& s) {
 	gx::ListBuilder dl(buf, cap);
 	dl.cmd(gx::CMD_SPE_EMI, 0);
 	uint32_t tris = 0;
+	struct CachedPos { int v; s32 p[3]; };
+	CachedPos posCache[128];
 	for (int a = 0; a < m->numAtomics; a++) {
 		const ds::ModelAtomic& atom = m->atomics[a];
 		if (atom.geometry >= m->numGeoms) continue;
 		const mdl::Geometry& geo = m->geoms[atom.geometry];
 		s32 frame[12];
 		frameMatrix(*m, atom.frame, frame);
+		for (CachedPos& c : posCache) c.v = -1;
 		const int nv = geo.h->numVerts, ue = geo.h->uvExp;
 		for (int mi = 0; mi < geo.h->numMaterials; mi++) {
 			const ds::GeometryMaterial& mat = geo.mats[mi];
@@ -574,8 +578,12 @@ static bool compile(Slot& s) {
 						dl.cmd(gx::CMD_NORMAL, NORMAL_UP);
 						lastCol = c;
 					}
-					const s32 x = atomicPos(geo, v, 0, frame) >> e, y = atomicPos(geo, v, 1, frame) >> e,
-					          z = atomicPos(geo, v, 2, frame) >> e;
+					CachedPos& cp = posCache[(unsigned)v & 127];
+					if (cp.v != v) {
+						cp.v = v;
+						for (int axis = 0; axis < 3; axis++) cp.p[axis] = atomicPos(geo, v, axis, frame);
+					}
+					const s32 x = cp.p[0] >> e, y = cp.p[1] >> e, z = cp.p[2] >> e;
 					dl.cmd(gx::CMD_VTX_16, (u32)(u16)(s16)x | ((u32)(u16)(s16)y << 16), (u32)(u16)(s16)z);
 				}
 				tris++;
@@ -1021,10 +1029,25 @@ static Cam makeCam(float ex, float ey, float ez, float yaw, float pitch, bool fr
 static void stream(u32 budgetUs, int maxStarts) {
 	const u32 t0 = timing::ticks();
 	bool worked = false;
+	for (int n = 0; n < 2 && timing::usSince(t0) < budgetUs; n++) {
+		int parse = -1;
+		for (int i = 0; i < WORLD_MODEL_SLOTS; i++)
+			if (s_slots[i].state == SLOT_READING && s_slots[i].readDone == s_slots[i].readSize &&
+			    (parse < 0 || s_slots[i].priority < s_slots[parse].priority)) parse = i;
+		if (parse < 0) break;
+#ifdef GTASADS_DEBUG
+		const u32 parseT0 = timing::ticks();
+#endif
+		finishRead(s_slots[parse]);
+#ifdef GTASADS_DEBUG
+		s_stats.modelParseUs += timing::usSince(parseT0);
+#endif
+		worked = true;
+	}
 	for (int reads = 0; reads < 2 && timing::usSince(t0) < budgetUs; reads++) {
 		int best = -1;
 		for (int i = 0; i < WORLD_MODEL_SLOTS; i++)
-			if (s_slots[i].state == SLOT_READING &&
+			if (s_slots[i].state == SLOT_READING && s_slots[i].readDone < s_slots[i].readSize &&
 			    (best < 0 || s_slots[i].priority < s_slots[best].priority)) best = i;
 		if (best < 0) break;
 		Slot& s = s_slots[best];
@@ -1037,6 +1060,8 @@ static void stream(u32 budgetUs, int maxStarts) {
 		const bool readOk = pack.read(s.readOffset + s.readDone, (uint8_t*)s.blob + s.readDone, bytes);
 #ifdef GTASADS_DEBUG
 		s_stats.modelReadUs += timing::usSince(readT0);
+		s_stats.modelSeekUs += pack.lastSeekUs();
+		s_stats.modelDataUs += pack.lastDataUs();
 #endif
 		if (!readOk) {
 			mem::free(s.blob);
@@ -1046,11 +1071,11 @@ static void stream(u32 budgetUs, int maxStarts) {
 		}
 		s.readDone += bytes;
 		worked = true;
-		if (s.readDone == s.readSize) {
+		if (s.readDone == s.readSize && timing::usSince(t0) < budgetUs) {
 #ifdef GTASADS_DEBUG
 			const u32 parseT0 = timing::ticks();
 #endif
-			worked |= finishRead(s);
+			finishRead(s);
 #ifdef GTASADS_DEBUG
 			s_stats.modelParseUs += timing::usSince(parseT0);
 #endif
@@ -1082,6 +1107,8 @@ static void stream(u32 budgetUs, int maxStarts) {
 		const bool readOk = pack.read(t.offset, buf, t.size);
 #ifdef GTASADS_DEBUG
 		s_stats.texReadUs += timing::usSince(readT0);
+		s_stats.texSeekUs += pack.lastSeekUs();
+		s_stats.texDataUs += pack.lastDataUs();
 #endif
 		if (readOk &&
 		    t.size >= sizeof(ds::TexHeader) && ((const ds::TexHeader*)buf)->magic == DS_FOURCC('D', 'T', 'E', 'X')) {
@@ -1138,7 +1165,8 @@ void update(float x, float y) {
 	const u32 t0 = timing::ticks();
 	s_frame++;
 #ifdef GTASADS_DEBUG
-	s_stats.sectorUs = s_stats.modelReadUs = s_stats.modelParseUs = s_stats.texReadUs =
+	s_stats.sectorUs = s_stats.modelReadUs = s_stats.modelSeekUs = s_stats.modelDataUs =
+		s_stats.modelParseUs = s_stats.texReadUs = s_stats.texSeekUs = s_stats.texDataUs =
 		s_stats.compileUs = s_stats.startUs = 0;
 	const u32 sectorT0 = timing::ticks();
 #endif
@@ -1148,9 +1176,9 @@ void update(float x, float y) {
 #endif
 	// after a suspend (pause menu) the visible set is rebuilt with a bigger
 	// budget for a moment instead of trickling back in over ~10 s
-	stream(s_boost ? UPDATE_US * 3 : UPDATE_US, s_boost ? 4 : 2);
+	stream(s_boost ? UPDATE_US * 3 : UPDATE_US, 2);
 	if (s_boost) s_boost--;
-	s_stats.updateUs = (uint16_t)timing::usSince(t0);
+	s_stats.updateUs = timing::usSince(t0);
 }
 
 int area() { return s_area; }
@@ -1289,6 +1317,13 @@ bool initStep() {
 		return false;
 	}
 	if (s_preloadStep == 2 || !ready()) return true;
+	if (s_preloadStep == 1) {
+		s_preloadStep = 3;
+		if (fs::initLookupCache(s_file, 8 * 1024) != 0)
+			hud::log("world.dwld: seek cache unavailable");
+		s_preloadT0 = timing::vblanks();
+		return false;
+	}
 	// CStreaming::LoadScene: everything within the view around the player,
 	// without frustum culling, before the first in-game frame
 	const float px = player::g.x, py = player::g.y;
@@ -1342,7 +1377,7 @@ void draw(const DrawView& v) {
 	if (!ready() || !dbg::opts.world) return;
 	const u32 t0 = timing::ticks();
 	scan(makeCam(v.eyeX, v.eyeY, v.eyeZ, v.yaw, v.pitch, true));
-	s_stats.scanUs = (uint16_t)timing::usSince(t0);
+	s_stats.scanUs = timing::usSince(t0);
 
 	// Foreground first; apparent size only breaks ties within a distance band.
 	std::sort(s_vis, s_vis + s_numVis, [](const Vis& a, const Vis& b) { return a.key > b.key; });
@@ -1416,7 +1451,7 @@ void draw(const DrawView& v) {
 	s_stats.drawn = drawn;
 	s_stats.culledBudget = dropped;
 	s_stats.polysAfter = (uint16_t)polys;
-	s_stats.drawUs = (uint16_t)timing::usSince(t0);
+	s_stats.drawUs = timing::usSince(t0);
 }
 
 }

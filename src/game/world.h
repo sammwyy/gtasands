@@ -59,9 +59,10 @@ struct Stats {
 	uint32_t loads, uploads, reloads, evictions;        // totals since boot
 	uint32_t budgetPops;
 	uint16_t polysBefore, polysAfter; // hardware polygon count around draw()
-	uint16_t updateUs, drawUs, scanUs; // scanUs is part of drawUs
+	uint32_t updateUs, drawUs, scanUs; // scanUs is part of drawUs
 #ifdef GTASADS_DEBUG
-	uint32_t sectorUs, modelReadUs, modelParseUs, texReadUs, compileUs, startUs, uploadUs;
+	uint32_t sectorUs, modelReadUs, modelSeekUs, modelDataUs, modelParseUs, texReadUs, texSeekUs, texDataUs;
+	uint32_t compileUs, startUs, uploadUs;
 	uint16_t compileFailModel, compileFailReason;
 	uint32_t compileFailBytes;
 #endif

@@ -419,7 +419,7 @@ static void setTarget(Ped& p) {
 	float px = 0.0f, py = 0.0f;
 	if (a) {
 		const float sx = peddata::nodeX(b) - peddata::nodeX(a), sy = peddata::nodeY(b) - peddata::nodeY(a);
-		const float l = sqrtf(sx * sx + sy * sy);
+		const float l = hw_sqrtf(sx * sx + sy * sy);
 		if (l > 0.01f) { px = sy / l; py = -sx / l; }   // right of the walking direction
 	}
 	p.tx = peddata::nodeX(b) + px * p.lane;
@@ -612,7 +612,7 @@ static void damage(Ped& p, float dmg, float fx, float fy, DamageKind kind, int w
 	}
 	p.vx = vx;
 	p.vy = vy;
-	p.vz = kind == DMG_CAR ? 2.5f + sqrtf(vx * vx + vy * vy) * 0.15f : kind == DMG_EXPLOSION ? 6.0f : 0.0f;
+	p.vz = kind == DMG_CAR ? 2.5f + hw_sqrtf(vx * vx + vy * vy) * 0.15f : kind == DMG_EXPLOSION ? 6.0f : 0.0f;
 	if (p.health <= 0.0f) {
 		// CTaskComplexDie: KO_* by the weapon and the side it came from
 		p.health = 0.0f;
@@ -785,7 +785,7 @@ static void taskStep(Ped& p, int dt) {
 		const float side = (indexOf(p) & 1) ? 1.1f : -1.1f;
 		const float lfx = -fsin(l->heading), lfy = fcos(l->heading);
 		const float gx = l->x + lfy * side - lfx * 0.4f, gy = l->y - lfx * side - lfy * 0.4f;
-		const float dx = gx - p.x, dy = gy - p.y, d = sqrtf(dx * dx + dy * dy);
+		const float dx = gx - p.x, dy = gy - p.y, d = hw_sqrtf(dx * dx + dy * dy);
 		const float lb = l->move.moveBlend;
 		locomote(p, d > 0.5f ? headingTo(dx, dy) : l->heading, d > 3.0f ? 1.8f : d > 0.5f ? fmaxf(lb, 1.0f) : lb, false, dt);
 		p.from = l->from;
@@ -810,9 +810,9 @@ static void taskStep(Ped& p, int dt) {
 				const ds::PathNode* next = peddata::node(to);
 				if (!next || (next->flags & ds::PATHNODE_SWITCHED_OFF)) continue;
 				const float dx = peddata::nodeX(next) - p.x, dy = peddata::nodeY(next) - p.y;
-				const float length = sqrtf(dx * dx + dy * dy);
+				const float length = hw_sqrtf(dx * dx + dy * dy);
 				if (length < 1.0f) continue;
-				const float heading = (dx * ax + dy * ay) / (length * fmaxf(1.0f, sqrtf(ax * ax + ay * ay)));
+				const float heading = (dx * ax + dy * ay) / (length * fmaxf(1.0f, hw_sqrtf(ax * ax + ay * ay)));
 				const float forward = (-fsin(p.heading) * dx + fcos(p.heading) * dy) / length;
 				const float rank = heading * 2.0f + forward + frand() * 0.3f;
 				if (rank > score) { score = rank; best = to; }
@@ -831,7 +831,7 @@ static void taskStep(Ped& p, int dt) {
 	case TASK_ATTACK: {
 		float tx, ty, tz;
 		if (!targetPos(p, tx, ty, tz) || (p.target == TARGET_PLAYER && !hatesPlayer(p) && isCop(p))) { resumeWander(p); break; }
-		const float dx = tx - p.x, dy = ty - p.y, d = sqrtf(dx * dx + dy * dy);
+		const float dx = tx - p.x, dy = ty - p.y, d = hw_sqrtf(dx * dx + dy * dy);
 		// CTaskComplexSeekEntity gives up after 50 s; a target that stays out
 		// of sight (outrun, around a corner) is lost, and the hate event is not
 		// raised again for a while so CJ can get away
@@ -1069,7 +1069,7 @@ static void vehicleThreat(Ped& p) {
 		const veh::Vehicle* v = veh::get(i);
 		if (!v || v->status == veh::STATUS_WRECKED) continue;
 		const float mx = v->moveSpeed[0], my = v->moveSpeed[1];
-		const float spd = sqrtf(mx * mx + my * my);
+		const float spd = hw_sqrtf(mx * mx + my * my);
 		if (spd < 0.12f) continue;   // ~22 km/h
 		const float ux = mx / spd, uy = my / spd;
 		const float dx = p.x - v->pos[0], dy = p.y - v->pos[1];
@@ -1164,7 +1164,7 @@ static void separate() {
 			const float dx = b->x - a->x, dy = b->y - a->y, d2 = dx * dx + dy * dy;
 			const float r = PED_R * 2.0f;
 			if (d2 >= r * r || d2 < 1e-6f || fabsf(a->z - b->z) > 1.5f) continue;
-			const float d = sqrtf(d2), push = (r - d) * 0.5f / d;
+			const float d = hw_sqrtf(d2), push = (r - d) * 0.5f / d;
 			a->x -= dx * push; a->y -= dy * push;
 			b->x += dx * push; b->y += dy * push;
 		}
@@ -1178,7 +1178,7 @@ bool pushPlayer(float& x, float& y, float z, float r) {
 		if (!p || p->task == TASK_DEAD || fabsf(p->z - z) > 1.5f) continue;
 		const float dx = x - p->x, dy = y - p->y, d2 = dx * dx + dy * dy, rr = r + PED_R;
 		if (d2 >= rr * rr || d2 < 1e-6f) continue;
-		const float d = sqrtf(d2), push = (rr - d) / d;
+		const float d = hw_sqrtf(d2), push = (rr - d) / d;
 		// both give way (CJ is heavier: he moves 2/3 less)
 		x += dx * push * 0.4f; y += dy * push * 0.4f;
 		p->x -= dx * push * 0.6f; p->y -= dy * push * 0.6f;
@@ -1310,14 +1310,14 @@ static bool creationCoors(bool start, float& x, float& y, float& z, int& from, i
 		const float t = frand();
 		const float ax = peddata::nodeX(na), ay = peddata::nodeY(na);
 		const float sx = peddata::nodeX(nb) - ax, sy = peddata::nodeY(nb) - ay;
-		const float l = sqrtf(sx * sx + sy * sy);
+		const float l = hw_sqrtf(sx * sx + sy * sy);
 		const float width = fmaxf(1.0f, fminf(4.0f, (na->width + nb->width) * (0.5f / 16.0f)));
 		lane = (frand() - 0.5f) * width * 0.8f;
 		x = ax + sx * t + (l > 0.01f ? sy / l : 0.0f) * lane;
 		y = ay + sy * t - (l > 0.01f ? sx / l : 0.0f) * lane;
 		z = peddata::nodeZ(na) + (peddata::nodeZ(nb) - peddata::nodeZ(na)) * t;
 		if (fabsf(z - pz) > 25.0f) continue;
-		const float dx = x - px, dy = y - py, d = sqrtf(dx * dx + dy * dy);
+		const float dx = x - px, dy = y - py, d = hw_sqrtf(dx * dx + dy * dy);
 		const bool vis = onScreen(x, y, z + 1.0f, 1.0f);
 		const bool ok = start ? d >= 10.0f && d <= SPAWN_ON_MAX
 		                      : vis ? d >= SPAWN_ON_MIN && d <= SPAWN_ON_MAX : d >= SPAWN_OFF_MIN && d <= SPAWN_OFF_MAX;
@@ -1677,7 +1677,7 @@ void draw(const View& v) {
 		p->onScreen = onScreen(p->x, p->y, p->z + 1.0f, 1.2f);
 		if (!p->onScreen || !pedmodel::ready(p->model)) continue;
 		const float dx = p->x - v.eyeX, dy = p->y - v.eyeY, dz = p->z - v.eyeZ;
-		const float d = sqrtf(dx * dx + dy * dy + dz * dz);
+		const float d = hw_sqrtf(dx * dx + dy * dy + dz * dz);
 		if (d > DRAW_DIST) continue;
 		int k = n++;
 		while (k > 0 && vis[k - 1].d > d) { vis[k] = vis[k - 1]; k--; }
@@ -1823,7 +1823,7 @@ void explosion(float x, float y, float z, float radius, float dmg) {
 	for (int i = 0; i < MAX; i++) {
 		Ped* p = pedAt(i);
 		if (!p || !alive(*p)) continue;
-		const float dx = p->x - x, dy = p->y - y, dz = p->z - z, d = sqrtf(dx * dx + dy * dy + dz * dz);
+		const float dx = p->x - x, dy = p->y - y, dz = p->z - z, d = hw_sqrtf(dx * dx + dy * dy + dz * dz);
 		if (d > radius) continue;
 		const float k = 1.0f - d / radius;
 		const float inv = 1.0f / (d + 0.3f);

@@ -251,7 +251,7 @@ static void pagePerf() {
 	line(1, "fps \x1b[33m%2lu\x1b[39m cpu %5lu us %3lu%%", timing::fps(), cpu, cpu * 100 / frame);
 	line(2, "     [%s]", b);
 	static const char* const k_sec[] = { "3d ", "sim", "hud" };
-	for (int s = 0; s < timing::SEC_COUNT; s++) {
+	for (int s = 0; s <= timing::SEC_HUD; s++) {
 		const u32 us = timing::sectionUs((timing::Section)s);
 		bar(b, 16, us, frame);
 		line(3 + s, "%s %5lu [%s]", k_sec[s], us, b);
@@ -283,7 +283,8 @@ static void pagePerf() {
 	line(14, "radar rng %3d tiles %2d", (int)radar::range(), radar::tilesCached());
 	const world::Stats& w = world::stats();
 	line(15, "map %3u/%3u cull f%3u b%3u", w.drawn, w.candidates, w.culledFrustum, w.culledBudget);
-	line(16, "polys %4u>%4u us u%4u d%4u", w.polysBefore, w.polysAfter, w.updateUs, w.drawUs);
+	line(16, "polys %4u>%4u us u%4lu d%4lu", w.polysBefore, w.polysAfter,
+	     (unsigned long)w.updateUs, (unsigned long)w.drawUs);
 	line(17, "mdl %3u+%2u %3luK sec%2u i%4u", w.modelsReady, w.modelsLoading,
 	     (unsigned long)(w.listBytes >> 10), w.sectors, w.instances);
 	line(18, "tex %3u fail %2u vram %3luK", w.textures, w.texFailed, (unsigned long)(w.texVram >> 10));

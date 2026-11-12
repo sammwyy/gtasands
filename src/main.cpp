@@ -176,7 +176,11 @@ int main() {
 				}
 				if (!scene) peddata::update(player::g.x, player::g.y);
 				col::update(player::g.x, player::g.y, player::g.z);        // collision near list + streaming
-				if (!scene && !missions::busy()) player::update();
+				if (!scene && !missions::busy()) {
+					const u32 pt = timing::ticks();
+					player::update();
+					timing::setSection(timing::SEC_PLAYER, timing::usSince(pt));
+				}
 				if (!scene) missions::update();
 				weather::update(player::g.x, player::g.y, player::g.z);     // CWeather::Update
 				timecycle::update(player::g.x, player::g.y, player::g.z);   // CTimeCycle::Update
@@ -187,7 +191,9 @@ int main() {
 				s_pedVbl = vb;
 			} else s_pedVbl = timing::vblanks();
 		}
+		const u32 at = timing::ticks();
 		audio::service();   // CAudioEngine::Service: entities, bank reads, channels, ambience stream
+		timing::setSection(timing::SEC_AUDIO, timing::usSince(at));
 		timing::setSection(timing::SEC_SIM, timing::usSince(t));
 		// bottom screen renders into a RAM backbuffer (safe mid-frame), then
 		// a ~0.6ms DMA pushes it to VRAM C inside vblank -> no tearing

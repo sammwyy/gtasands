@@ -205,9 +205,9 @@ while tuning. Current total ~387 MB of the 448 MB budget.
      Run 1-2 body spheres per step (rotate them, or only the leading ones by velocity) instead of all 6-8; cast the
      wheel lines against a per-step ground plane cached from the previous hits; skip sleeping-car pair tests by AABB;
      cap sim steps per frame at 2 for vehicles (MAX_STEPS 4 = death spiral at 15 fps); measure a release (-O2) build.
-   - [ ] World streaming hitches while driving fast (`wu` spikes 10-45 ms in the vehtest log): `world.cpp startLoad`
-     reads every texture of a model synchronously; queue the texture reads (TEX_QUEUED) and read them under the
-     stream() budget, one sector read per frame, prefetch along the velocity.
+   - [ ] World streaming hitches while driving fast: FAT seek lookup caches now cover the large model packs
+     and world.dwld, and texture reads are queued under the stream budget. GX compilation and random
+     sector/collision I/O still block an individual frame; test velocity-led prefetch on real hardware.
    - [ ] Collision near list follows the player only (14 m): fast cars outrun it and planes have none at altitude;
      gather around the driven vehicle with a velocity lead.
    - [ ] Bikes: real CBike lean physics (now visual), wheelies / stoppies (Wheelie/StoppieAng), falling off, kick-stand.

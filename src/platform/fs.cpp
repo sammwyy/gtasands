@@ -159,6 +159,13 @@ bool init() {
 bool ready() { return s_ready; }
 const char* backend() { return s_ready ? (s_fat ? s_base : "nitrofs") : "none"; }
 
+int initLookupCache(FILE* stream, uint32_t maxBytes) {
+	if (!stream) return -1;
+	if (!s_fat) return 0;
+	const int fd = file(fileno(stream) & 0x0FFFFFFF);
+	return fd < 0 ? -1 : fatInitLookupCache(fd, maxBytes);
+}
+
 const char* radioRoot() {
 	if (!s_ready) return nullptr;
 	static bool triedMount, mounted;

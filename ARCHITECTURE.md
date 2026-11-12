@@ -33,6 +33,10 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
   its own heap above STREAM TLSF. All four ROM variants compile without
   warnings; DSi release SD and embedded reach the game in melonDS 1.1,
   while DEBUG DSi SD marker writes hang due to its SD/MMC emulation bug.
+  For FAT lookup caches, `fs::initLookupCache` strips the `game:` device bits
+  from `fileno()` and maps to the underlying FAT descriptor before calling
+  BlocksDS `fatInitLookupCache`; passing the wrapper descriptor directly
+  fails. An unavailable cache falls back to normal reads.
 
 ## 2. Source layout (`src/`, every subdir auto-discovered, objects preserve source paths)
 
@@ -342,9 +346,12 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   models are not loaded until visible. Drawn or visible within 64 m (off-screen
   within 40 m) = protected from LRU; far models skipped by the polygon budget
   can be evicted before foreground ones.
-- **Model streaming** (`world::update`, ~3 ms budget, 2 starts/frame): `startLoad` allocates
+- **Model streaming** (`world::update`, ~3 ms budget, 2 starts/frame, including the
+  short post-suspend boost): `startLoad` allocates
   the DMDL buffer in STREAM, then reads at most two 16 KiB chunks per update in nearest-visible
-  order (READING -> LOADING); after the last chunk it queues textures, found in the model TXD
+  order (READING -> LOADING); a finished read is parsed in that frame only if the budget allows,
+  otherwise it stays pending for the next update. Parsing starts with the highest-priority
+  completed read. It then queues textures, found in the model TXD
   or its txdp parents
   (4-entry TXD directory cache). At most eight DMDLs may be reading or waiting for textures; each update
   reads up to two queued textures in nearest-visible-instance order, with at most 32 KB staged
@@ -357,7 +364,9 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   TEXIMAGE_PARAM (+repeat) / PLTT_BASE. Once all textures are in, `compile()` builds one GX list.
 - **compile()**: walks atomics rather than unique geometries (shared meshes may be instanced
   more than once), bakes each atomic's parented DFF frame transform into the display-list
-  vertices; model-wide s16 positions (scale 2^e folded into the instance matrix), per
+  vertices (a 128-entry per-atomic position cache avoids transforming shared triangle vertices
+  repeatedly). The function is in ITCM; its list buffer remains in SCRATCH/STREAM for DMA.
+  Model-wide s16 positions (scale 2^e folded into the instance matrix), per
   material POLY_ATTR (alpha, cull back, fog, light0) + texture registers, triangle list with
   TEXCOORD (shifted per triangle by whole repeats so 12.4 texcoords stay in range) and the
   lighting trick: vertex colour (prelit * material colour) as AMBIENT + constant NORMAL with
@@ -408,7 +417,9 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
 - Stats: PERF tab rows 15-18 (collision 19-20), `world:` / `col:` lines in hudok
   (including model reloads, evictions and budget pops), REND tab toggle + poly budget.
   DEBUG flicker logs also record per-frame sector-window, model-read, model-parse/TXD lookup,
-  texture-read, list-compile, model-start and vblank-upload times in microseconds.
+  texture-read, list-compile, model-start and vblank-upload times in microseconds, with separate
+  FAT seek/data times for the model and texture reads. The world update/draw/scan counters are
+  32-bit so frames longer than 65 ms do not wrap.
   Adding `-DGTASADS_GROVESHOT` alongside `-DGTASADS_FLICKERTEST` holds CJ at
   `(2495,-1664)` and captures `gtasads_grove_west.dscr` at frame 180 and
   `gtasads_grove_east.dscr` at frame 290 to check the houses behind Grove Street's fence.
@@ -418,6 +429,20 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   These phases are synchronous and can each exceed the nominal 3 ms stream budget;
   the texture upload is not the main source of the stalls. STREAM's largest
   free block reached 7 KiB, so simply increasing cache budgets is unsafe on DS.
+  BlocksDS's FAT lookup cache is enabled as separate loading jobs for the large gta3/interior
+  packs and world.dwld (up to 16/8/8 KiB respectively; NitroFS needs no FAT cache). With
+  melonDS DS SD DEBUG, a 751-frame walking test showed model-seek p95 falling from ~25 ms
+  to ~0.27 ms, model-read p95 from ~26 ms to ~3 ms, and more ready/drawn models; world
+  update still has synchronous GX compilation peaks. Ped-update peaks also fell from ~80 ms
+  to ~14 ms in these runs, consistent with fewer blocking model-pack seeks. The paths cover different in-game
+  distances due to frame pacing, and melonDS timings are not a hardware benchmark.
+  Faster model loading also increases memory churn; the post-suspend burst now starts at most
+  two models per frame, and DS reserves 192 KiB (rather than 256 KiB) for picolibc, adding
+  64 KiB to STREAM. In a DS DEBUG four-city travel test with a 24 KiB pressure allocation,
+  `kept=1 pressure=1 heapok=1`; this is not a guarantee that every model fits or that the
+  2048-polygon budget never drops details. Walk-test reloads/evictions are still high (262/290
+  by frame 850 in one run); further eviction/fragmentation improvements need hardware
+  profiling and checks for missing foreground models.
   `GTASADS_WORLDTEST` also reserves 24 KB and crosses a nearby sector at frame 1022; its
   `boundary: ... kept=1 pressure=1` line checks that resident models survive the crossing.
 - Grove Street numbers: ~110 models / 600 instances in the window, ~70 drawn, ~1600 polys,
@@ -855,11 +880,12 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   `mem::Scratch` RAII, spills to STREAM), PERM (bump, never freed), STREAM (TLSF, everything else).
 - Every allocation is tagged (`mem::alloc(n, TAG_x)`): sys text model tex anim audio radar hud
   pack world col ped temp. `mem::summary/stats/check`. `mem::Pool<T>` (CPool port) for fixed-count objects.
-- Temp file reads go to scratch. Static BSS ~130 KB; STREAM ~2.9 MB. Typical in-game:
-  STREAM ~600 KB used, PERM 231/320 KB.
+- Temp file reads go to scratch. Static BSS ~130 KB; DS STREAM is about 2.6 MB with
+  this build, while DSi gets the extra 12 MB. In a DS DEBUG city travel run STREAM
+  reached ~2.5 MB used, PERM 238/256 KB and SYS 86/192 KB.
 - PERM is never freed: allocate there only once per boot (guard with a pointer, e.g. timecycle).
 - `mem::init` uses BlocksDS `reduceHeapSize()` to reserve SCRATCH, PERM and STREAM,
-  leaving a separate 256 KB picolibc heap for stdio/FAT/libstdc++. `tlsf.cpp`
+  leaving a separate 192 KB picolibc heap for stdio/FAT/libstdc++. `tlsf.cpp`
   is portable and passed a 400k-op host stress test (git history); keep it portable.
 - Pool budgets for peds/vehicles/objects are already declared in `budget.h`, plus the world ones
   (`WORLD_*`: 192 model slots, 720 KB lists, 320 texture entries, 280 KB map VRAM (rest: vehicles), 96 sectors),
@@ -924,8 +950,12 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
 
 ## 11. Optimisation strategies used everywhere
 
-- Fixed point in hot paths (4.12 / 20.12 libnds types); floats only for per-frame scalars
-  (camera, a few dozen sprites, weather state). Byte-array integer lerps for table blends.
+- Fixed point in hot paths (4.12 / 20.12 libnds types); floats remain in gameplay, camera
+  and audio. Positive distance roots in player/peds/audio use BlocksDS `hw_sqrtf` (not in IRQ
+  handlers), and movement/camera angles use the libnds 4.12 sine/cosine table. A DS emulator
+  microbenchmark found ~9x faster roots with no difference across 256 nonnegative inputs and
+  ~12x faster trigonometry with at most 0.00027 absolute error over 1024 angles; measure on
+  hardware before treating either ratio as definitive. Byte-array integer lerps blend tables.
 - Build once, replay many: GX display lists DMA'd per frame; CPU only touches matrices.
 - Patch instead of rebuild: change a few list words (CJ colours) only when the value changes.
 - Recompute on change: fog table, HUD blocks (hash), radar only region every frame.
