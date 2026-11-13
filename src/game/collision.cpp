@@ -382,7 +382,7 @@ static bool sphereCore(int32_t w[3], int32_t rc, bool walls, uint8_t* surface) {
 			const int32_t d[3] = { C[0] - q[0], C[1] - q[1], C[2] - q[2] };
 			const int64_t d2 = (int64_t)d[0] * d[0] + (int64_t)d[1] * d[1] + (int64_t)d[2] * d[2];
 			if (d2 >= (int64_t)reach * reach || d2 == 0) return;
-			const int32_t len = (int32_t)sqrt32((int)d2);
+			const int32_t len = (int32_t)sqrt64(d2);
 			push(d, len, reach - len);
 		};
 		forFaces(c, v, lo, hi, [&](const ds::WorldColFace& f, const int16_t* const tri[3]) {
