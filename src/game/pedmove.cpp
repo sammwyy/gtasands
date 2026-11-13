@@ -67,7 +67,7 @@ bool control(State& s, const Input& in, float timestep, float& aimHeading) {
 	trig::sincos(in.camYaw, sy, cy);
 	const float dx = -sy * iy + cy * ix;
 	const float dy = cy * iy + sy * ix;
-	aimHeading = atan2f(-dx, dy);
+	aimHeading = trig::atan2(-dx, dy);
 	approach(s.moveBlend, target, BLEND_RATE * timestep);
 	s.moveState = s.moveBlend > 1.0f ? PEDMOVE_RUN : PEDMOVE_WALK;
 	return true;

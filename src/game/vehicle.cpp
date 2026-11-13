@@ -16,6 +16,7 @@
 #include "game/player.h"
 #include "game/skidmarks.h"
 #include "game/timecycle.h"
+#include "game/trig.h"
 #include "game/vehicledata.h"
 #include "game/vehicleint.h"
 #include "game/waterlevel.h"
@@ -88,7 +89,7 @@ void toLocal(const Vehicle& v, const float w[3], float l[3]) {
 	l[1] = dot(d, v.fwd);
 	l[2] = dot(d, v.up);
 }
-float heading(const Vehicle& v) { return atan2f(-v.fwd[0], v.fwd[1]); }
+float heading(const Vehicle& v) { return trig::atan2(-v.fwd[0], v.fwd[1]); }
 
 // bike lean: model space rotation about the forward axis through the ground line
 static float leanPivot(const Car& c) {
@@ -642,7 +643,7 @@ static void driveTraffic(Car& c, bool physics) {
 	}
 	const float cross = v.fwd[0] * ty - v.fwd[1] * tx;
 	const float along = v.fwd[0] * tx + v.fwd[1] * ty;
-	const float angle = atan2f(-cross, along);
+	const float angle = trig::atan2(-cross, along);
 	v.handbrake = false;
 	v.engineOn = true;
 	v.asleep = false;

@@ -955,7 +955,10 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   handlers), and movement/camera angles use the libnds 4.12 sine/cosine table. A DS emulator
   microbenchmark found ~9x faster roots with no difference across 256 nonnegative inputs and
   ~12x faster trigonometry with at most 0.00027 absolute error over 1024 angles; measure on
-  hardware before treating either ratio as definitive. Byte-array integer lerps blend tables.
+  hardware before treating either ratio as definitive. Frequent movement/vehicle headings use
+  `trig::atan2` (BlocksDS `atan2_f32`, falling back to `atan2f` if nonzero inputs quantize
+  to zero); CJ's Euler extraction retains float precision and pedestrian AI retains its
+  more accurate polynomial. Byte-array integer lerps blend tables.
 - Build once, replay many: GX display lists DMA'd per frame; CPU only touches matrices.
 - Patch instead of rebuild: change a few list words (CJ colours) only when the value changes.
 - Recompute on change: fog table, HUD blocks (hash), radar only region every frame.

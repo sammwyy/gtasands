@@ -1476,7 +1476,7 @@ static void updateCarCamera(const veh::Vehicle& v, bool looking) {
 	const float sp = hw_sqrtf(v.moveSpeed[0] * v.moveSpeed[0] + v.moveSpeed[1] * v.moveSpeed[1]);
 	const bool flying = v.cls == veh::CLS_HELI || v.cls == veh::CLS_PLANE;
 	float target = veh::heading(v);
-	if (sp > 0.05f && v.speedFwd > 0.0f && v.cls != veh::CLS_HELI) target = atan2f(-v.moveSpeed[0], v.moveSpeed[1]);
+	if (sp > 0.05f && v.speedFwd > 0.0f && v.cls != veh::CLS_HELI) target = trig::atan2(-v.moveSpeed[0], v.moveSpeed[1]);
 	if (!looking && FrontEndMenuManager.m_cameraFollowDpad) {
 		const float d = wrap(target - s_camYaw);
 		s_camYaw = wrap(s_camYaw + d * (sp > 0.02f ? 0.12f : 0.05f));
