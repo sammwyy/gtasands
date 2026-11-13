@@ -136,6 +136,14 @@ at the spawn (~15-25 while driving).
   teleports from Ganton through San Fierro, Las Venturas, its northern outskirts and a countryside town;
   `gtasads_worldtest.txt` records loaded path/road nodes, population, traffic, render and memory counts,
   including the path-read time and `heapok`. Allow `timeout -s INT 200` and inspect `gtasads_world_*.dscr`.
+- Urban detail A/B (DEBUG): `DEBUG=1 QUICKTEST=1 OPT="-O2 -DGTASADS_DETAILTEST"`
+  holds the camera in Ganton, then cycles wires, clutter and telegraph poles on/off
+  in 150-frame phases. `gtasads_detailtest.txt` logs 81-frame averages of FPS,
+  3D/map/scan time, polygons, model memory and heap health; add
+  `-DGTASADS_DETAILTEST_SF` for a San Fierro street rich in cable models
+  (`gtasads_detail_sf.txt`). Use `timeout -s INT 170 make ... run-sd-ds`
+  and the same flags for the build and run; allow for scene streaming and
+  traffic/population variations when comparing phases.
 - Cutscene skip regression: use `DEBUG=1 QUICKTEST=1 CUTSKIPTEST=1` on an SD
   build. It starts PROLOG1 despite a
   pre-existing save, skips at frame 40, and the usual `gtasads_hudok.txt` /

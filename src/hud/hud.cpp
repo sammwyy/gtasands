@@ -558,6 +558,75 @@ static void flickerTest(int f) {
 }
 #endif
 
+#if defined(GTASADS_DEBUG) && defined(GTASADS_DETAILTEST)
+static void detailTest(int f) {
+	static FILE* out;
+	struct Sample {
+		uint32_t n;
+		uint64_t cpu, render, world, scan, fps, polys, drawn;
+		uint64_t wires, clutter, poles;
+	};
+	static Sample sum;
+	static const char* const phases[] = { "all", "no-wires", "no-clutter", "no-both", "no-poles", "restored" };
+	if (f == 1) {
+		cutscene::stop();
+#ifdef GTASADS_DETAILTEST_SF
+		player::teleport(-2730.0f, 85.0f, 24.0f, 0.0f);
+		player::debugSetView(0.0f, 0.15f);
+#else
+		player::respawn();
+		player::debugSetView(-1.5708f, 0.15f);
+#endif
+		dbg::opts.clockRate = 0;
+	}
+	if (f == 120) {
+		dbg::opts.worldWires = dbg::opts.worldClutter = dbg::opts.worldPoles = true;
+#ifdef GTASADS_DETAILTEST_SF
+		out = fopen("fat:/gtasads_detail_sf.txt", "w");
+#else
+		out = fopen("fat:/gtasads_detailtest.txt", "w");
+#endif
+	}
+	if (f == 270) dbg::opts.worldWires = false;
+	if (f == 420) { dbg::opts.worldWires = true; dbg::opts.worldClutter = false; }
+	if (f == 570) dbg::opts.worldWires = false;
+	if (f == 720) dbg::opts.worldPoles = false;
+	if (f == 870) dbg::opts.worldWires = dbg::opts.worldClutter = dbg::opts.worldPoles = true;
+	if (!out || f < 180 || f > 1010) return;
+	const int phase = f < 270 ? 0 : f < 420 ? 1 : f < 570 ? 2 : f < 720 ? 3 : f < 870 ? 4 : 5;
+	const int end = 260 + phase * 150;
+	if (f >= end - 80 && f <= end) {
+		const world::Stats& s = world::stats();
+		sum.n++;
+		sum.cpu += timing::frameUs();
+		sum.render += timing::sectionUs(timing::SEC_3D);
+		sum.world += s.drawUs;
+		sum.scan += s.scanUs;
+		sum.fps += timing::fps();
+		sum.polys += s.polysAfter - s.polysBefore;
+		sum.drawn += s.drawn;
+		sum.wires += s.hiddenWires;
+		sum.clutter += s.hiddenClutter;
+		sum.poles += s.hiddenPoles;
+	}
+	if (f == end && sum.n) {
+		const world::Stats& s = world::stats();
+		fprintf(out, "%s fps=%.1f cpu=%.1f render=%.1f world=%.1f scan=%.1f "
+		        "polys=%.1f drawn=%.1f hidden=%.1f/%.1f/%.1f ready=%u lists=%luK tex=%luK "
+		        "peds=%u cars=%u pos=%.1f,%.1f heapok=%d\n", phases[phase],
+		        (double)sum.fps / sum.n, (double)sum.cpu / sum.n, (double)sum.render / sum.n,
+		        (double)sum.world / sum.n, (double)sum.scan / sum.n,
+		        (double)sum.polys / sum.n, (double)sum.drawn / sum.n,
+		        (double)sum.wires / sum.n, (double)sum.clutter / sum.n, (double)sum.poles / sum.n,
+		        s.modelsReady, (unsigned long)(s.listBytes >> 10), (unsigned long)(s.texVram >> 10),
+		        peds::stats().live, veh::stats().active, player::g.x, player::g.y, (int)mem::check());
+		fflush(out);
+		sum = {};
+		if (phase == 5) { fclose(out); out = nullptr; }
+	}
+}
+#endif
+
 #if defined(GTASADS_DEBUG) && defined(GTASADS_PEDTEST)
 // Headless ped test (after the screenshot sequence): a ped placed 1 m in
 // front of CJ takes a punch combo (hit / knock-down / response), then CJ gets
@@ -686,6 +755,9 @@ void draw() {
 #endif
 #ifdef GTASADS_FLICKERTEST
 			flickerTest(s_gameFrames);
+#endif
+#ifdef GTASADS_DETAILTEST
+			detailTest(s_gameFrames);
 #endif
 #ifdef GTASADS_PEDTEST
 			pedTest(s_gameFrames);

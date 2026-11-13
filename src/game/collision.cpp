@@ -557,7 +557,7 @@ static void gather(float x, float y, float z) {
 		for (int i = 0; i < sv.count; i++) {
 			const world::Instance& in = sv.inst[i];
 			const ds::WorldColIndex& ix = s_index[in.model];
-			if (!ix.offset) continue;
+			if (!ix.offset || !world::detailVisible(in.model)) continue;
 			const int32_t ex = (in.pos[0] >> 8) - p[0], ey = (in.pos[1] >> 8) - p[1], ez = (in.pos[2] >> 8) - p[2];
 			const int32_t reach = STREAM_M * 16 + ix.radius;
 			if (iabs(ex) > reach || iabs(ey) > reach || iabs(ez) > reach || reach > 0x6000) continue;
@@ -622,6 +622,9 @@ static void step(float x, float y, float z, u32 budgetUs) {
 	// a couple of metres, and whenever the cache changed under it
 	const float mx = x - s_gatherX, my = y - s_gatherY, mz = z - s_gatherZ;
 	if (s_frame - s_gatherFrame >= GATHER_FRAMES || mx * mx + my * my + mz * mz > 4.0f) s_nearDirty = true;
+	static uint8_t lastDetailFilter = 0xFF;
+	const uint8_t detail = world::detailFilter();
+	if (detail != lastDetailFilter) { lastDetailFilter = detail; s_nearDirty = true; }
 	// a sector that just streamed in may hold the floor / walls around CJ
 	static uint32_t s_worldSig;
 	const uint32_t ws = (uint32_t)world::stats().sectors << 16 | world::stats().instances;

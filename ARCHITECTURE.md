@@ -325,7 +325,8 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
 
 CWorld + CStreaming + CRenderer, heavily reduced. CFileLoader runs offline (section 10): the
 runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
-- **Data in RAM**: header, 8 B/model (draw distance, radius, tobj hours), the WorldTxd table
+- **Data in RAM**: header, 8 B/model (draw distance, radius, tobj hours and a
+  detail category derived from the name while the model table loads), the WorldTxd table
   (name + txdp parent), `slotOf[model]`. Model names are read (36 B) when a model loads.
 - **Sector window**: 50 m sectors within `fogView + 40` m of the current sector's centre
   (re-evaluated only when the player crosses a sector edge, <= 2 sector reads/frame, innermost
@@ -346,6 +347,22 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
   models are not loaded until visible. Drawn or visible within 64 m (off-screen
   within 40 m) = protected from LRU; far models skipped by the polygon budget
   can be evicted before foreground ones.
+- **Urban detail**: `dbg::opts.worldWires` and `worldClutter` default off (overhead
+  wire-only models and loose boxes/bins/rubbish); `worldPoles` defaults on for
+  telegraph poles. REND exposes all three toggles and the skipped-instance counts.
+  Filtering happens before model requests, and switching a category off releases
+  cached model lists and texture references on the next update; unreferenced
+  textures remain in the VRAM LRU cache until space is needed. The collision
+  near list rebuilds on a toggle and ignores hidden props so they cannot block CJ invisibly; sector
+  placements and collision data on disk are unchanged. Names with mixed geometry
+  (`scumwires`, `induswire`, `lawnwires`) and structural fences/pylons stay visible.
+  In DS SD DEBUG `-O2` A/B runs at a fixed camera, turning off seven wire
+  instances in San Fierro reduced map draw from ~9.3 ms to ~8.0 ms and
+  resident lists from 516 to 435 KB; in Ganton one filtered wire had no
+  measurable effect, while clutter saved ~0.17 ms and poles ~0.24 ms
+  additional map draw time in their respective phases. Both scenes stayed
+  at ~30 FPS: hardware polygon limits and changing peds/traffic complicate
+  comparisons, so these are indicative per-frame timings, not an FPS gain.
 - **Model streaming** (`world::update`, ~3 ms budget, 2 starts/frame, including the
   short post-suspend boost): `startLoad` allocates
   the DMDL buffer in STREAM, then reads at most two 16 KiB chunks per update in nearest-visible

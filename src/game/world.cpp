@@ -43,7 +43,31 @@ static constexpr u32 PRELOAD_MAX_VBLANKS = 600;
 // Constant normal for the lighting trick (see compile()): +y, 10.10.10
 static constexpr u32 NORMAL_UP = 0x1FFu << 10;
 
-struct ModelLite { uint16_t drawDist, radius; uint8_t on, off, pad[2]; };
+struct ModelLite { uint16_t drawDist, radius; uint8_t on, off, loaded, detail; };
+
+enum : uint8_t { DETAIL_WIRES = 1, DETAIL_CLUTTER = 2, DETAIL_POLES = 4 };
+
+static bool starts(const char* name, const char* prefix) {
+	return strncmp(name, prefix, strlen(prefix)) == 0;
+}
+
+static uint8_t detailKind(const char* name) {
+	if (((strstr(name, "wire") && !strstr(name, "fence") &&
+	      !starts(name, "scumwires") && !starts(name, "induswire") && !starts(name, "lawnwires")) ||
+	     starts(name, "cables") || starts(name, "des_powercable_")))
+		return DETAIL_WIRES;
+	if (starts(name, "telgrphpole") || starts(name, "tlgraphpole") ||
+	    starts(name, "vgstlgraphpole") || starts(name, "vgntelepole") || starts(name, "sftelepole"))
+		return DETAIL_POLES;
+	if (starts(name, "cardboardbox") || starts(name, "blackbag") || starts(name, "proc_rubbish") ||
+	    starts(name, "rubbish_box") || starts(name, "cj_rubbish") || starts(name, "cj_skip_rubbish") ||
+	    starts(name, "cj_dump") || starts(name, "dyn_dumpster") || starts(name, "dyn_box_pile") ||
+	    starts(name, "dyn_crate") || !strcmp(name, "dump1") || !strcmp(name, "bin1") ||
+	    !strcmp(name, "cj_bin1") || !strcmp(name, "wastebin") ||
+	    !strcmp(name, "woodenbox") || !strcmp(name, "dyn_boxes"))
+		return DETAIL_CLUTTER;
+	return 0;
+}
 
 enum : uint8_t { SLOT_FREE, SLOT_READING, SLOT_LOADING, SLOT_READY, SLOT_FAILED };
 struct Slot {
@@ -109,6 +133,7 @@ static TexEntry* s_tex;
 static Sector s_sectors[WORLD_SECTOR_SLOTS];
 static TxdDir s_dirs[4];
 static uint32_t s_dirStamp;
+static uint8_t s_lastDetailFilter = 0xFF;
 static Want s_want[MAX_WANTS];
 static int s_numWant;
 static uint32_t s_frame;
@@ -157,6 +182,17 @@ uint32_t colOffset() { return s_file ? s_hdr.colOffset : 0; }
 bool sectorsPending() { return s_windowDirty; }
 bool nearSectorsPending() { return s_nearDirty; }
 int numModels() { return s_file ? s_hdr.numModels : 0; }
+
+uint8_t detailFilter() {
+	return (dbg::opts.worldWires ? 0 : DETAIL_WIRES) |
+	       (dbg::opts.worldClutter ? 0 : DETAIL_CLUTTER) |
+	       (dbg::opts.worldPoles ? 0 : DETAIL_POLES);
+}
+
+bool detailVisible(int model) {
+	return !s_models || model < 0 || model >= s_hdr.numModels ||
+	       !(s_models[model].detail & detailFilter());
+}
 
 // ----------------------------------------------------------------------------
 // Textures (CTxdStore-lite): one entry per (txd, texture name), refcounted by
@@ -364,8 +400,8 @@ static bool startLoad(uint16_t model, int32_t priority) {
 	s.priority = priority;
 	s_slotOf[model] = (uint16_t)si;
 	s_stats.loads++;
-	if (s_models[model].pad[0]) s_stats.reloads++;
-	s_models[model].pad[0] = 1;
+	if (s_models[model].loaded) s_stats.reloads++;
+	s_models[model].loaded = 1;
 
 	ds::WorldModel wm;
 	if (fseek(s_file, (long)(s_hdr.modelsOffset + model * sizeof wm), SEEK_SET) || fread(&wm, sizeof wm, 1, s_file) != 1)
@@ -887,6 +923,8 @@ static void scan(const Cam& c) {
 	s_numVis = 0;
 	s_numWant = 0;
 	uint16_t candidates = 0, culled = 0;
+	uint16_t hiddenWires = 0, hiddenClutter = 0, hiddenPoles = 0;
+	const uint8_t hidden = detailFilter();
 	for (const Sector& sc : s_sectors) {
 		if (!sc.used || !sc.count) continue;
 		{   // whole sector out of range / behind the camera (and not close)
@@ -900,6 +938,13 @@ static void scan(const Cam& c) {
 		for (int i = 0; i < sc.count; i++) {
 			const Inst& in = sc.inst[i];
 			const ModelLite& ml = s_models[in.model];
+			const uint8_t skip = ml.detail & hidden;
+			if (skip) {
+				hiddenWires += (skip & DETAIL_WIRES) != 0;
+				hiddenClutter += (skip & DETAIL_CLUTTER) != 0;
+				hiddenPoles += (skip & DETAIL_POLES) != 0;
+				continue;
+			}
 			if (ml.on != ml.off) {
 				const bool vis = ml.on < ml.off ? c.hour >= ml.on && c.hour < ml.off : c.hour >= ml.on || c.hour < ml.off;
 				if (!vis) continue;
@@ -1002,6 +1047,9 @@ static void scan(const Cam& c) {
 	}
 	s_stats.candidates = candidates;
 	s_stats.culledFrustum = culled;
+	s_stats.hiddenWires = hiddenWires;
+	s_stats.hiddenClutter = hiddenClutter;
+	s_stats.hiddenPoles = hiddenPoles;
 }
 
 static Cam makeCam(float ex, float ey, float ez, float yaw, float pitch, bool frustum) {
@@ -1164,6 +1212,14 @@ void update(float x, float y) {
 	if (!ready()) return;
 	const u32 t0 = timing::ticks();
 	s_frame++;
+	const uint8_t hidden = detailFilter();
+	if (hidden != s_lastDetailFilter) {
+		s_lastDetailFilter = hidden;
+		for (int i = 0; i < WORLD_MODEL_SLOTS; i++) {
+			Slot& s = s_slots[i];
+			if (s.state != SLOT_FREE && (s_models[s.model].detail & hidden)) freeSlot(s);
+		}
+	}
 #ifdef GTASADS_DEBUG
 	s_stats.sectorUs = s_stats.modelReadUs = s_stats.modelSeekUs = s_stats.modelDataUs =
 		s_stats.modelParseUs = s_stats.texReadUs = s_stats.texSeekUs = s_stats.texDataUs =
@@ -1293,8 +1349,13 @@ static bool open() {
 		for (int i = 0; i < s_hdr.numModels; i += CHUNK) {
 			const int n = s_hdr.numModels - i < CHUNK ? s_hdr.numModels - i : CHUNK;
 			if (fread(wm, sizeof *wm, n, s_file) != (size_t)n) return false;
-			for (int k = 0; k < n; k++)
-				s_models[i + k] = { wm[k].drawDist, wm[k].radius, wm[k].timeOn, wm[k].timeOff, { 0, 0 } };
+			for (int k = 0; k < n; k++) {
+				char name[sizeof wm[k].name + 1];
+				memcpy(name, wm[k].name, sizeof wm[k].name);
+				name[sizeof wm[k].name] = 0;
+				s_models[i + k] = { wm[k].drawDist, wm[k].radius, wm[k].timeOn, wm[k].timeOff,
+				                    0, detailKind(name) };
+			}
 		}
 	}
 	if (s_hdr.numTxds && fread(s_txds, sizeof(ds::WorldTxd), s_hdr.numTxds, s_file) != s_hdr.numTxds) return false;

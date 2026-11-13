@@ -15,6 +15,9 @@ struct Options {
 	bool ground = false;     // placeholder ground grid + boxes (always on without world.dwld)
 	bool world = true;       // streamed map (game/world)
 	int worldPolys = 1800;   // stop drawing map objects past this hardware polygon count (2048 max)
+	bool worldWires = false;   // overhead cables and wires (render + collision)
+	bool worldClutter = false; // small boxes, bins and loose rubbish
+	bool worldPoles = true;    // telegraph poles (kept by default)
 	bool fixedStep = true;   // 60 Hz fixed-step sim (off = one step per frame, old behaviour)
 	int simSpeedQ = 4;       // simulation speed in quarters: 0 = paused, 4 = x1, 8 = x2
 	int playerSpeedQ = 4;

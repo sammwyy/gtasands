@@ -48,11 +48,15 @@ uint32_t colOffset();         // ds::WorldHeader::colOffset (0 = no file)
 bool sectorsPending();        // the window around the player is still loading sectors
 bool nearSectorsPending();    // ... one of the 3x3 sectors around the player (>= 25 m of it)
 int numModels();
+// Detail filtering is visual and physical: invisible props must not block CJ.
+uint8_t detailFilter();
+bool detailVisible(int model);
 
 struct Stats {
 	uint16_t sectors, instances;    // loaded window
 	uint16_t candidates, drawn;     // in range / submitted last frame
 	uint16_t culledFrustum, culledBudget;
+	uint16_t hiddenWires, hiddenClutter, hiddenPoles; // filtered instances in the camera's sector window
 	uint16_t modelsReady, modelsLoading;
 	uint16_t textures, texFailed;
 	uint32_t listBytes, texVram;

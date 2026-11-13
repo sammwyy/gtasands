@@ -438,6 +438,10 @@ static void pageRend() {
 	if (button(10, c, "p+") && o.colPolys < 1800) o.colPolys += 100;
 	toggle2(11, "physic", o.physics, "veh lights", o.vehLights);
 	toggleRow(12, "skidmarks", o.skidmarks);
+	toggle2(13, "wires", o.worldWires, "clutter", o.worldClutter);
+	toggleRow(15, "telegraph poles", o.worldPoles);
+	const world::Stats& ws = world::stats();
+	line(16, "hidden w%u junk%u pole%u", ws.hiddenWires, ws.hiddenClutter, ws.hiddenPoles);
 	c = 0;
 	if (button(14, c, "repaint HUD")) chud::invalidate();
 	if (button(14, c, "defaults")) o = dbg::Options();
