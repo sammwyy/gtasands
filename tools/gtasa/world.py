@@ -6,6 +6,7 @@ instances (fixed-point position + rotation matrix) plus the model and TXD
 tables it needs to stream them from gta3.dspk. Layout: src/assets/ds_formats.h.
 """
 import math
+import os
 import struct
 from pathlib import Path
 
@@ -46,6 +47,14 @@ def _f(a):
 
 def parse_ide(path, objs, parents):
     """CFileLoader::LoadObjectTypes: objs/tobj/anim -> objs[id] = (model, txd, drawDist, flags, on, off)."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_ide as native_ide
+        records, links = native_ide(Path(path).read_bytes())
+        for mid, name, txd, distance, flags, on, off in records:
+            objs[mid] = (name, txd, distance, flags, on, off)
+        for name, parent in links:
+            parents[name] = parent
+        return
     sec = None
     for line in _lines(path):
         low = line.lower()
@@ -74,6 +83,9 @@ def parse_ide(path, objs, parents):
 
 def parse_ipl_text(path):
     """CFileLoader::LoadObjectInstance (text): [(id, x, y, z, qx, qy, qz, qw, area, lod)]."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_text_ipl
+        return parse_text_ipl(Path(path).read_bytes())
     out, sec = [], None
     for line in _lines(path):
         low = line.lower()
@@ -94,6 +106,9 @@ def parse_ipl_text(path):
 
 def parse_ipl_binary(data):
     """'bnry' stream IPL (CIplStore::LoadIpl): 40-byte instances."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_ipl
+        return parse_ipl(data)
     if data[:4] != b'bnry':
         return []
     n, = struct.unpack_from('<I', data, 4)
@@ -109,6 +124,9 @@ def rotation(qx, qy, qz, qw):
     """LoadObjectInstance negates the imaginary part, then CMatrix::SetRotate.
     The heading-only branch of the original is the same rotation. Rows:
     right, forward, up (SA world = x*right + y*forward + z*up + pos)."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import rotate_ipl
+        return rotate_ipl(qx, qy, qz, qw)
     qx, qy, qz = -qx, -qy, -qz
     n = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw) or 1.0
     qx, qy, qz, qw = qx / n, qy / n, qz / n, qw / n
@@ -124,6 +142,12 @@ def rotation(qx, qy, qz, qw):
 def _radius(imgp, off, size):
     """Bounding radius around the model origin (|center| + r over all geometries),
     so the runtime can cull/request big ground meshes before loading them."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import model_radius
+        try:
+            return model_radius(img.read_entry(imgp, off, size))
+        except ValueError:
+            return 64
     try:
         m = dff.parse(img.read_entry(imgp, off, size))
     except Exception:  # noqa: BLE001 - a broken dff just gets a generous radius
@@ -165,11 +189,16 @@ def _col_models(imgp, toc, wanted):
         if not n.endswith('.col'):
             continue
         try:
-            models = col.parse(img.read_entry(imgp, o, s))
+            data = img.read_entry(imgp, o, s)
+            if os.environ.get('GTASADS_NATIVE_LIB'):
+                from .portable import parse_world_collisions
+                models = parse_world_collisions(data)
+            else:
+                models = col.parse(data)
         except Exception:  # noqa: BLE001 - a broken archive just loses its collision
             continue
         for c in models:
-            k = c.name.lower()
+            k = (c[0] if isinstance(c, tuple) else c.name).lower()
             if k not in wanted:
                 continue
             if k in out:
@@ -188,6 +217,11 @@ def _col_record(c):
     n = (v1 - v0) x (v2 - v0) is the front normal (CColTrianglePlane uses
     (c - a) x (b - a)), degenerate ones dropped, then put in a bbox tree (BVH).
     Returns (bytes, radius in 1/16 m, faces)."""
+    if isinstance(c, tuple):
+        return c[1:]
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import encode_world_collision
+        return encode_world_collision(c)
     verts = [tuple(_q(x) for x in v) for v in c.verts]
     faces = []
     for a, b, cc, mat, light in c.faces:
@@ -265,14 +299,28 @@ def build(game, sec):
     intp = resolve(game, sec.get('interior_img', 'models/gta_int.img'))
     if not dat or not imgp or not intp:
         raise FileNotFoundError('need data/gta.dat, models/gta3.img and models/gta_int.img (run: tools/assets.py sync)')
-    ides, ipls = [], []
-    for line in _lines(dat):
-        k, _, v = line.partition(' ')
-        k, v = k.upper(), v.strip()
-        if k == 'IDE':
-            ides.append(v)
-        elif k == 'IPL' and v.lower().endswith('.ipl'):
-            ipls.append(v)
+    def has_index(path):
+        with path.open('rb') as archive:
+            return archive.read(4) == b'VER2'
+    if (os.environ.get('GTASADS_NATIVE_LIB') and
+        sec.get('dat', 'data/gta.dat') == 'data/gta.dat' and
+        sec.get('img', 'models/gta3.img') == 'models/gta3.img' and
+        sec.get('interior_img', 'models/gta_int.img') == 'models/gta_int.img' and
+        all(has_index(path) for path in (imgp, intp))):
+        from .portable import build_world_files
+        return build_world_files(game, sec)
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_world_dat
+        ides, ipls = parse_world_dat(dat.read_bytes())
+    else:
+        ides, ipls = [], []
+        for line in _lines(dat):
+            k, _, v = line.partition(' ')
+            k, v = k.upper(), v.strip()
+            if k == 'IDE':
+                ides.append(v)
+            elif k == 'IPL' and v.lower().endswith('.ipl'):
+                ipls.append(v)
     objs, parents = {}, {}
     for f in ['data/maps/txd.ide'] + ides:
         p = resolve(game, f)
@@ -281,8 +329,19 @@ def build(game, sec):
 
     toc = {n.lower(): (o, s) for n, o, s in img.read_toc(imgp)}
     int_toc = {n.lower(): (o, s) for n, o, s in img.read_toc(intp)}
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import WorldAssetIndex
+        index = WorldAssetIndex(toc, int_toc)
+    else:
+        index = None
 
     def source(name):
+        if index is not None:
+            found = index.resolve(name)
+            if found:
+                location, pack = found
+                return (imgp if pack == 0 else intp), location, pack
+            return None, None, 0
         if name in toc:
             return imgp, toc[name], 0
         if name in int_toc:
@@ -303,6 +362,14 @@ def build(game, sec):
             path, (o, s), _ = source(f'{base}_stream{k}.ipl')
             stream += parse_ipl_binary(img.read_entry(path, o, s))
             k += 1
+        if os.environ.get('GTASADS_NATIVE_LIB'):
+            from .portable import plan_world_instances
+            planned, counts = plan_world_instances(text, stream, objs, toc,
+                                                   int_toc, bounds, keep_lod)
+            insts.extend(planned)
+            for key, value in counts.items():
+                skipped[key] += value
+            continue
         # lod indices of both the text and the stream IPLs point into the text list
         entries = text + stream
         lod_of = {t[9] for t in entries if 0 <= t[9] < len(text)}
@@ -326,35 +393,69 @@ def build(game, sec):
     # tables: only what the instances reference
     mids = sorted({t[0] for t in insts})
     midx = {m: i for i, m in enumerate(mids)}
-    txds = []
-    tidx = {}
+    if index is not None:
+        from .portable import plan_world_tables
+        planned, packed_txds = plan_world_tables(mids, objs, parents, index)
+        txds = [[name, parent] for name, parent, _ in packed_txds]
+        txd_packs = [pack for _, _, pack in packed_txds]
+        models = [(name, ti, dd, flags, on, off,
+                   _radius(imgp if pack == 0 else intp, off_, length))
+                  for name, ti, dd, flags, on, off, off_, length, pack in planned]
+    else:
+        txds = []
+        tidx = {}
 
-    def txd_index(n):
-        if n in tidx:
+        def txd_index(n):
+            if n in tidx:
+                return tidx[n]
+            tidx[n] = len(txds)
+            txds.append([n, -1])
+            par = parents.get(n)
+            if par and par != n and source(par + '.txd')[0] is not None:
+                txds[tidx[n]][1] = txd_index(par)
             return tidx[n]
-        tidx[n] = len(txds)
-        txds.append([n, -1])
-        par = parents.get(n)
-        if par and par != n and source(par + '.txd')[0] is not None:
-            txds[tidx[n]][1] = txd_index(par)
-        return tidx[n]
 
-    models = []
-    for m in mids:
-        name, txd, dd, flags, on, off = objs[m]
-        path, location, pack = source(name + '.dff')
-        models.append((name, txd_index(txd) if source(txd + '.txd')[0] else 0xFFFF, dd,
-                       flags | (pack << 31), on, off, _radius(path, *location)))
+        models = []
+        for m in mids:
+            name, txd, dd, flags, on, off = objs[m]
+            path, location, pack = source(name + '.dff')
+            models.append((name, txd_index(txd) if source(txd + '.txd')[0] else 0xFFFF, dd,
+                           flags | (pack << 31), on, off, _radius(path, *location)))
 
     size = int(sec.get('sector', 50))
-    xs = [t[1] for t in insts] or [0.0]
-    ys = [t[2] for t in insts] or [0.0]
-    ox, oy = math.floor(min(xs) / size) * size, math.floor(min(ys) / size) * size
-    gw, gh = int((max(xs) - ox) // size) + 1, int((max(ys) - oy) // size) + 1
-    cells = [[] for _ in range(gw * gh)]
-    for t in insts:
-        cx, cy = int((t[1] - ox) // size), int((t[2] - oy) // size)
-        cells[cy * gw + cx].append(t)
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import plan_world_sectors
+        ox, oy, gw, gh, cells = plan_world_sectors(insts, size)
+    else:
+        xs = [t[1] for t in insts] or [0.0]
+        ys = [t[2] for t in insts] or [0.0]
+        ox, oy = math.floor(min(xs) / size) * size, math.floor(min(ys) / size) * size
+        gw, gh = int((max(xs) - ox) // size) + 1, int((max(ys) - oy) // size) + 1
+        cells = [[] for _ in range(gw * gh)]
+        for t in insts:
+            cx, cy = int((t[1] - ox) // size), int((t[2] - oy) // size)
+            cells[cy * gw + cx].append(t)
+
+    # collision: WorldColIndex[numModels], then the records (model space)
+    cols, dups = _col_models(imgp, toc, {m[0] for m in models})
+    other, other_dups = _col_models(intp, int_toc, {m[0] for m in models} - cols.keys())
+    cols.update(other)
+    dups += other_dups
+    records, nfaces, ncol = [], 0, 0
+    for m in models:
+        c = cols.get(m[0])
+        rec, rad, nf = _col_record(c) if c else (None, 0, 0)
+        records.append((rec, rad))
+        if rec is not None:
+            nfaces += nf
+            ncol += 1
+    stats = {'instances': len(insts), 'models': len(models), 'txds': len(txds), 'sectors': gw * gh,
+             'col_models': ncol, 'col_faces': nfaces, 'col_kb': sum(len(rec) for rec, _ in records if rec) >> 10,
+             'col_dups': dups,
+             **{'skip_' + k: v for k, v in skipped.items() if v}}
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import encode_world
+        return encode_world(models, txds, txd_packs, cells, records, midx, ox, oy, size, gw, gh), stats
 
     hdr = 40
     models_off = hdr
@@ -382,26 +483,13 @@ def build(game, sec):
                                switch, midx.get(linked, 0xFFFF), area, 0)
     assert len(out) == col_off
 
-    # collision: WorldColIndex[numModels], then the records (model space)
-    cols, dups = _col_models(imgp, toc, {m[0] for m in models})
-    other, other_dups = _col_models(intp, int_toc, {m[0] for m in models} - cols.keys())
-    cols.update(other)
-    dups += other_dups
     index, recs = bytearray(), bytearray()
     rec_base = col_off + 12 * len(models)
-    nfaces = ncol = 0
-    for m in models:
-        c = cols.get(m[0])
-        rec, rad, nf = _col_record(c) if c else (None, 0, 0)
+    for rec, rad in records:
         if rec is None:
             index += struct.pack('<IIHH', 0, 0, 0, 0)
             continue
         index += struct.pack('<IIHH', rec_base + len(recs), len(rec), rad, 0)
         recs += rec
-        nfaces += nf
-        ncol += 1
     out += index + recs
-    stats = {'instances': len(insts), 'models': len(models), 'txds': len(txds), 'sectors': gw * gh,
-             'col_models': ncol, 'col_faces': nfaces, 'col_kb': len(recs) >> 10, 'col_dups': dups,
-             **{'skip_' + k: v for k, v in skipped.items() if v}}
     return pad4(bytes(out)), stats

@@ -1,5 +1,6 @@
 """TXD -> DTXD (DS paletted/direct textures)."""
 import struct
+import os
 
 from . import txd
 from .dsfmt import name, pad4, rgb15
@@ -192,6 +193,9 @@ def convert_texture(tx, p):
     lv = pick_level(tx, tw, th)
     sw, sh, px = txd.decode(tx, lv)
     px = resize(px, sw, sh, tw, th)
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import encode_texture
+        return encode_texture(px, tw, th, p)
     f, flags, tex, pal = encode(px, tw, th, p)
     hdr = struct.pack('<4sHHBBHI', b'DTEX', tw, th, f, flags, len(pal), len(tex))
     return hdr + pad4(tex) + struct.pack(f'<{len(pal)}H', *pal)
@@ -201,6 +205,16 @@ def convert_txd(data, p, overrides=()):
     """overrides: [(fnmatch_pattern, params)] matched against texture names."""
     from fnmatch import fnmatchcase
     texs = txd.parse(data)
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import convert_dictionary
+        settings = []
+        for tx in texs:
+            tp = p
+            for pat, op in overrides:
+                if fnmatchcase(tx.name.lower(), pat.lower()):
+                    tp = {**tp, **op}
+            settings.append((*target_size(tx.width, tx.height, tp), tp))
+        return convert_dictionary(data, settings)
     blobs = []
     for tx in texs:
         tp = p

@@ -10,6 +10,7 @@ polygons and CTrain's track nodes (data/paths/tracks*.dat) follow the tables.
 Layout: src/assets/ds_formats.h.
 """
 import math
+import os
 import re
 import struct
 from pathlib import Path
@@ -39,6 +40,9 @@ def _lines(path):
 def parse_ide(path):
     """cars section: id, model, txd, type, handlingId, gameName, anims, class, freq, flags, comprules
     [, wheelModel, wheelScaleF, wheelScaleR (cars) | steerAngle, wheelScale (bikes)]."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_vehicle_ide
+        return parse_vehicle_ide(path.read_bytes())
     out, sec = [], None
     for line in _lines(path):
         low = line.lower()
@@ -79,6 +83,9 @@ def _floats(tokens, n):
 
 def parse_special(path):
     """'!' tBikeHandlingData (+ ConvertBikeDataToGameUnits), '%' tBoatHandlingData, '$' tFlyingHandlingData."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_vehicle_special
+        return parse_vehicle_special(path.read_bytes())
     bike, boat, fly = {}, {}, {}
     for line in path.read_text(errors='replace').splitlines():
         line = line.split(';', 1)[0].strip()
@@ -114,6 +121,9 @@ def parse_water(path):
     out = []
     if not path:
         return out
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_vehicle_water
+        return parse_vehicle_water(path.read_bytes())
     for line in path.read_text(errors='replace').splitlines():
         p = line.split()
         if len(p) not in (22, 29):
@@ -131,6 +141,9 @@ def parse_water(path):
 def parse_tracks(paths):
     """CTrain::ReadAndInterpretTrackFile: node count, then x y z flags; cumulative length along the loop."""
     out = []
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_vehicle_track
+        return [parse_vehicle_track(path.read_bytes()) if path else [] for path in paths]
     for path in paths:
         nodes = []
         if path:
@@ -147,6 +160,9 @@ def parse_tracks(paths):
 
 def parse_handling(path):
     """tHandlingData::InitFromData + cHandlingDataMgr::ConvertDataToGameUnits (standard lines only)."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_vehicle_handling
+        return parse_vehicle_handling(path.read_bytes())
     out = {}
     for line in path.read_text(errors='replace').splitlines():
         line = line.split(';', 1)[0].strip()
@@ -179,6 +195,10 @@ def parse_handling(path):
 
 def _convert(h):
     """cHandlingDataMgr::ConvertDataToGameUnits (+ the max flat / reverse velocity search)."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import convert_handling
+        convert_handling(h)
+        return
     h['engineAccel'] *= ACCEL_CONST
     h['maxVel'] *= VELOCITY_CONST
     h['brakeDecel'] *= ACCEL_CONST
@@ -206,6 +226,9 @@ def _convert(h):
 
 def parse_carcols(path):
     """CVehicleModelInfo::LoadVehicleColours: col table + car (2 colour) / car4 (first two used)."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_vehicle_carcols
+        return parse_vehicle_carcols(path.read_bytes())
     table, cars, sec = [], {}, None
     for line in path.read_text(errors='replace').splitlines():
         line = line.split('#', 1)[0].strip()
@@ -231,6 +254,9 @@ def parse_carcols(path):
 
 def parse_surfaces(surface_dat, surfinfo_dat):
     """Adhesive limit matrix (lower half mirrored) + per surface (adhesion group, wet grip %, skidmark)."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_vehicle_surfaces
+        return parse_vehicle_surfaces(surface_dat.read_bytes(), surfinfo_dat.read_bytes())
     lim = [[0.0] * 6 for _ in range(6)]
     row = 0
     for line in surface_dat.read_text(errors='replace').splitlines():
@@ -264,10 +290,14 @@ def build(game, sec):
         ('ide', 'data/vehicles.ide'), ('handling', 'data/handling.cfg'), ('carcols', 'data/carcols.dat'),
         ('surface', 'data/surface.dat'), ('surfinfo', 'data/surfinfo.dat'))}
     missing = [k for k, p in paths.items() if not p]
-    water = parse_water(resolve(game, sec.get('water', 'data/water.dat')))
-    tracks = parse_tracks([resolve(game, f'data/paths/tracks{n}.dat') for n in ('', '2', '3', '4')])
     if missing:
         raise FileNotFoundError(f'vehicles: missing {missing} (run: tools/assets.py sync)')
+    if os.environ.get('GTASADS_NATIVE_LIB') and not any(
+            name in sec for name in (*paths, 'water')):
+        from .portable import build_vehicle_files
+        return build_vehicle_files(game)
+    water = parse_water(resolve(game, sec.get('water', 'data/water.dat')))
+    tracks = parse_tracks([resolve(game, f'data/paths/tracks{n}.dat') for n in ('', '2', '3', '4')])
     ide = parse_ide(paths['ide'])
     hand = parse_handling(paths['handling'])
     bike, boat, fly = parse_special(paths['handling'])
@@ -308,6 +338,15 @@ def build(game, sec):
         recs += struct.pack('<15f', *((ext or []) + [0.0] * (15 - len(ext or []))))
         recs += struct.pack('<21f', *(f or [0.0] * 21))
     rec_size = len(recs) // max(1, len(ide))
+
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import encode_vehicles
+        blob = encode_vehicles(ide, hand, bike, boat, fly, table, cars, lim,
+                               surf, water, tracks)
+        st = dict(vehicles=len(ide), rec=rec_size, colours=len(table),
+                  surfaces=len(surf), no_handling=no_handling, water=len(water),
+                  track_nodes=sum(len(nodes) for nodes in tracks))
+        return blob, st
 
     # water polygons: whole metres for x / y (the .dat corners are on a 2 m grid), z in cm
     wblob = bytearray()

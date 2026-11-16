@@ -184,6 +184,13 @@ python3 tools/assets.py preview models/gta3.img:infernus.txd [TEX] --section gta
 Full cold build ~6 min (16 cores); `models_loose` alone ~20 s. Use single sections / `--limit N`
 while tuning. Current total ~387 MB of the 448 MB budget.
 
+Portable asset converter: `make -f tools/portable/Makefile native` builds the
+shared C library and CLI tools; `make -f tools/portable/Makefile wasm` requires
+Emscripten. Run `python3 -m unittest discover -s tools/gtasa -t . -q` for
+Python/C byte-parity and browser-helper tests. `web/resources.json` is generated
+from `resources.toml` by `make -f tools/portable/Makefile web/resources.json`;
+keep it in sync when changing conversion rules.
+
 ## Hardware budget (keep in mind for every decision)
 - ARM9 67 MHz, no FPU -> fixed point at runtime (20.12 / 4.12, libnds `f32`/`v16`/`t16`).
 - 4 MB main RAM; nothing big stays resident, stream from NitroFS/SD.

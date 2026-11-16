@@ -1,5 +1,6 @@
 """Exterior map markers from GTA SA IPL entrance/exit (enex) records."""
 import struct
+import os
 
 from . import entry_exits
 
@@ -14,6 +15,10 @@ TYPES = (
 
 def build(game, _sec):
     blob, _ = entry_exits.build(game, {})
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import convert_points
+        out = convert_points(blob)
+        return out, {"entrances": struct.unpack_from('<H', out, 6)[0]}
     points = set()
     for offset in range(entry_exits.HEADER.size, len(blob), entry_exits.RECORD.size):
         fields = entry_exits.RECORD.unpack_from(blob, offset)

@@ -4,7 +4,7 @@ import struct
 import subprocess
 from array import array
 
-from .dsfmt import pad4
+from .dsfmt import name as fname, pad4
 
 KEY = bytes([0xEA, 0x3A, 0xC4, 0xA1, 0x9A, 0xA8, 0x14, 0xF3, 0x48, 0xB0, 0xD7, 0x23, 0x9D, 0xE8, 0xFF, 0xF1])
 BANK_HEADER = 0x12C4
@@ -22,13 +22,21 @@ IDX = [-1, -1, -1, -1, 2, 4, 6, 8]
 
 
 def read_names(path, size):
-    d = open(path, 'rb').read()
+    with open(path, 'rb') as source:
+        d = source.read()
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_audio_names
+        return parse_audio_names(d, size)
     return [d[i:i + size].split(b'\0', 1)[0].decode('latin1') for i in range(0, len(d) - size + 1, size)]
 
 
 def read_lookup(path):
     """BankLkup.dat / TrakLkup.dat: [(pack, offset, size)]."""
-    d = open(path, 'rb').read()
+    with open(path, 'rb') as source:
+        d = source.read()
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_audio_lookup
+        return parse_audio_lookup(d)
     return [struct.unpack_from('<B3xII', d, i) for i in range(0, len(d) - 11, 12)]
 
 
@@ -41,6 +49,9 @@ def stream_tables(cfg_dir):
 
 
 def decrypt(buf, pos):
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import decrypt_audio
+        return decrypt_audio(buf, pos)
     k = (KEY * (len(buf) // 16 + 2))[pos & 15:]
     return bytes(a ^ b for a, b in zip(buf, k))
 
@@ -49,6 +60,12 @@ def aligned_track_offset(path, expected, window=32768):
     with open(path, 'rb') as f:
         f.seek(start)
         raw = f.read(expected + window + TRACK_HEADER + 4 - start)
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import aligned_audio_offset
+        found = aligned_audio_offset(raw, start, expected)
+        if found is None:
+            raise ValueError(f'no valid OGG track near offset {expected}')
+        return found
     dec = decrypt(raw, start)
     signature = b'\xff\xff\xff\xff\x00\x00\x00\x00' * 2
     found = []
@@ -68,18 +85,17 @@ def aligned_track_offset(path, expected, window=32768):
 def resample(s, sr, dr):
     if dr >= sr or not s:
         return s, sr
-    r = sr / dr
-    n = int(len(s) / r)
-    out = array('h', bytes(n * 2))
-    for i in range(n):
-        a = int(i * r)
-        b = max(a + 1, int((i + 1) * r))
-        seg = s[a:b]
-        out[i] = sum(seg) // len(seg)
-    return out, dr
+    from .resample import downsample
+    return downsample(s, sr, dr), dr
 
 
 def adpcm_encode(s, checkpoints=None):
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import encode_adpcm
+        encoded, saved = encode_adpcm(s, checkpoints is not None)
+        if checkpoints is not None:
+            checkpoints.extend(saved)
+        return encoded
     pred = s[0] if s else 0
     idx = 0
     out = bytearray(struct.pack('<hBB', pred, 0, 0))
@@ -112,6 +128,9 @@ def adpcm_encode(s, checkpoints=None):
 
 def make_sound(pcm, rate, p, loop=-1, headroom=0):
     """PCM16 mono array -> DSND blob."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import encode_sound
+        return encode_sound(pcm, rate, p, loop, headroom)
     if p['volume'] != 1.0:
         v = p['volume']
         pcm = array('h', (max(-32768, min(32767, int(x * v))) for x in pcm))
@@ -133,6 +152,9 @@ def make_sound(pcm, rate, p, loop=-1, headroom=0):
 
 def convert_bank(raw, p):
     """raw = bank header (0x12C4) + PCM16 data. Returns DSBK blob."""
+    if os.environ.get('GTASADS_NATIVE_LIB') and p.get('checkpoints') is None:
+        from .portable import encode_bank
+        return encode_bank(raw, p)
     n, = struct.unpack_from('<h', raw, 0)
     n = 1 if n < 0 else n
     items = [struct.unpack_from('<IiHh', raw, 4 + i * 12) for i in range(n)]
@@ -155,18 +177,28 @@ def convert_bank(raw, p):
 
 def convert_track(enc, file_pos, p):
     """enc = encrypted bytes from file_pos covering tTrackInfo + OGG."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import convert_audio_stream
+        return convert_audio_stream(enc, file_pos, p), {'bytes_in': len(enc)}
     ogg = decrypt(enc, file_pos)[TRACK_HEADER:]
-    r = subprocess.run(['ffmpeg', '-v', 'error', '-i', 'pipe:0', '-f', 's16le', '-ac', '1', '-ar', str(p['sample_rate']), 'pipe:1'],
+    header = 27 + ogg[26] if len(ogg) >= 27 and ogg[:4] == b'OggS' else 0
+    if not header or ogg[header:header + 7] != b'\x01vorbis' or len(ogg) < header + 16:
+        raise ValueError('invalid Vorbis stream')
+    rate, = struct.unpack_from('<I', ogg, header + 12)
+    r = subprocess.run(['ffmpeg', '-v', 'error', '-i', 'pipe:0', '-f', 's16le', '-ac', '1', '-ar', str(rate), 'pipe:1'],
                        input=ogg, capture_output=True)
     if r.returncode:
         raise RuntimeError(r.stderr.decode(errors='replace').strip()[:200])
     pcm = array('h', r.stdout[:len(r.stdout) & ~1])
     if p.get('seekable'):
         p = {**p, 'checkpoints': bytearray()}
-    return make_sound(pcm, p['sample_rate'], p), {'bytes_in': len(enc)}
+    return make_sound(pcm, rate, p), {'bytes_in': len(enc)}
 
 
 def pack_streams(items, seekable=False):
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import pack_streams as native_pack
+        return native_pack(items, seekable)
     items = sorted(items)
     blob = bytearray(struct.pack('<4sHH', b'DSST', 2 if seekable else 1, len(items)))
     off = len(blob) + (20 if seekable else 12) * len(items)
@@ -180,4 +212,29 @@ def pack_streams(items, seekable=False):
         off += len(b)
     for _, b in items:
         blob += b
+    return bytes(blob)
+
+
+def pack_sound_banks(items):
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import pack_sound_banks as native_pack
+        return native_pack(items)
+    items = sorted(items)
+    blob = bytearray(struct.pack('<4sHH', b'DSFX', 1, len(items)))
+    offset = len(blob) + 12 * len(items)
+    for bank, data in items:
+        blob += struct.pack('<IIHH', offset, len(data), bank, 0)
+        offset += len(data)
+    for _, data in items:
+        blob += data
+    return bytes(blob)
+
+
+def pack_sound_lookup(names, lookup):
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import pack_sound_lookup as native_pack
+        return native_pack(names, lookup)
+    blob = bytearray(struct.pack('<4sHBBHH', b'DSBL', 1, len(names), 0, len(lookup), 0))
+    blob += b''.join(fname(pack, 16) for pack in names)
+    blob += b''.join(struct.pack('<BBH', pack, 0, index) for pack, index in lookup)
     return bytes(blob)

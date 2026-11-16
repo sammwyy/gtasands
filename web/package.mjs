@@ -1,0 +1,34 @@
+import {ZipWriter} from './zip.mjs';
+
+const required = [
+    'models/gta3.dspk', 'models/gta_int.dspk',
+    'data/world.dwld', 'data/vehicles.dveh', 'data/peds.dped'
+];
+
+export async function packageConverted({variant, rom, files, destination}) {
+    try {
+        if (!['nds', 'dsi'].includes(variant)) throw new Error('Variante de ROM desconocida.');
+        const romSize = rom instanceof Uint8Array ? rom.byteLength : rom?.size;
+        if (!romSize || romSize > 16 * 1024 * 1024)
+            throw new Error('La ROM debe ser una build SD válida (máximo 16 MiB).');
+        const paths = new Map();
+        for (const {path, file} of files) {
+            if (path === '.stamp' || path.endsWith('.key')) continue;
+            const key = path.toLowerCase();
+            if (paths.has(key)) throw new Error(`Archivo convertido duplicado: ${path}`);
+            paths.set(key, {path, file});
+        }
+        const missing = required.filter(path => !paths.has(path));
+        if (missing.length)
+            throw new Error(`Faltan assets convertidos: ${missing.join(', ')}`);
+        const archive = new ZipWriter(destination);
+        await archive.add(`gtasads.${variant}`, rom);
+        for (const {path, file} of [...paths.values()].sort((a, b) =>
+            a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+            await archive.add(`gtasads/${path}`, file);
+        await archive.close();
+    } catch (error) {
+        if (destination.abort) await destination.abort();
+        throw error;
+    }
+}

@@ -5,6 +5,7 @@ The bottom-screen radar samples tiles per pixel on the CPU. Baking them here
 runtime streams a tile with one fread and never decodes or filters anything.
 """
 import struct
+import os
 
 from . import txd
 from .ds_texture import pick_level, resize
@@ -32,6 +33,9 @@ def _fit(px, w, h, size):
 
 
 def convert_radar(data, p):
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import convert_radar as native_convert
+        return native_convert(data), {'tiles': 1}
     texs = txd.parse(data)
     if not texs:
         raise ValueError('empty txd')

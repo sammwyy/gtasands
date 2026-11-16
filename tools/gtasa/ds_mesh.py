@@ -1,5 +1,6 @@
 """DFF -> DMDL (quantised DS meshes) with vertex-clustering decimation."""
 import math
+import os
 import struct
 from fnmatch import fnmatchcase
 
@@ -77,7 +78,7 @@ def _area(tris, P):
         u = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
         w = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
         n = (u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0])
-        s += (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) ** 0.5
+        s += math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2])
     return s * 0.5
 
 
@@ -89,7 +90,8 @@ def is_flat(verts, tris):
         u = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
         w = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
         nz = u[0] * w[1] - u[1] * w[0]
-        ln = ((u[1] * w[2] - u[2] * w[1]) ** 2 + (u[2] * w[0] - u[0] * w[2]) ** 2 + nz * nz) ** 0.5
+        ln = math.sqrt((u[1] * w[2] - u[2] * w[1]) ** 2 +
+                       (u[2] * w[0] - u[0] * w[2]) ** 2 + nz * nz)
         total += ln
         if ln and abs(nz) / ln > 0.7:
             up += ln
@@ -119,6 +121,9 @@ def decimate(verts, tris, target, min_area=0.0, max_shift=0.0, max_output=0):
             target = int(target * 1.25) + 1
     if target >= len(tris) or not tris:
         return None, tris
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import decimate_cluster
+        return decimate_cluster(verts, tris, target)
     xs, ys, zs = zip(*verts)
     lo = (min(xs), min(ys), min(zs))
     ext = max(max(xs) - lo[0], max(ys) - lo[1], max(zs) - lo[2]) or 1.0
@@ -165,6 +170,9 @@ def decimate_qem(verts, tris, target, bone=None):
     (CJ's clothes meet the head/hands/legs there) and UV seams bit-exact. With
     `bone`, only same-bone collapses are allowed so joints still bend cleanly
     under dominant-bone skinning. Returns (None, tris) like decimate()."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import decimate_qem as native_qem
+        return native_qem(verts, tris, target, bone)
     import heapq
     if target >= len(tris) or not tris:
         return None, tris
@@ -193,7 +201,7 @@ def decimate_qem(verts, tris, target, bone=None):
     Q = [[0.0] * 10 for _ in range(nv)]
     for t in tris:
         n = tri_n(t)
-        ln = dot(n, n) ** 0.5
+        ln = math.sqrt(dot(n, n))
         if ln < 1e-12:
             continue
         a, b, c = n[0] / ln, n[1] / ln, n[2] / ln
@@ -241,7 +249,7 @@ def decimate_qem(verts, tris, target, bone=None):
         for ti in vt[u] - shared:
             n0, n1 = tri_n(tris[ti]), tri_n(tris[ti], u, v)
             l1 = dot(n1, n1)
-            if l1 < 1e-14 or dot(n0, n1) <= 0.3 * (dot(n0, n0) * l1) ** 0.5:
+            if l1 < 1e-14 or dot(n0, n1) <= 0.3 * math.sqrt(dot(n0, n0) * l1):
                 ok = False
                 break
         if not ok:
@@ -280,6 +288,9 @@ def decimate_wedge(verts, tris, target):
     rejected, so ground stays hole- and crack-free (vertex clustering is not:
     its folded triangles kept the area but left the sky showing through).
     Returns (None, tris) like decimate()."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import decimate_wedge as native_wedge
+        return native_wedge(verts, tris, target)
     import heapq
     if target >= len(tris) or not tris:
         return None, tris
@@ -316,7 +327,7 @@ def decimate_wedge(verts, tris, target):
     Q = [[0.0] * 10 for _ in range(n)]
     for t in tris:
         nn = tri_n(t)
-        ln = dot(nn, nn) ** 0.5
+        ln = math.sqrt(dot(nn, nn))
         if ln < 1e-12:
             continue
         a, b, c = nn[0] / ln, nn[1] / ln, nn[2] / ln
@@ -373,7 +384,7 @@ def decimate_wedge(verts, tris, target):
                     break
                 n0, n1 = tri_n(t), tri_n(t, u, v)
                 l1 = dot(n1, n1)
-                if l1 < 1e-14 or dot(n0, n1) <= 0.3 * (dot(n0, n0) * l1) ** 0.5:
+                if l1 < 1e-14 or dot(n0, n1) <= 0.3 * math.sqrt(dot(n0, n0) * l1):
                     ok = False
                     break
         if not ok:
@@ -461,6 +472,10 @@ def convert_geometry(g, p):
             col = m.color if m else (255, 255, 255, 255)
             mats.append((m.texture if m else '', rgb15(*col[:3]), col[3], first, len(idx) - first))
 
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import encode_geometry
+        return encode_geometry(verts, mats, idx, use_uv, use_n, use_c, use_b), len(g.tris), len(idx) // 3
+
     P = [a[0] for _, a in verts] or [(0.0, 0.0, 0.0)]
     lo = [min(v[k] for v in P) for k in range(3)]
     hi = [max(v[k] for v in P) for k in range(3)]
@@ -521,6 +536,11 @@ def _synth_rigid_skin(m, atoms):
 
 
 def convert_dff(data, p):
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import convert_model
+        result = convert_model(data, p)
+        if result is not None:
+            return result
     m = dff.parse(data)
     drops = list(p['drop_frames']) + (['*_dam'] if p['drop_damage'] else []) + (['*_vlo'] if p['drop_vlo'] else [])
 

@@ -36,6 +36,11 @@ def fnv1a(s):
 
 def write_pack(path, entries, align=4):
     """entries: {name: bytes}. Header, sorted-by-hash TOC, names blob, data."""
+    if os.environ.get('GTASADS_NATIVE_LIB') and align == 4 and all(n.isascii() for n in entries):
+        from .portable import write_dspk
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_dspk(path, entries)
+        return
     items = sorted(entries.items(), key=lambda kv: (fnv1a(kv[0]), kv[0].lower()))
     names = bytearray()
     name_offs = []

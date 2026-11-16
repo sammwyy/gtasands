@@ -1,11 +1,15 @@
 """IMG v2 ("VER2") archives."""
 import struct
+import os
 
 SECTOR = 2048
 
 
 def read_toc(path):
     """Returns [(name, byte_offset, byte_size)]."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import read_img_toc
+        return read_img_toc(path)
     with open(path, 'rb') as f:
         magic, n = struct.unpack('<4sI', f.read(8))
         if magic != b'VER2':

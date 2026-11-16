@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Prueba DSPK — GTA SA DS</title>
+<h1>Prueba de empaquetado DSPK (WASM)</h1>
+<p><a href="./convert.html">Convertir una textura TXD a DTXD</a></p>
+<p>Esta prueba empaqueta archivos ya convertidos. No convierte aún una instalación de GTA SA ni genera un paquete jugable.</p>
+<label>Archivos DS para empaquetar <input id="files" type="file" multiple></label>
+<button id="build" type="button">Crear DSPK</button>
+<p id="status" role="status"></p>
+<script type="module" src="./pack.js"></script>
+</html>

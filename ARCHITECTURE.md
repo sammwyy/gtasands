@@ -914,6 +914,100 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
 - `tools/assets.py sync|build|report|list|info|preview` (see AGENTS.md for invocations).
   Pure Python + multiprocessing, cached per entry (key = handler + params + source entry + hash of
   the handler's modules). Editing a handler module rebuilds that handler's outputs only.
+- `tools/package_sd.py` reads an original installation through a temporary linked staging tree,
+  runs the same asset rules and writes an SD ZIP with a code-only `.nds` or `.dsi` and `gtasads/`.
+  `tools/portable/` contains the C11 conversion core (`make -f tools/portable/Makefile native|wasm`);
+  `--native-lib build/libgtasads_assets.so` selects it in the Python packager. The native core covers
+  DSPK, DTEX/TXD, IMG indexing, radar, ADPCM, map points, COL, IFP, DFF/DMDL conversion
+  (cluster, QEM and wedge decimation, including skinned/rigid models), IDE and IPL text/binary
+  records. Browser `img_worker.mjs` reads original IMG entries by range, resolves the
+  same `resources.json` rules, runs TXD/DFF/COL/IFP conversion through the unified
+  WASM module, and writes the same DSPK format via C callbacks. A mixed
+  real-entry sample package matched Python byte for byte. The pipeline also covers
+  native ENEX-to-DENX parsing/packing (`build/enex_cli` for explicit IPL
+  paths), autonomous `enexbuild.c` from gta.dat/IPLs
+  (`build/enexbuild_cli`, Python and `entrance_worker.mjs`), and
+  DENX-to-DPOI map points. A real DENX/DPOI matched native C/WASM and Python.
+  The native core also parses COL archives for DWLD collision BVHs, IPL instance planning
+  (LOD links, bounds and model filtering), gta.dat section parsing, main/interior IMG
+  source lookup, model/TXD parent-table planning, sector bucketing and DWLD binary packing.
+  `worldbuild.c` now orchestrates those readers and writers from original files,
+  including all COL archives and both IMG files. The autonomous
+  `build/worldbuild_cli` accepts the original folder; Python selects the same
+  C orchestrator for valid IMG archives, and the browser uses synchronous
+  range callbacks in `web/world_worker.mjs` so it need not load the entire
+  IMG archives. The complete 35,708,100-byte DWLD matched the Python reference;
+  a bounded real world also matched native C and WASM byte for byte.
+  The core also covers
+  audio name/lookup tables, Ogg/Vorbis stream metadata and portable
+  stb_vorbis v1.22 decoding (`vendor/stb_vorbis.c`, pinned to
+  `1ee679ca2ef753a528db5ba6801e1067b40481b8`, locally patched to
+  validate stream offsets before pointer arithmetic; vendored SHA-256
+  `54fd6a64c05e7267e8950178b9bbe30f4387c921c1bc45f456be5389a698c54e`).
+  Python without the native library still decodes OGG with `ffmpeg`;
+  `GTASADS_NATIVE_LIB` and the browser share C encrypted-stream decryption,
+  stb_vorbis decoding, stereo-to-mono conversion and DSND encoding. Small PCM
+  differences from `ffmpeg` are accepted for this media path.
+  Python and C use the same integer 48-tap/512-phase windowed-sinc FIR kernel
+  (`tools/generate_resample_table.py` produces its lookup table) to downsample
+  to the DS rate without browser-dependent resampling. MPEG-1/MP2 decoding
+  uses MIT-licensed `pl_mpeg.h` (pinned to
+  `c871f2be022ece7ef4f64230b4fb8e1fb9eb6023`, SHA-256
+  `3a8cb30c83c2a1147719c30fe0c8b93da2987aa43140077c575b39aaa75fc2c9`)
+  for native/WASM movie conversion. The C route scales YUV frames, builds a
+  median-cut 256-colour palette, downsamples decoded audio with the shared FIR
+  and packs DVID; the Python-only fallback still uses `ffmpeg`. Native movies
+  need not be byte-identical to that fallback;
+  DSND/DSBK/DSST/DSFX/DSBL audio packing (including native
+  `build/audio_pack_cli` for DSFX) and
+  encrypted-stream decryption, and DVEH IDE/handling/special/colour/surface/water/train
+  parsing and serialization (`build/veh_cli` from explicit source paths).
+  `vehbuild.c` also assembles DVEH from an original folder through
+  case-insensitive file callbacks; `build/vehbuild_cli`, Python and browser
+  `vehicle_worker.mjs` all use it. A real DVEH matched Python and native/WASM
+  byte for byte. The core also contains
+  DPED IDE/stats/animation-group/ped+car group/zone/path parsing and graph packing, SCM zone
+  population setup, popcycle text parsing and rescaling, model/stat/group tables and
+  binary packing. `pedbuild.c` assembles DPED autonomously from the original
+  installation; `build/pedbuild_cli`, Python native bindings and browser
+  `ped_worker.mjs` use this same path. The full 1,543,790-byte DPED matches
+  Python exactly, and a bounded real-world DPED matches native C/WASM byte
+  for byte. Python serves as a byte-for-byte test oracle for the
+  matching non-multimedia formats. `dsfmt.write_pack` also streams DSPK through
+  the C writer when the native library is selected; Python remains the fallback.
+  DFF sphere radii also use the portable reader during DWLD generation.
+  `web/` hosts browser-side WASM integration, a streaming ZIP32 writer,
+  a code-only `resources.json` exported from Python conversion rules, browser
+  section/rule resolution checked against `Config.params`, source-rate Web Audio
+  PCM16 rounding/mixing checked against a real `ffmpeg` decode, and
+  `web/streams.mjs` for C/WASM decryption, Vorbis decoding, FIR/ADPCM and DSND
+  encoding (with browser-local Web Audio as a fallback), and `web/movies.mjs` for native/WASM
+  MPEG-to-DVID conversion. The installer can now create the ZIP from the
+  original GTA SA folder alone: Workers read IMG archives by range, convert
+  world, peds, vehicles, ENEX/DPOI, radar, loose assets and intro movies;
+  SFX banks and encrypted Vorbis tracks are read by range and packed by the
+  same C/WASM core. Existing `gtasads/` files may be combined with locally
+  generated missing sections. `showSaveFilePicker` opens on the initial
+  click, before asynchronous conversion, and ZIP output is streamed. A
+  synthetic original-folder-only install produced a 30-entry ROM/SD ZIP in
+  Chromium, and real-source SFX, AA/CUTSCENE tracks, loose TXD and radar
+  were compared byte for byte against native conversion. A complete local
+  game folder also ran through the installer in Chromium: 16,172 gta3
+  entries, SFX, streams, cutscene audio, models, world, movies and copied data
+  yielded 392 ZIP entries and 408,640,138 bytes with a local SD ROM. That
+  verification discarded ZIP writes after checking their sizes and central
+  directory names; it did not persist game-derived files or upload them.
+  The unified `assets.mjs` build target exports these
+  functions. `tools/mirror_rom_release.py` verifies the
+  latest release's code-only ROM SHA-256 and stages same-origin copies in
+  `web/roms/` so a browser can read them; direct GitHub asset URLs do not
+  allow cross-origin reads. Neither ROM mirror nor ZIP may include original
+  GTA assets. To publish GitHub Pages, first run
+  `make -f tools/portable/Makefile wasm`, then, after publishing the code-only
+  ROM release, `make -f tools/portable/Makefile mirror-roms`, and deploy the
+  resulting `web/` directory as a Pages artifact. Generated `.wasm`, module
+  wrappers and mirrored ROMs are ignored by Git and cannot be served by a
+  source-branch-only Pages deployment.
 - `resources.toml`: `[global]`, `[defaults.<handler>]`, sections (`kind` = img/files/copy/sfx/
   streams/...) with `[[section.rule]]` (`match`, `match_ide`, `match_texture`, `remove`, handler
   overrides). Resolution: defaults -> section -> rules -> global multipliers.

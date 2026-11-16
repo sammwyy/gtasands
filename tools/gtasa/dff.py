@@ -1,5 +1,6 @@
 """DFF clumps: frames, geometries (PC, non-native), materials, skin, atomics."""
 import struct
+import os
 
 from . import rw
 
@@ -30,6 +31,9 @@ def _finite(vs):
 
 
 def parse(data):
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_model
+        return parse_model(data)
     clump = rw.find(data, 0, len(data), rw.CLUMP)
     if not clump:
         raise ValueError('no clump')

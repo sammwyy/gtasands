@@ -9,12 +9,22 @@ import os
 import struct
 import subprocess
 import tempfile
+from pathlib import Path
 
 W, H = 256, 256  # letterboxed to the DS texture size (pad keeps aspect)
 
 
 def convert(src, dst, fps=10, rate=22050):
-    tmp = tempfile.mkdtemp()
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import convert_movie
+        blob, count = convert_movie(Path(src).read_bytes(), fps, rate)
+        Path(dst).write_bytes(blob)
+        return count
+    with tempfile.TemporaryDirectory() as tmp:
+        return _convert(src, dst, fps, rate, tmp)
+
+
+def _convert(src, dst, fps, rate, tmp):
     pal_png = os.path.join(tmp, 'pal.png')
     pal_raw = os.path.join(tmp, 'pal.raw')
     frames = os.path.join(tmp, 'f.bin')
@@ -30,15 +40,22 @@ def convert(src, dst, fps=10, rate=22050):
     subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', src, '-vn', '-ac', '1',
                     '-ar', str(rate), '-f', 's16le', audio], check=True)
 
-    pr = open(pal_raw, 'rb').read()
+    pr = Path(pal_raw).read_bytes()
     pal = [(pr[i] >> 3) | ((pr[i + 1] >> 3) << 5) | ((pr[i + 2] >> 3) << 10) for i in range(0, 768, 3)]
-    fdata = open(frames, 'rb').read()
+    fdata = Path(frames).read_bytes()
     # ffmpeg appends the 1024B palette (256xRGBA) after each pal8 frame: the
     # stride is W*H+1024 there, not W*H - slicing at W*H would drift +4 rows
     # every frame and the video scrolls down forever
     stride = W * H + 1024 if len(fdata) % (W * H) and len(fdata) % (W * H + 1024) == 0 else W * H
     nframes = len(fdata) // stride
-    adata = open(audio, 'rb').read()
+    adata = Path(audio).read_bytes()
+
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import pack_video
+        blob, count = pack_video(pr, fdata, adata, fps, rate)
+        with open(dst, 'wb') as out:
+            out.write(blob)
+        return count
 
     per = rate * 2.0 / fps
     with open(dst, 'wb') as out:

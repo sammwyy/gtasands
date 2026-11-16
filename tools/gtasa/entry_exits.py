@@ -1,4 +1,5 @@
 """Compile IPL enex records into a compact, versioned entrance table."""
+import os
 import struct
 from pathlib import Path
 
@@ -36,6 +37,9 @@ def build(game, _sec):
     dat = world.resolve(game, "data/gta.dat")
     if dat is None:
         raise FileNotFoundError("missing data/gta.dat (run: tools/assets.py sync)")
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import build_enex_files
+        return build_enex_files(game)
     records = []
     for line in world._lines(dat):
         kind, _, name = line.partition(" ")

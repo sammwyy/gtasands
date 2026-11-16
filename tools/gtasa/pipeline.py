@@ -13,7 +13,7 @@ from multiprocessing import Pool
 from pathlib import Path
 
 from . import audio, ds_mesh, ds_misc, ds_radar, ds_texture, entry_exits, img, intro, map_points, peds, vehicles, world
-from .dsfmt import name as fname, write_pack
+from .dsfmt import write_pack
 
 HANDLERS = {
     'texture': (ds_texture.DEFAULTS, lambda d, p, o: (ds_texture.convert_txd(d, p, o), {})),
@@ -318,6 +318,7 @@ class Builder:
             key = hashlib.sha1(code.encode()).hexdigest()
             kf = outp.with_suffix('.key')
             if outp.exists() and kf.exists() and kf.read_text() == key and not self.force:
+                self.outputs.append(str(dst))
                 st['files'] += 1
                 st['out'] += outp.stat().st_size
                 st['in'] += p.stat().st_size
@@ -328,12 +329,12 @@ class Builder:
             self.outputs.append(str(dst))
             self._account(st, rel.name, p.stat().st_size, outp.stat().st_size, {'frames': n})
             st['files'] += 1
-            st['out'] += 0
+            st['out'] += outp.stat().st_size
             print(f'  {rel.name} -> {n} frames', file=sys.stderr)
 
     def do_sfx(self, name, sec, st):
         root = self.cfg.game / sec.get('src', 'audio')
-        cfgdir = root / sec.get('lookup_dir', 'CONFIG')
+        cfgdir = world.resolve(root, sec.get('lookup_dir', 'CONFIG')) or root / sec.get('lookup_dir', 'CONFIG')
         if not (cfgdir / 'BankLkup.dat').exists():
             st['errors'].append(f'missing {cfgdir} (run: tools/assets.py sync)')
             return
@@ -360,25 +361,17 @@ class Builder:
         lookup = [(0xFF, 0)] * len(banks)
         out_dir = Path(sec.get('out', 'audio/sfx'))
         for pak, items in sorted(per_pak.items()):
-            items.sort()
-            blob = bytearray(struct.pack('<4sHH', b'DSFX', 1, len(items)))
-            off = len(blob) + 12 * len(items)
-            for i, (bi, b) in enumerate(items):
-                blob += struct.pack('<IIHH', off, len(b), bi, 0)
-                off += len(b)
+            for i, (bi, _) in enumerate(sorted(items)):
                 lookup[bi] = (pak, i)
-            for _, b in items:
-                blob += b
-            st['out'] += self._emit(out_dir / f'{paks[pak].lower()}.dsfx', bytes(blob))
+            st['out'] += self._emit(out_dir / f'{paks[pak].lower()}.dsfx',
+                                    audio.pack_sound_banks(items))
             st['files'] += 1
-        lk = bytearray(struct.pack('<4sHBBHH', b'DSBL', 1, len(paks), 0, len(banks), 0))
-        lk += b''.join(fname(p, 16) for p in paks)
-        lk += b''.join(struct.pack('<BBH', p, 0, i) for p, i in lookup)
-        st['out'] += self._emit(out_dir / 'banks.dsbl', bytes(lk))
+        st['out'] += self._emit(out_dir / 'banks.dsbl',
+                                audio.pack_sound_lookup(paks, lookup))
 
     def do_streams(self, name, sec, st):
         root = self.cfg.game / sec.get('src', 'audio')
-        cfgdir = root / sec.get('lookup_dir', 'CONFIG')
+        cfgdir = world.resolve(root, sec.get('lookup_dir', 'CONFIG')) or root / sec.get('lookup_dir', 'CONFIG')
         if not (cfgdir / 'TrakLkup.dat').exists():
             st['errors'].append(f'missing {cfgdir} (run: tools/assets.py sync)')
             return
@@ -518,7 +511,7 @@ class Builder:
 
 # ---------------------------------------------------------------------------- sync / report
 
-def sync(cfg, dry=False, only=()):
+def sync(cfg, dry=False, only=(), link=False):
     """Copies from the PC install into game/ only what enabled sections need."""
     src = cfg.source
     if not src.is_dir():
@@ -532,6 +525,7 @@ def sync(cfg, dry=False, only=()):
             want.add(Path(sec['src']))
         elif k == 'world':
             want.add(Path(sec.get('img', 'models/gta3.img')))
+            want.add(Path(sec.get('interior_img', 'models/gta_int.img')))
             want |= {p.relative_to(src) for p in src.glob('data/**/*', case_sensitive=False)
                      if p.is_file() and p.suffix.lower() in ('.dat', '.ide', '.ipl')}
         elif k == 'points':
@@ -555,7 +549,11 @@ def sync(cfg, dry=False, only=()):
                          for r in [p.relative_to(src)] if not (match(str(r), rm) or match(r.name, rm))}
         elif k in ('sfx', 'streams'):
             base = Path(sec.get('src', 'audio'))
-            config_files = (src / base / 'CONFIG').glob('*.dat')
+            audio_root = world.resolve(src, str(base))
+            if audio_root is None:
+                continue
+            config_dir = world.resolve(audio_root, 'CONFIG')
+            config_files = config_dir.glob('*.dat', case_sensitive=False) if config_dir else ()
             if k == 'streams' and sec.get('lookup_dir'):
                 for p in config_files:
                     dest = cfg.game / base / sec['lookup_dir'] / p.name
@@ -563,18 +561,26 @@ def sync(cfg, dry=False, only=()):
                         print(f'  copy {p.relative_to(src)} -> {dest.relative_to(cfg.game)}')
                     else:
                         dest.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(p, dest)
+                        if link:
+                            dest.symlink_to(p.resolve())
+                        else:
+                            shutil.copy2(p, dest)
             else:
                 want |= {p.relative_to(src) for p in config_files}
             sub = 'SFX' if k == 'sfx' else 'STREAMS'
-            d = next((p for p in (src / base).iterdir() if p.name.upper() == sub), None)
+            d = next((p for p in audio_root.iterdir() if p.name.upper() == sub), None)
             for p in (d.iterdir() if d else []):
                 _, _, removed = cfg.params(sec, 'audio', p.name)
                 if not removed:
                     want.add(p.relative_to(src))
     total = 0
     for rel in sorted(want, key=str):
-        s, d = src / rel, cfg.game / rel
+        audio_names = {'banklkup.dat': 'BankLkup.dat', 'pakfiles.dat': 'PakFiles.dat',
+                       'strmpaks.dat': 'StrmPaks.dat', 'traklkup.dat': 'TrakLkup.dat'}
+        staged = (Path('audio/CONFIG') / audio_names.get(rel.name.lower(), rel.name)
+                  if link and str(rel).lower().startswith('audio/config/')
+                  else Path(str(rel).lower()) if link else rel)
+        s, d = src / rel, cfg.game / staged
         if not s.exists():
             print(f'  ? missing in source: {rel}')
             continue
@@ -587,7 +593,10 @@ def sync(cfg, dry=False, only=()):
         print(f'  copy {rel} ({_mb(s.stat().st_size)})')
         if not dry:
             d.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(s, d)
+            if link:
+                d.symlink_to(s.resolve())
+            else:
+                shutil.copy2(s, d)
     for name, sec in cfg.sections.items():
         if (only and name not in only) or not sec.get('enabled', True) or (sec.get('sd_only') and not only) or not sec.get('from_img'):
             continue

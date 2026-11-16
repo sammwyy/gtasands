@@ -10,6 +10,7 @@ for those opcodes with an inline 8-byte zone label, and baked per info.zon zone.
 Layout: src/assets/ds_formats.h (DPED).
 """
 import re
+import os
 import struct
 from pathlib import Path
 
@@ -56,6 +57,9 @@ def race_of(model):
 
 def parse_peds_ide(path):
     """peds section: id, model, txd, pedType, stats, animGroup, carsMask (hex), flags, animFile, radio1, radio2, ..."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_ped_text
+        return parse_ped_text(path.read_bytes(), 'ide')
     out = []
     in_peds = False
     for line in _lines(path):
@@ -78,6 +82,9 @@ def parse_peds_ide(path):
 
 def parse_pedstats(path):
     """name fleeDistance headingChangeRate fear temper lawfulness sexiness attackStrength defendWeakness shootingRate decisionMaker"""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_ped_text
+        return parse_ped_text(path.read_bytes(), 'stats')
     out = []
     for line in _lines(path):
         a = line.split()
@@ -93,6 +100,9 @@ def parse_pedstats(path):
 
 def parse_animgrp(path):
     """name, file, type, count / anim names / end -> {name: [walk, run, sprint, idle, roadcross, walkstart]}."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_ped_text
+        return parse_ped_text(path.read_bytes(), 'animgrp')
     groups, cur = {}, None
     for line in _lines(path):
         if ',' in line:
@@ -112,6 +122,9 @@ def parse_animgrp(path):
 
 def parse_pedgrp(path, by_name):
     """LoadGroup: one group per line with models (blank lines skipped), models by name."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_ped_groups
+        return parse_ped_groups(path.read_bytes(), by_name, NUM_PEDGROUPS)[0]
     groups = []
     for line in path.read_text(errors='replace').splitlines():
         line = line.split('#', 1)[0]
@@ -129,6 +142,9 @@ def parse_pedgrp(path, by_name):
 
 def parse_popcycle(path):
     """CPopCycle::Initialise: [zone][weekday/weekend][2h slot] = 24 numbers (lines starting with // skipped)."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_ped_population
+        return parse_ped_population(path.read_bytes())
     rows = []
     for line in path.read_text(errors='replace').splitlines():
         line = line.split('//', 1)[0].strip()
@@ -152,6 +168,9 @@ def parse_popcycle(path):
 
 def parse_zones(path):
     """info.zon navigation zones: name, type, x1, y1, z1, x2, y2, z2, level, gxt."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_ped_text
+        return parse_ped_text(path.read_bytes(), 'zones')
     out = []
     for line in _lines(path):
         a = [x.strip() for x in line.split(',')]
@@ -171,6 +190,9 @@ def scm_zone_setup(scm):
     """The new-game zone setup: SET_ZONE_* commands with an inline 8-byte label (type 0x09)
     in the first dense run of SET_ZONE_POPULATION_TYPE (the start-up thread). Later writes
     (missions, gang wars) are ignored."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import scan_zone_script
+        return scan_zone_script(scm)
     def val(i):
         t = scm[i]
         if t == 4:
@@ -236,6 +258,12 @@ def read_path_nodes(paths_dir, bounds, vehicles=False):
         if not p:
             continue
         d = p.read_bytes()
+        if os.environ.get('GTASADS_NATIVE_LIB'):
+            from .portable import parse_ped_paths
+            for i, x, y, z, width, flags, links in parse_ped_paths(
+                    d, (x0, y0, x1, y1), vehicles):
+                nodes[(area, i)] = (x, y, z, width, flags, links)
+            continue
         n, nveh, nped, nnavi, nlinks = struct.unpack_from('<5I', d, 0)
         node_off = 20
         link_off = node_off + n * 28 + nnavi * 14
@@ -268,6 +296,9 @@ def build(game, sec, world_bounds=None):
         raise FileNotFoundError('need data/peds.ide, pedstats.dat, pedgrp.dat, cargrp.dat, vehicles.ide, popcycle.dat, animgrp.dat, info.zon, '
                                 'paths/nodes*.dat (run: tools/assets.py sync)')
     bounds = sec.get('bounds') or world_bounds or [-3000, -3000, 3000, 3000]
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import build_ped_files
+        return build_ped_files(game, bounds)
 
     peds = parse_peds_ide(ide)
     stats = parse_pedstats(st_path)
@@ -283,17 +314,23 @@ def build(game, sec, world_bounds=None):
     from .vehicles import parse_ide
     vehicles = parse_ide(veh_path)
     car_by_name = {v['model']: i for i, v in enumerate(vehicles) if v['type'] in (0, 1)}
-    car_groups = []
-    for line in car_path.read_text(errors='replace').splitlines():
-        names = line.split('#', 1)[0].strip()
-        if not names or names.startswith('//'):
-            continue
-        car_groups.append([car_by_name[n.lower()] for n in re.split(r'[,\s]+', names)
-                           if n.lower() in car_by_name])
-        if len(car_groups) == NUM_CARGROUPS:
-            break
-    if len(car_groups) != NUM_CARGROUPS:
-        raise ValueError(f'cargrp.dat: expected {NUM_CARGROUPS} groups, got {len(car_groups)}')
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import parse_ped_groups
+        car_groups, car_count = parse_ped_groups(car_path.read_bytes(), car_by_name,
+                                                 NUM_CARGROUPS, True)
+    else:
+        car_groups = []
+        for line in car_path.read_text(errors='replace').splitlines():
+            names = line.split('#', 1)[0].strip()
+            if not names or names.startswith('//'):
+                continue
+            car_groups.append([car_by_name[n.lower()] for n in re.split(r'[,\s]+', names)
+                               if n.lower() in car_by_name])
+            if len(car_groups) == NUM_CARGROUPS:
+                break
+        car_count = len(car_groups)
+    if car_count != NUM_CARGROUPS:
+        raise ValueError(f'cargrp.dat: expected {NUM_CARGROUPS} groups, got {car_count}')
     pop = parse_popcycle(pop_path)
 
     # zones: info.zon rects that touch the bounds, with the script's population setup
@@ -339,6 +376,14 @@ def build(game, sec, world_bounds=None):
         nlinks += len(ll)
     if len(link_blob) % 4:
         link_blob += b'\0\0'
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import encode_ped_graph
+        records = []
+        for k in keys:
+            x, y, z, width, flags, linked = raw[k]
+            records.append((x, y, z, width, flags, cell(raw[k]),
+                            [local[t] for t in linked if t in local]))
+        node_blob, link_blob, cells, nlinks = encode_ped_graph(records, gw * gh)
 
     roads = read_path_nodes(paths_dir, bounds, vehicles=True)
     road_keys = sorted(roads, key=lambda k: (cell(roads[k]), k))
@@ -359,6 +404,14 @@ def build(game, sec, world_bounds=None):
                                   width, road_flags | (((flags >> 16) & 15) << 4), 0)
         for t in connected:
             road_links += struct.pack('<H', t)
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import encode_ped_graph
+        records = []
+        for k in road_keys:
+            x, y, z, width, flags, linked = roads[k]
+            records.append((x, y, z, width, flags, cell(roads[k]),
+                            [road_local[t] for t in linked if t in road_local and t != k]))
+        road_nodes, road_links, road_cells, _ = encode_ped_graph(records, gw * gh, True)
 
     # tables
     model_blob, name_blob = bytearray(), bytearray()
@@ -395,12 +448,29 @@ def build(game, sec, world_bounds=None):
     pop_blob = b''.join(struct.pack('<24B', *[max(0, min(255, x)) for x in r]) for r in pop)
     zone_blob = b''.join(struct.pack('<4hBBBB10B2x', x1, y1, x2, y2, pt, races, dealer, 0, *gang)
                          for x1, y1, x2, y2, pt, races, dealer, gang, _ in zones)
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import encode_ped_tables
+        (model_blob, name_blob, stat_blob, anim_blob, grp_blob,
+         pop_blob, zone_blob, car_blob) = encode_ped_tables(
+             peds, stats, used_anims, agroups_all, groups, car_groups, pop,
+             zones, stat_idx, anim_idx)
     cell_blob = b''.join(struct.pack('<HH', a, b) for a, b in cells)
 
     hdr_size = 4 + 2 * 6 + 4 * 2 + 2 * 6 + 4 * 16
     parts = [model_blob, name_blob, stat_blob, anim_blob, grp_blob, pop_blob, zone_blob, cell_blob,
              node_blob, link_blob, road_nodes, road_links, car_blob,
              b''.join(struct.pack('<HH', a, b) for a, b in road_cells)]
+    st = dict(models=len(peds), stats=len(stats), anim_groups=len(used_anims), groups=sum(1 for g in groups if g),
+              zones=len(zones), scripted=sum(1 for z in zones if z[8] in setup), nodes=len(keys), links=nlinks,
+              road_nodes=len(road_keys), road_links=len(road_links) // 2,
+              grid=f'{gw}x{gh}', scm=f'{scm_range[0]}..{scm_range[1]}')
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import pack_peds
+        return pack_peds(parts, len(peds), len(stats), len(used_anims),
+                         NUM_PEDGROUPS, len(zones), len(keys), nlinks,
+                         len(road_keys), len(road_links) // 2,
+                         gx0, gy0, gw, gh, CELL), st
+
     offs, at = [], hdr_size
     for b in parts:
         offs.append(at)
@@ -415,8 +485,4 @@ def build(game, sec, world_bounds=None):
     assert len(out) == hdr_size, len(out)
     for b in parts:
         out += b
-    st = dict(models=len(peds), stats=len(stats), anim_groups=len(used_anims), groups=sum(1 for g in groups if g),
-              zones=len(zones), scripted=sum(1 for z in zones if z[8] in setup), nodes=len(keys), links=nlinks,
-              road_nodes=len(road_keys), road_links=len(road_links) // 2,
-              grid=f'{gw}x{gh}', scm=f'{scm_range[0]}..{scm_range[1]}')
     return bytes(out), st

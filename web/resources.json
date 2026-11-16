@@ -1,0 +1,519 @@
+{
+  "defaults": {
+    "anim": {
+      "drop_translation": false,
+      "keep_every": 2,
+      "max_frames": 0,
+      "remove": [],
+      "rigid_clips": []
+    },
+    "audio": {
+      "format": "adpcm",
+      "max_seconds": 0,
+      "sample_rate": 11025,
+      "volume": 1.0
+    },
+    "collision": {
+      "face_ratio": 0.5,
+      "min_faces": 16,
+      "mode": "full"
+    },
+    "model": {
+      "decimate": "cluster",
+      "drop_damage": true,
+      "drop_frames": [],
+      "drop_vlo": true,
+      "ground_qem": false,
+      "max_shift": 0.0,
+      "max_tris": 0,
+      "min_area": 0.0,
+      "min_tris": 64,
+      "normals": false,
+      "ratio": 0.5,
+      "rigid_skin": false,
+      "skin": true,
+      "uvs": true,
+      "vertex_colors": true
+    },
+    "texture": {
+      "additive": false,
+      "alpha_threshold": 24,
+      "auto_colors": 16,
+      "format": "auto",
+      "max_size": 128,
+      "min_size": 8,
+      "opaque": false,
+      "scale": 0.5
+    }
+  },
+  "global": {
+    "audio_rate_scale": 1.0,
+    "model_ratio": 1.0,
+    "texture_scale": 1.0
+  },
+  "sections": {
+    "anim_img": {
+      "kind": "img",
+      "out": "anim/anim.dspk",
+      "src": "anim/anim.img"
+    },
+    "audio_config": {
+      "kind": "copy",
+      "out": "",
+      "src": [
+        "audio/CONFIG/EventVol.dat"
+      ]
+    },
+    "audio_sfx": {
+      "audio": {
+        "format": "adpcm",
+        "sample_rate": 11025
+      },
+      "kind": "sfx",
+      "out": "audio/sfx",
+      "remove": [
+        "SPC_EA",
+        "SPC_FA",
+        "SPC_GA",
+        "SPC_NA"
+      ],
+      "rule": [
+        {
+          "audio": {
+            "sample_rate": 8000
+          },
+          "match": "SCRIPT"
+        }
+      ],
+      "src": "audio"
+    },
+    "audio_streams": {
+      "audio": {
+        "format": "adpcm",
+        "sample_rate": 16000
+      },
+      "kind": "streams",
+      "out": "audio/streams",
+      "remove": [
+        "ADVERTS",
+        "BEATS",
+        "CH",
+        "CO",
+        "CR",
+        "DS",
+        "HC",
+        "MH",
+        "MR",
+        "NJ",
+        "RE",
+        "RG",
+        "TK"
+      ],
+      "rule": [
+        {
+          "audio": {
+            "sample_rate": 11025,
+            "track_ids": [
+              706,
+              708
+            ]
+          },
+          "match": "CUTSCENE"
+        }
+      ],
+      "src": "audio"
+    },
+    "cutscene_files": {
+      "anim": {
+        "keep_every": 4,
+        "rigid_clips": [
+          "csgizmo",
+          "cshandcuff",
+          "csmoneystck"
+        ]
+      },
+      "from_img": "anim/cuts.img",
+      "kind": "files",
+      "names": [
+        "prolog1",
+        "prolog3",
+        "intro1a",
+        "intro1b"
+      ],
+      "out": "",
+      "src": [
+        "anim/cuts/*.ifp",
+        "anim/cuts/*.dat",
+        "anim/cuts/*.cut"
+      ]
+    },
+    "cutscene_models": {
+      "extract_to": "models/cutscene",
+      "from_img": "models/cutscene.img",
+      "keep_paths": false,
+      "kind": "files",
+      "model": {
+        "max_tris": 440,
+        "normals": false,
+        "ratio": 0.28
+      },
+      "names": [
+        "csbogman",
+        "csstew",
+        "cssuitcase",
+        "cstaxi92",
+        "cspulaski",
+        "cshernandez",
+        "cstenpenny",
+        "cs9mm",
+        "cscopcarla92",
+        "csgizmo",
+        "cshandcuff",
+        "csmoneystck"
+      ],
+      "pack": "models/cutscene.dspk",
+      "rule": [
+        {
+          "match": [
+            "*/csgizmo.dff",
+            "*/cshandcuff.dff",
+            "*/csmoneystck.dff"
+          ],
+          "model": {
+            "rigid_skin": true
+          }
+        },
+        {
+          "match": [
+            "*/cstaxi92.dff",
+            "*/cscopcarla92.dff"
+          ],
+          "model": {
+            "max_tris": 96,
+            "min_tris": 16,
+            "ratio": 0.24
+          }
+        }
+      ],
+      "src": [
+        "models/cutscene/*.dff",
+        "models/cutscene/*.txd"
+      ],
+      "suffixes": [
+        ".dff",
+        ".txd"
+      ],
+      "texture": {
+        "max_size": 64
+      }
+    },
+    "data": {
+      "kind": "copy",
+      "out": "",
+      "remove": [
+        "data/icons/*",
+        "*.ico",
+        "*.bmp",
+        "audioevents.txt"
+      ],
+      "src": [
+        "data/**/*"
+      ]
+    },
+    "entry_exits": {
+      "kind": "entry_exits",
+      "out": "data/entry_exits.denx"
+    },
+    "gta3_img": {
+      "kind": "img",
+      "out": "models/gta3.dspk",
+      "remove": [],
+      "rule": [
+        {
+          "match_ide": "data/vehicles.ide",
+          "model": {
+            "drop_damage": false,
+            "max_tris": 320,
+            "min_tris": 24,
+            "normals": true,
+            "ratio": 0.25
+          },
+          "texture": {
+            "max_size": 64
+          }
+        },
+        {
+          "match_ide": "data/peds.ide",
+          "model": {
+            "decimate": "wedge",
+            "max_tris": 300,
+            "normals": false,
+            "ratio": 0.25
+          },
+          "texture": {
+            "max_size": 64
+          }
+        },
+        {
+          "match_ide": "data/default.ide",
+          "model": {
+            "max_tris": 200,
+            "normals": true,
+            "ratio": 0.5
+          },
+          "texture": {
+            "max_size": 32
+          }
+        },
+        {
+          "match": "radar[0-9]*.txd",
+          "remove": true
+        },
+        {
+          "match_ide": "data/maps/**/*.ide",
+          "model": {
+            "ground_qem": true,
+            "max_shift": 0.5,
+            "max_tris": 192,
+            "min_area": 0.85,
+            "min_tris": 12,
+            "ratio": 0.25
+          },
+          "texture": {
+            "max_size": 32
+          }
+        },
+        {
+          "match_ide": "data/maps/**/*.ide",
+          "match_texture": [
+            "*road*",
+            "*pave*",
+            "*sidew*",
+            "*grass*",
+            "*dirt*",
+            "*conc*",
+            "*tar*",
+            "*kerb*",
+            "*curb*"
+          ],
+          "texture": {
+            "max_size": 64
+          }
+        },
+        {
+          "match": "lod*.dff",
+          "model": {
+            "ratio": 0.3
+          },
+          "texture": {
+            "max_size": 32
+          }
+        },
+        {
+          "collision": {
+            "face_ratio": 0.5,
+            "mode": "simple"
+          },
+          "match": "*.col"
+        },
+        {
+          "match_texture": [
+            "*shad*",
+            "*corona*"
+          ],
+          "texture": {
+            "max_size": 32
+          }
+        }
+      ],
+      "src": "models/gta3.img"
+    },
+    "gta_int_img": {
+      "kind": "img",
+      "model": {
+        "ratio": 0.4
+      },
+      "out": "models/gta_int.dspk",
+      "src": "models/gta_int.img",
+      "texture": {
+        "max_size": 64,
+        "scale": 0.5
+      }
+    },
+    "map_points": {
+      "kind": "points",
+      "out": "data/map_points.dpoi"
+    },
+    "models_loose": {
+      "kind": "files",
+      "out": "",
+      "remove": [
+        "*btns.txd",
+        "*sixaxis.txd",
+        "models/txd/intro*"
+      ],
+      "rule": [
+        {
+          "match": "models/fonts.txd",
+          "texture": {
+            "max_size": 256,
+            "scale": 0.5
+          }
+        },
+        {
+          "match": "models/hud.txd",
+          "texture": {
+            "max_size": 256,
+            "scale": 1.0
+          }
+        },
+        {
+          "match": "models/fronten*.txd",
+          "texture": {
+            "auto_colors": 256,
+            "max_size": 256,
+            "scale": 0.5
+          }
+        },
+        {
+          "match": "models/txd/loadsc*.txd",
+          "texture": {
+            "auto_colors": 256,
+            "max_size": 256,
+            "scale": 0.5
+          }
+        },
+        {
+          "match": "models/particle.txd",
+          "texture": {
+            "max_size": 32
+          }
+        },
+        {
+          "match": "models/generic/vehicle.txd",
+          "texture": {
+            "max_size": 32
+          }
+        },
+        {
+          "match": "models/generic/vehicle.txd",
+          "match_texture": [
+            "vehiclegrunge256",
+            "vehiclegeneric256",
+            "vehiclelights*"
+          ],
+          "texture": {
+            "max_size": 64
+          }
+        },
+        {
+          "match": "models/particle.txd",
+          "match_texture": [
+            "coronastar",
+            "coronamoon",
+            "cloud1"
+          ],
+          "texture": {
+            "additive": true,
+            "format": "a5i3",
+            "max_size": 32
+          }
+        }
+      ],
+      "src": [
+        "models/*.txd",
+        "models/generic/*",
+        "models/grass/*",
+        "models/coll/*.col",
+        "models/txd/*.txd",
+        "models/effects.fxp"
+      ]
+    },
+    "movies": {
+      "audio_rate": 22050,
+      "fps": 10,
+      "kind": "intro",
+      "out": "movies",
+      "src": [
+        "movies/Logo.mpg",
+        "movies/GTAtitles.mpg"
+      ]
+    },
+    "ped_ifp": {
+      "kind": "files",
+      "out": "",
+      "src": [
+        "anim/ped.ifp"
+      ]
+    },
+    "peds": {
+      "kind": "peds",
+      "out": "data/peds.dped"
+    },
+    "player_img": {
+      "kind": "img",
+      "model": {
+        "decimate": "qem",
+        "normals": true,
+        "ratio": 0.5
+      },
+      "out": "models/player.dspk",
+      "src": "models/player.img",
+      "texture": {
+        "max_size": 64
+      }
+    },
+    "radar": {
+      "grid": 12,
+      "kind": "radar",
+      "out": "models/radar.dsrt",
+      "src": "models/gta3.img"
+    },
+    "radio_streams": {
+      "audio": {
+        "format": "adpcm",
+        "sample_rate": 11025,
+        "seekable": true
+      },
+      "keep": [
+        "CH",
+        "CO",
+        "CR",
+        "DS",
+        "HC",
+        "MH",
+        "MR",
+        "NJ",
+        "RE",
+        "RG",
+        "TK"
+      ],
+      "kind": "streams",
+      "lookup_dir": "radio_config",
+      "out": "audio/streams",
+      "sd_only": true,
+      "src": "audio"
+    },
+    "text": {
+      "kind": "copy",
+      "out": "",
+      "src": [
+        "text/american.gxt",
+        "text/spanish.gxt"
+      ]
+    },
+    "vehicles": {
+      "kind": "vehicles",
+      "out": "data/vehicles.dveh"
+    },
+    "world": {
+      "dat": "data/gta.dat",
+      "img": "models/gta3.img",
+      "kind": "world",
+      "lods": true,
+      "out": "data/world.dwld",
+      "sector": 50
+    }
+  },
+  "version": 1
+}

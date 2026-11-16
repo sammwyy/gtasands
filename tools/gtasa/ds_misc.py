@@ -1,5 +1,6 @@
 """COL -> DCOL and IFP -> DANM converters."""
 import struct
+import os
 from fnmatch import fnmatchcase
 
 from . import col, ifp
@@ -11,6 +12,9 @@ ANIM_DEFAULTS = dict(keep_every=1, max_frames=0, drop_translation=False, remove=
 
 
 def convert_col(data, p):
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import convert_collision
+        return convert_collision(data, p)
     models = col.parse(data)
     mode = p['mode']
     out = bytearray(struct.pack('<4sHH', b'DCOL', 1, len(models)))
@@ -47,6 +51,9 @@ def convert_ifp(data, p):
     """DANM v2: header, directory (name, offset, size per anim), then the anim
     records. The directory lets the runtime stream single clips on demand
     instead of scanning (or holding) the whole block."""
+    if os.environ.get('GTASADS_NATIVE_LIB'):
+        from .portable import convert_animation
+        return convert_animation(data, p)
     block, anims = ifp.parse(data)
     anims = [a for a in anims if not any(fnmatchcase(a.name.lower(), r.lower()) for r in p['remove'])]
     kin = kout = 0
