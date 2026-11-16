@@ -1005,12 +1005,13 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   latest release's code-only ROM SHA-256 and stages same-origin copies in
   `web/roms/` so a browser can read them; direct GitHub asset URLs do not
   allow cross-origin reads. Neither ROM mirror nor ZIP may include original
-  GTA assets. To publish GitHub Pages, first run
-  `make -f tools/portable/Makefile wasm`, then, after publishing the code-only
-  ROM release, `make -f tools/portable/Makefile mirror-roms`, and deploy the
-  resulting `web/` directory as a Pages artifact. Generated `.wasm`, module
-  wrappers and mirrored ROMs are ignored by Git and cannot be served by a
-  source-branch-only Pages deployment.
+  GTA assets. `.github/workflows/pages.yml` builds the browser converters
+  with a pinned Emscripten toolchain and deploys `web/` as a Pages artifact on
+  main updates and published releases. When a code-only ROM release exists,
+  the workflow verifies its SHA-256 digest and mirrors it into the artifact;
+  without a release the installer accepts a local SD ROM instead. Generated
+  `.wasm`, module wrappers and mirrored ROMs are ignored by Git and cannot
+  be served by a source-branch-only Pages deployment.
 - `resources.toml`: `[global]`, `[defaults.<handler>]`, sections (`kind` = img/files/copy/sfx/
   streams/...) with `[[section.rule]]` (`match`, `match_ide`, `match_texture`, `remove`, handler
   overrides). Resolution: defaults -> section -> rules -> global multipliers.
