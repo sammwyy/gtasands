@@ -6,18 +6,18 @@ export function convertPeds(module, files, options = {},
                                     file.slice(start, start + length)))) {
     const bounds = options.bounds ?? [-3000, -3000, 3000, 3000];
     if (bounds.length !== 4 || bounds.some(value => !Number.isFinite(value)))
-        throw new Error('Límites de población inválidos.');
+        throw new Error('Invalid pedestrian bounds.');
     const mandatory = ['data/peds.ide', 'data/pedstats.dat', 'data/pedgrp.dat',
         'data/cargrp.dat', 'data/vehicles.ide', 'data/popcycle.dat',
         'data/animgrp.dat', 'data/info.zon'];
     const missing = mandatory.filter(path => !files.has(path));
-    if (missing.length) throw new Error(`Faltan archivos originales: ${missing.join(', ')}`);
+    if (missing.length) throw new Error(`Missing original files: ${missing.join(', ')}`);
     const allocations = [];
     const errors = [];
     let callback, encoded = 0;
     const malloc = size => {
         const pointer = module._malloc(size);
-        if (!pointer) throw new Error('No hay memoria para los peatones.');
+        if (!pointer) throw new Error('Out of memory while converting pedestrians.');
         allocations.push(pointer);
         return pointer;
     };
@@ -49,7 +49,7 @@ export function convertPeds(module, files, options = {},
         const result = malloc(8), stats = malloc(52);
         const ok = module._pedbuild_convert(settings, result, result + 4, stats);
         if (errors.length) throw errors[0];
-        if (!ok) throw new Error('No se pudo convertir la población a DPED.');
+        if (!ok) throw new Error('Could not convert pedestrians to DPED.');
         encoded = module.HEAPU32[result >>> 2];
         const size = module.HEAPU32[(result + 4) >>> 2];
         return {

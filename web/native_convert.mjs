@@ -12,14 +12,14 @@ function withNativeBytes(module, data, convert) {
     if (!source || !result) {
         if (source) module._free(source);
         if (result) module._free(result);
-        throw new Error('No hay memoria para convertir assets.');
+        throw new Error('Out of memory while converting assets.');
     }
     let output = 0;
     try {
         module.HEAPU8.set(data, source);
         module.HEAPU8.fill(0, result, result + 8);
         if (!convert(source, result))
-            throw new Error('Falló la conversión nativa del asset.');
+            throw new Error('Native asset conversion failed.');
         output = module.HEAPU32[result >>> 2];
         const size = module.HEAPU32[(result + 4) >>> 2];
         return module.HEAPU8.slice(output, output + size);
@@ -33,12 +33,12 @@ function withNativeBytes(module, data, convert) {
 function allocateStrings(module, values, pointers) {
     if (!values?.length) return 0;
     const array = module._malloc(values.length * 4);
-    if (!array) throw new Error('No hay memoria para reglas de assets.');
+    if (!array) throw new Error('Out of memory while applying asset rules.');
     pointers.push(array);
     for (let i = 0; i < values.length; i++) {
         const text = encoder.encode(values[i]);
         const address = module._malloc(text.length + 1);
-        if (!address) throw new Error('No hay memoria para reglas de assets.');
+        if (!address) throw new Error('Out of memory while applying asset rules.');
         pointers.push(address);
         module.HEAPU8.set(text, address);
         module.HEAPU8[address + text.length] = 0;
@@ -49,7 +49,7 @@ function allocateStrings(module, values, pointers) {
 
 export function convertModel(module, bytes, params) {
     if (!(params.decimate in decimators))
-        throw new Error('Método de simplificación no soportado.');
+        throw new Error('Unsupported mesh simplification method.');
     return withNativeBytes(module, bytes, (source, result) => {
         const pointers = [];
         try {
@@ -57,7 +57,7 @@ export function convertModel(module, bytes, params) {
             const options = module._malloc(52), before = module._malloc(4);
             const after = module._malloc(4);
             if (!options || !before || !after)
-                throw new Error('No hay memoria para modelos.');
+                throw new Error('Out of memory while converting models.');
             pointers.push(options, before, after);
             module.HEAPU8.fill(0, options, options + 52);
             const view = new DataView(module.HEAPU8.buffer);
@@ -89,15 +89,15 @@ export function convertTexture(module, bytes, params, overrides = []) {
         try {
             const infoPtr = module._malloc(4), countPtr = module._malloc(4);
             if (!infoPtr || !countPtr)
-                throw new Error('No hay memoria para texturas.');
+                throw new Error('Out of memory while converting textures.');
             pointers.push(infoPtr, countPtr);
             if (!module._texture_inspect(source, bytes.byteLength,
                                          infoPtr, countPtr))
-                throw new Error('TXD inválido.');
+                throw new Error('Invalid TXD file.');
             info = module.HEAPU32[infoPtr >>> 2];
             const count = module.HEAPU32[countPtr >>> 2];
             const targets = module._malloc(Math.max(16 * count, 1));
-            if (!targets) throw new Error('No hay memoria para texturas.');
+            if (!targets) throw new Error('Out of memory while converting textures.');
             pointers.push(targets);
             module.HEAPU8.fill(0, targets, targets + 16 * count);
             const view = new DataView(module.HEAPU8.buffer);
@@ -136,10 +136,10 @@ export function convertTexture(module, bytes, params, overrides = []) {
 
 export function convertCollision(module, bytes, params) {
     const mode = {full: 0, bounds: 1, simple: 2}[params.mode];
-    if (mode === undefined) throw new Error('Modo de colisión no soportado.');
+    if (mode === undefined) throw new Error('Unsupported collision mode.');
     return withNativeBytes(module, bytes, (source, result) => {
         const counts = module._malloc(8);
-        if (!counts) throw new Error('No hay memoria para colisiones.');
+        if (!counts) throw new Error('Out of memory while converting collisions.');
         try {
             return module._col_convert(source, bytes.byteLength, mode,
                                        params.face_ratio, params.min_faces,
@@ -158,7 +158,7 @@ export function convertAnimation(module, bytes, params) {
             const clips = allocateStrings(module, params.rigid_clips, pointers);
             const options = module._malloc(28), counts = module._malloc(8);
             if (!options || !counts)
-                throw new Error('No hay memoria para animaciones.');
+                throw new Error('Out of memory while converting animations.');
             pointers.push(options, counts);
             module.HEAPU8.fill(0, options, options + 28);
             const view = new DataView(module.HEAPU8.buffer);

@@ -10,7 +10,7 @@ self.onmessage = async event => {
         const module = await modulePromise;
         const {files, manifest, section} = event.data;
         const source = files.get(manifest.sections[section].src.toLowerCase());
-        if (!source) throw new Error(`Falta el IMG original de ${section}.`);
+        if (!source) throw new Error(`Missing original IMG for ${section}.`);
         const planner = new Parameters(manifest, files);
         const result = await convertIMG(module, planner, section, source,
             message => self.postMessage({progress: message}));

@@ -7,20 +7,20 @@ const required = [
 
 export async function packageConverted({variant, rom, files, destination}) {
     try {
-        if (!['nds', 'dsi'].includes(variant)) throw new Error('Variante de ROM desconocida.');
+        if (!['nds', 'dsi'].includes(variant)) throw new Error('Unknown ROM version.');
         const romSize = rom instanceof Uint8Array ? rom.byteLength : rom?.size;
         if (!romSize || romSize > 16 * 1024 * 1024)
-            throw new Error('La ROM debe ser una build SD válida (máximo 16 MiB).');
+            throw new Error('The ROM must be a valid SD build (16 MiB maximum).');
         const paths = new Map();
         for (const {path, file} of files) {
             if (path === '.stamp' || path.endsWith('.key')) continue;
             const key = path.toLowerCase();
-            if (paths.has(key)) throw new Error(`Archivo convertido duplicado: ${path}`);
+            if (paths.has(key)) throw new Error(`Duplicate converted file: ${path}`);
             paths.set(key, {path, file});
         }
         const missing = required.filter(path => !paths.has(path));
         if (missing.length)
-            throw new Error(`Faltan assets convertidos: ${missing.join(', ')}`);
+            throw new Error(`Missing converted assets: ${missing.join(', ')}`);
         const archive = new ZipWriter(destination);
         await archive.add(`gtasads.${variant}`, rom);
         for (const {path, file} of [...paths.values()].sort((a, b) =>

@@ -117,7 +117,7 @@ class WebOriginalInstallTest(unittest.TestCase):
                         self.assertEqual(process.returncode, 0,
                                          process.stdout + process.stderr)
                         result = json.loads(process.stdout.strip())
-                        self.assertEqual(result['report'], 'ZIP SD creado localmente.')
+                        self.assertEqual(result['report'], 'SD ZIP created locally.')
                         self.assertGreaterEqual(result['entries'], 20)
                         self.assertGreater(result['size'], 1_000_000)
                     finally:

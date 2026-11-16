@@ -26,7 +26,7 @@ export class ZipWriter {
 
     async write(bytes) {
         if (this.offset + bytes.byteLength > 0xffffffff)
-            throw new Error('El ZIP requiere ZIP64 y supera el límite de 4 GiB.');
+            throw new Error('This ZIP exceeds the 4 GiB ZIP32 limit.');
         await this.destination.write(bytes);
         this.offset += bytes.byteLength;
     }
@@ -34,9 +34,9 @@ export class ZipWriter {
     async add(name, data) {
         if (this.finished || this.entries.length >= 65535 ||
             !validName(name) || this.entries.some(entry => entry.name === name))
-            throw new Error('Nombre de archivo inválido o duplicado en el ZIP.');
+            throw new Error('Invalid or duplicate filename in the ZIP.');
         const label = encoder.encode(name);
-        if (label.length > 65535) throw new Error('Nombre de archivo demasiado largo.');
+        if (label.length > 65535) throw new Error('Filename is too long for ZIP32.');
         const offset = this.offset;
         const header = new Uint8Array(30 + label.length);
         const view = new DataView(header.buffer);
@@ -55,7 +55,7 @@ export class ZipWriter {
         for await (const part of source) {
             const chunk = part instanceof Uint8Array ? part : new Uint8Array(part);
             if (size + chunk.byteLength > 0xffffffff)
-                throw new Error('Un archivo supera el límite de 4 GiB.');
+                throw new Error('A file exceeds the 4 GiB ZIP32 limit.');
             size += chunk.byteLength;
             checksum = crc32(checksum, chunk);
             await this.write(chunk);
@@ -72,9 +72,9 @@ export class ZipWriter {
     }
 
     async close() {
-        if (this.finished) throw new Error('El ZIP ya está cerrado.');
+        if (this.finished) throw new Error('The ZIP has already been finalized.');
         const start = this.offset;
-        if (this.entries.length > 65535) throw new Error('Demasiados archivos para ZIP32.');
+        if (this.entries.length > 65535) throw new Error('Too many files for ZIP32.');
         for (const entry of this.entries) {
             const header = new Uint8Array(46 + entry.label.length);
             const view = new DataView(header.buffer);

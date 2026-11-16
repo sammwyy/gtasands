@@ -12,12 +12,12 @@ export async function convertOriginalMovies(original, converted, progress = () =
     if (!missing.length) return [];
     const absent = missing.filter(([source]) => !original.has(source));
     if (absent.length) throw new Error(
-        `Faltan vídeos originales para el ZIP: ${absent.map(([path]) => path).join(', ')}`);
+        `Missing original videos for the ZIP: ${absent.map(([path]) => path).join(', ')}`);
     const worker = workerFactory();
     const generated = [];
     try {
         for (const [source, target] of missing) {
-            progress(`Convirtiendo ${source} en este navegador…`);
+            progress(`Converting ${source} in your browser…`);
             const result = await new Promise((resolve, reject) => {
                 worker.onmessage = event => event.data.error ?
                     reject(new Error(event.data.error)) : resolve(event.data);
@@ -28,7 +28,7 @@ export async function convertOriginalMovies(original, converted, progress = () =
                 path: target,
                 file: new Blob([result.bytes], {type: 'application/octet-stream'})
             });
-            progress(`${source}: ${result.frames} frames convertidos.`);
+            progress(`${source}: ${result.frames} frames converted.`);
         }
         return generated;
     } finally {

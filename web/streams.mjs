@@ -13,20 +13,20 @@ export function convertStreamNative(module, encrypted, offset, options) {
         !Number.isSafeInteger(offset) || offset < 0 ||
         !Number.isInteger(options.sample_rate) || options.sample_rate < 1 ||
         !Object.hasOwn(FORMATS, options.format))
-        throw new Error('Pista de audio o parámetros inválidos.');
+        throw new Error('Invalid audio track or conversion settings.');
     const input = module._malloc(encrypted.length);
-    if (!input) throw new Error('No hay memoria para convertir el audio.');
+    if (!input) throw new Error('Out of memory while converting audio.');
     let pointers = 0, encoded = 0;
     try {
         module.HEAPU8.set(encrypted, input);
         pointers = module._malloc(8);
-        if (!pointers) throw new Error('No hay memoria para convertir el audio.');
+        if (!pointers) throw new Error('Out of memory while converting audio.');
         if (!module._audio_stream_convert(
             input, encrypted.length, offset >>> 0, Math.floor(offset / 2 ** 32),
             options.sample_rate, FORMATS[options.format], options.seekable ? 1 : 0,
             options.volume ?? 1, options.max_seconds ?? 0,
             pointers, pointers + 4))
-            throw new Error('No se pudo convertir Vorbis a DSND.');
+            throw new Error('Could not convert Vorbis to DSND.');
         encoded = module.HEAPU32[pointers >>> 2];
         const length = module.HEAPU32[(pointers + 4) >>> 2];
         return module.HEAPU8.slice(encoded, encoded + length);
@@ -45,11 +45,11 @@ export async function convertStream(module, encrypted, offset, options,
         !Number.isSafeInteger(offset) || offset < 0 ||
         !Number.isInteger(options.sample_rate) ||
         !Object.hasOwn(FORMATS, options.format))
-        throw new Error('Pista de audio o parámetros inválidos.');
+        throw new Error('Invalid audio track or conversion settings.');
     const allocations = [];
     const malloc = size => {
         const pointer = module._malloc(Math.max(size, 1));
-        if (!pointer) throw new Error('No hay memoria para convertir el audio.');
+        if (!pointer) throw new Error('Out of memory while converting audio.');
         allocations.push(pointer);
         return pointer;
     };
@@ -63,12 +63,12 @@ export async function convertStream(module, encrypted, offset, options,
         const size = encrypted.length - TRACK_HEADER;
         const meta = malloc(12);
         if (!module._ogg_read_stream_info(ogg, size, meta, meta + 4, meta + 8))
-            throw new Error('La pista original no contiene Vorbis válido.');
+        throw new Error('The original track does not contain valid Vorbis audio.');
         const rate = module.HEAPU32[meta >>> 2];
         const samples = module.HEAPU32[(meta + 4) >>> 2];
         const channels = module.HEAPU32[(meta + 8) >>> 2];
         if (!rate || !samples || ![1, 2].includes(channels))
-            throw new Error('La pista Vorbis no tiene canales compatibles.');
+        throw new Error('The Vorbis track has an unsupported channel layout.');
         const decoded = await decode(module.HEAPU8.slice(ogg, ogg + size), rate);
         const pcm = pcm16FromAudioBuffer(decoded, samples);
         const input = malloc(pcm.byteLength);
@@ -78,7 +78,7 @@ export async function convertStream(module, encrypted, offset, options,
             input, pcm.length, rate, options.sample_rate, FORMATS[options.format],
             options.seekable ? 1 : 0, options.volume ?? 1,
             options.max_seconds ?? 0, -1, 0, pointers, pointers + 4))
-            throw new Error('No se pudo convertir PCM a DSND.');
+        throw new Error('Could not convert PCM to DSND.');
         encoded = module.HEAPU32[pointers >>> 2];
         const length = module.HEAPU32[(pointers + 4) >>> 2];
         return module.HEAPU8.slice(encoded, encoded + length);

@@ -3,7 +3,7 @@ import {imgEntries} from './img_assets.mjs';
 export async function convertRadar(module, file, grid = 12,
                                    progress = () => {}) {
     if (!Number.isInteger(grid) || grid < 1 || grid > 256)
-        throw new Error('Cuadrícula de radar inválida.');
+        throw new Error('Invalid radar grid.');
     const count = grid * grid;
     const tiles = new Array(count).fill(null);
     const entries = await imgEntries(module, file);
@@ -17,7 +17,7 @@ export async function convertRadar(module, file, grid = 12,
         if (!source || !result) {
             if (source) module._free(source);
             if (result) module._free(result);
-            throw new Error('No hay memoria para el radar.');
+        throw new Error('Out of memory while converting the radar.');
         }
         let output = 0;
         try {
@@ -27,10 +27,10 @@ export async function convertRadar(module, file, grid = 12,
             output = module.HEAPU32[result >>> 2];
             const length = module.HEAPU32[(result + 4) >>> 2];
             if (length !== 64 * 64 * 2 + 32 * 32 * 2)
-                throw new Error(`Tile del radar inválido: ${name}`);
+            throw new Error(`Invalid radar tile: ${name}`);
             tiles[Number(match[1])] = module.HEAPU8.slice(output, output + length);
             if (++converted % 25 === 0)
-                progress(`${converted} tiles de radar convertidos…`);
+            progress(`${converted} radar tiles converted…`);
         } finally {
             if (output) module._free(output);
             module._free(source);

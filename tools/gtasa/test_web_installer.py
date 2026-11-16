@@ -17,6 +17,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @unittest.skipUnless(shutil.which('node'), 'Node.js unavailable')
 class WebInstallerTest(unittest.TestCase):
+    def test_installer_page_uses_english_copy(self):
+        page = (ROOT / 'web/index.html').read_text()
+        self.assertIn('<html lang="en">', page)
+        for text in ('Select GTA San Andreas folder', 'Download ZIP',
+                     'Manual options', 'Version and changelog'):
+            self.assertIn(text, page)
+
     def test_same_origin_release_mirror_verifies_rom_hash(self):
         data = b'code-only-rom'
         asset = {

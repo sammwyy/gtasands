@@ -6,10 +6,12 @@
 <pre id="changelog"></pre>
 <div id="folder-status"></div>
 <input id="folder" type="file">
+<details id="manual-options"><summary>Opciones manuales</summary></details>
 <input id="rom" type="file">
 <select id="variant"><option value="nds">DS</option></select>
 <input id="converted" type="file">
 <div id="package-status"></div>
+<div id="progress-panel" hidden><progress id="progress"></progress></div>
 <button id="directory">Directorio</button>
 <button id="converted-directory">Convertidos</button>
 <button id="export" disabled>Exportar</button>
@@ -94,11 +96,13 @@ const directory = node => ({
 });
 window.showDirectoryPicker = async () => directory(tree);
 const originalFetch = window.fetch.bind(window);
-window.fetch = (url, options) => originalFetch(
-    url === './resources.json' ? '/web/resources.json' : url, options);
+window.fetch = (url, options) => typeof url === 'string' &&
+    url.includes('api.github.com/repos/sammwyy/gtasands/releases/latest') ?
+    Promise.resolve(new Response(null, {status: 404})) :
+    originalFetch(url === './resources.json' ? '/web/resources.json' : url, options);
 window.showSaveFilePicker = async () => {
-    if (document.querySelector('#package-status').textContent.includes('Convirtiendo'))
-        throw new Error('El guardado se abrió tras la conversión.');
+    if (document.querySelector('#package-status').textContent.includes('Converting'))
+        throw new Error('Save dialog opened after conversion started.');
     const chunks = [];
     return {createWritable: async () => ({
         write: async bytes => chunks.push(bytes.slice()),
@@ -127,8 +131,13 @@ await import('/web/installer.mjs');
 const status = document.querySelector('#result');
 try {
     document.querySelector('#directory').click();
-    while (!document.querySelector('#folder-status').textContent.includes('Instalación detectada'))
+    while (!document.querySelector('#folder-status').textContent.includes('Installation found'))
         await new Promise(resolve => setTimeout(resolve, 50));
+    document.querySelector('#export').click();
+    while (!document.querySelector('#package-status').textContent.includes('No ROM'))
+        await new Promise(resolve => setTimeout(resolve, 50));
+    if (!document.querySelector('#manual-options').open)
+        throw new Error('Manual options were not shown.');
     const transfer = new DataTransfer();
     transfer.items.add(new File([Uint8Array.of(1, 2, 3)], 'gtasads.nds'));
     document.querySelector('#rom').files = transfer.files;
@@ -147,7 +156,10 @@ try {
         'gtasads/models/radar.dsrt', 'gtasads/audio/sfx/banks.dsbl',
         'gtasads/movies/logo.dvid', 'gtasads/movies/gtatitles.dvid'];
     if (!required.every(name => window.__zipResult.names.includes(name)))
-        throw new Error('El ZIP no contiene todas las secciones.');
+        throw new Error('The ZIP is missing required sections.');
+    if (document.querySelector('#progress-panel').hidden ||
+        document.querySelector('#progress').value !== 1)
+        throw new Error('Progress did not complete.');
     status.textContent = JSON.stringify({
         size: window.__zipResult.size, entries: window.__zipResult.names.length,
         report: document.querySelector('#package-status').textContent

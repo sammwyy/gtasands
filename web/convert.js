@@ -6,11 +6,11 @@ const size = document.querySelector('#size');
 
 button.addEventListener('click', async () => {
     if (!file.files.length) {
-        status.textContent = 'Selecciona un archivo TXD.';
+        status.textContent = 'Select a TXD file.';
         return;
     }
     button.disabled = true;
-    status.textContent = 'Convirtiendo localmente…';
+    status.textContent = 'Converting locally…';
     try {
         const {default: createModule} = await import('./texture.mjs');
         const module = await createModule();
@@ -24,9 +24,9 @@ button.addEventListener('click', async () => {
         link.download = `${file.files[0].name.replace(/\.txd$/i, '')}.dtxd`;
         link.click();
         setTimeout(() => URL.revokeObjectURL(url), 60000);
-        status.textContent = 'DTXD convertido.';
+        status.textContent = 'DTXD converted.';
     } catch (error) {
-        status.textContent = `La conversión falló: ${error.message}`;
+        status.textContent = `Conversion failed: ${error.message}`;
     } finally {
         button.disabled = false;
     }

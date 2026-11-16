@@ -7,7 +7,7 @@ export function packDSPK(module, files) {
     const chunks = [];
     const malloc = size => {
         const address = module._malloc(Math.max(size, 1));
-        if (!address) throw new Error('No hay memoria para el paquete DSPK.');
+        if (!address) throw new Error('Out of memory while building the DSPK package.');
         allocations.push(address);
         return address;
     };
@@ -17,7 +17,7 @@ export function packDSPK(module, files) {
         for (let i = 0; i < entries.length; i++) {
             const [name, data] = entries[i];
             if (data.length > 0xffffffff)
-                throw new Error('Asset demasiado grande para DSPK.');
+                throw new Error('Asset is too large for DSPK.');
             const label = encoder.encode(name);
             const pointer = malloc(label.length + 1);
             module.HEAPU8.set(label, pointer);
@@ -40,7 +40,7 @@ export function packDSPK(module, files) {
         }, 'iiii');
         callbacks.push(write);
         if (!module._dspk_write(records, entries.length, read, write, 0))
-            throw new Error('No se pudo empaquetar DSPK.');
+            throw new Error('Could not build the DSPK package.');
         return new Blob(chunks, {type: 'application/octet-stream'});
     } finally {
         for (const address of allocations) module._free(address);

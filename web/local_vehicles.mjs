@@ -5,7 +5,7 @@ export async function convertOriginalVehicles(original, converted,
                                                   {type: 'module'})) {
     if (converted.some(entry => entry.path.toLowerCase() === 'data/vehicles.dveh'))
         return [];
-    progress('Convirtiendo vehículos DVEH en este navegador…');
+    progress('Converting vehicles to DVEH in your browser…');
     const worker = workerFactory();
     try {
         const result = await new Promise((resolve, reject) => {
@@ -14,7 +14,7 @@ export async function convertOriginalVehicles(original, converted,
             worker.onerror = event => reject(new Error(event.message));
             worker.postMessage({files: original});
         });
-        progress(`Vehículos: ${result.models} modelos convertidos.`);
+        progress(`Vehicles: ${result.models} models converted.`);
         return [{
             path: 'data/vehicles.dveh',
             file: new Blob([result.bytes], {type: 'application/octet-stream'})

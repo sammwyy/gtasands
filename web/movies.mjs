@@ -2,11 +2,11 @@ export function convertMovie(module, source, fps = 10, rate = 22050) {
     if (!(source instanceof Uint8Array) || !source.length ||
         !Number.isInteger(fps) || fps < 1 || fps > 65535 ||
         !Number.isInteger(rate) || rate < 1 || rate > 65535)
-        throw new Error('Vídeo MPEG o parámetros inválidos.');
+        throw new Error('Invalid MPEG video or conversion settings.');
     const allocations = [];
     const malloc = size => {
         const pointer = module._malloc(Math.max(size, 1));
-        if (!pointer) throw new Error('No hay memoria para convertir el vídeo.');
+    if (!pointer) throw new Error('Out of memory while converting the video.');
         allocations.push(pointer);
         return pointer;
     };
@@ -17,7 +17,7 @@ export function convertMovie(module, source, fps = 10, rate = 22050) {
         const pointers = malloc(12);
         if (!module._mpeg_movie_convert(input, source.byteLength, fps, rate,
                                         pointers, pointers + 4, pointers + 8))
-            throw new Error('No se pudo convertir MPEG a DVID.');
+        throw new Error('Could not convert MPEG to DVID.');
         encoded = module.HEAPU32[pointers >>> 2];
         const length = module.HEAPU32[(pointers + 4) >>> 2];
         const frames = module.HEAPU32[(pointers + 8) >>> 2];

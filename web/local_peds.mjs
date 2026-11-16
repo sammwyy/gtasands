@@ -5,7 +5,7 @@ export async function convertOriginalPeds(original, converted, options = {},
                                               {type: 'module'})) {
     if (converted.some(entry => entry.path.toLowerCase() === 'data/peds.dped'))
         return [];
-    progress('Convirtiendo población y caminos DPED en este navegador…');
+    progress('Converting pedestrians and paths to DPED in your browser…');
     const worker = workerFactory();
     try {
         const result = await new Promise((resolve, reject) => {
@@ -14,7 +14,7 @@ export async function convertOriginalPeds(original, converted, options = {},
             worker.onerror = event => reject(new Error(event.message));
             worker.postMessage({files: original, options});
         });
-        progress(`Población: ${result.models} modelos, ${result.nodes} nodos.`);
+        progress(`Pedestrians: ${result.models} models, ${result.nodes} nodes.`);
         return [{
             path: 'data/peds.dped',
             file: new Blob([result.bytes], {type: 'application/octet-stream'})

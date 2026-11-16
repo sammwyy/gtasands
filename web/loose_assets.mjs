@@ -66,11 +66,11 @@ export async function convertLooseAssets(module, planner, original, converted,
                 });
             }
             if (++processed % 50 === 0)
-                progress(`${name}: ${processed} archivos…`);
+                progress(`${name}: ${processed} files…`);
         }
         if (pack)
             generated.push({path: section.pack, file: packDSPK(module, pack)});
-        progress(`${name}: ${processed} archivos procesados.`);
+        progress(`${name}: ${processed} files processed.`);
     }
     return generated;
 }

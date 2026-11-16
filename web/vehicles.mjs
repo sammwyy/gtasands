@@ -8,13 +8,13 @@ export function convertVehicles(module, files,
         'data/carcols.dat', 'data/surface.dat', 'data/surfinfo.dat'];
     const missing = required.filter(path => !files.has(path));
     if (missing.length)
-        throw new Error(`Faltan archivos de vehículos: ${missing.join(', ')}`);
+        throw new Error(`Missing vehicle files: ${missing.join(', ')}`);
     const allocations = [];
     const errors = [];
     let callback, encoded = 0;
     const malloc = size => {
         const pointer = module._malloc(size);
-        if (!pointer) throw new Error('No hay memoria para vehículos.');
+        if (!pointer) throw new Error('Out of memory while converting vehicles.');
         allocations.push(pointer);
         return pointer;
     };
@@ -41,7 +41,7 @@ export function convertVehicles(module, files,
         module.HEAPU8.fill(0, settings, settings + 8);
         module.HEAPU32[(settings + 4) >>> 2] = callback;
         if (!module._vehbuild_convert(settings, result, result + 4, stats))
-            throw errors[0] ?? new Error('No se pudo convertir vehículos a DVEH.');
+            throw errors[0] ?? new Error('Could not convert vehicles to DVEH.');
         encoded = module.HEAPU32[result >>> 2];
         const size = module.HEAPU32[(result + 4) >>> 2];
         return {

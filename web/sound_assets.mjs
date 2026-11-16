@@ -30,7 +30,7 @@ function nativePack(module, entries, kind, names = [], seekable = false) {
     const pointers = [];
     const malloc = size => {
         const pointer = module._malloc(Math.max(size, 1));
-        if (!pointer) throw new Error('No hay memoria para audio.');
+        if (!pointer) throw new Error('Out of memory while converting audio.');
         pointers.push(pointer);
         return pointer;
     };
@@ -82,7 +82,7 @@ function nativePack(module, entries, kind, names = [], seekable = false) {
             success = module._dsbl_pack(pointersToNames, names.length,
                 lookups, entries.length, result, result + 4);
         }
-        if (!success) throw new Error(`No se pudo empaquetar ${kind}.`);
+        if (!success) throw new Error(`Could not package ${kind}.`);
         output = module.HEAPU32[result >>> 2];
         const length = module.HEAPU32[(result + 4) >>> 2];
         return module.HEAPU8.slice(output, output + length);
@@ -99,7 +99,7 @@ function convertBank(module, data, params) {
         if (input) module._free(input);
         if (options) module._free(options);
         if (result) module._free(result);
-        throw new Error('No hay memoria para el banco de sonidos.');
+        throw new Error('Out of memory while converting the sound bank.');
     }
     let encoded = 0;
     try {
@@ -113,7 +113,7 @@ function convertBank(module, data, params) {
         memory.setInt32(options + 32, -1, true);
         if (!module._dsbk_convert(input, data.length, options,
                                   result, result + 4, result + 8))
-            throw new Error('Banco SFX inválido.');
+        throw new Error('Invalid SFX bank.');
         encoded = module.HEAPU32[result >>> 2];
         const length = module.HEAPU32[(result + 4) >>> 2];
         return module.HEAPU8.slice(encoded, encoded + length);
@@ -129,7 +129,7 @@ async function config(original, names, lookup) {
     const nameFile = original.get(`audio/config/${names.toLowerCase()}`);
     const lookupFile = original.get(`audio/config/${lookup.toLowerCase()}`);
     if (!nameFile || !lookupFile)
-        throw new Error(`Falta audio/CONFIG/${!nameFile ? names : lookup}.`);
+        throw new Error(`Missing audio/CONFIG/${!nameFile ? names : lookup}.`);
     return [
         new Uint8Array(await nameFile.arrayBuffer()),
         new Uint8Array(await lookupFile.arrayBuffer())
@@ -160,7 +160,7 @@ export async function convertSFX(module, planner, original, existing,
             group.push([index, sound]);
             groups.set(pack, group);
             if (++converted % 50 === 0)
-                progress(`SFX: ${converted} bancos convertidos…`);
+            progress(`SFX: ${converted} banks converted…`);
         } catch (error) {
             progress(`${name}/${index}: ${error.message}`);
         }
@@ -187,13 +187,13 @@ async function alignedTrack(module, file, expected) {
     if (!input || !found) {
         if (input) module._free(input);
         if (found) module._free(found);
-        throw new Error('No hay memoria para buscar la pista Vorbis.');
+        throw new Error('Out of memory while locating the Vorbis track.');
     }
     try {
         module.HEAPU8.set(raw, input);
         if (!module._audio_aligned_offset(input, raw.length, BigInt(start),
                                           BigInt(expected), found))
-            throw new Error('No se encontró una pista Vorbis en CUTSCENE.');
+        throw new Error('No Vorbis track found in CUTSCENE.');
         return Number(new DataView(module.HEAPU8.buffer).getBigUint64(found, true));
     } finally {
         module._free(input);
@@ -235,7 +235,7 @@ export async function convertStreams(module, planner, original, existing,
             group.push([index, sound]);
             groups.set(name, group);
             if (++converted % 10 === 0)
-                progress(`Audio: ${converted} pistas convertidas…`);
+            progress(`Audio: ${converted} tracks converted…`);
         } catch (error) {
             progress(`${name}/${index}: ${error.message}`);
         }

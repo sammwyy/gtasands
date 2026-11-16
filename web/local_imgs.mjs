@@ -12,12 +12,12 @@ export async function convertOriginalIMGs(original, converted, manifest,
     const absent = missing.filter(name =>
         !original.has(manifest.sections[name].src.toLowerCase()));
     if (absent.length)
-        throw new Error(`Faltan IMG originales: ${absent.join(', ')}`);
+        throw new Error(`Missing original IMG archives: ${absent.join(', ')}`);
     const worker = workerFactory();
     const generated = [];
     try {
         for (const section of missing) {
-            progress(`Convirtiendo ${section} en este navegador…`);
+            progress(`Converting ${section} in your browser…`);
             const result = await new Promise((resolve, reject) => {
                 worker.onmessage = event => {
                     if (event.data.progress) progress(event.data.progress);
@@ -28,8 +28,8 @@ export async function convertOriginalIMGs(original, converted, manifest,
                 worker.postMessage({files: original, manifest, section});
             });
             generated.push({path: result.path, file: result.file});
-            progress(`${section}: ${result.entries} archivos convertidos` +
-                     (result.skipped ? `, ${result.skipped} errores.` : '.'));
+            progress(`${section}: ${result.entries} files converted` +
+                     (result.skipped ? `, ${result.skipped} errors.` : '.'));
         }
         return generated;
     } finally {

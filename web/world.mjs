@@ -16,19 +16,19 @@ export function convertWorld(module, files, options = {},
                                  new FileReaderSync().readAsArrayBuffer(
                                      file.slice(start, start + length)))) {
     const archives = [files.get('models/gta3.img'), files.get('models/gta_int.img')];
-    if (archives.some(file => !file)) throw new Error('Faltan los archivos IMG del mundo.');
+    if (archives.some(file => !file)) throw new Error('Missing world IMG archives.');
     const sector = options.sector ?? 50;
     const bounds = options.bounds;
     if (!Number.isInteger(sector) || sector < 1 || sector > 65535 ||
         (bounds && (bounds.length !== 4 || bounds.some(value =>
             !Number.isFinite(value)))))
-        throw new Error('Límites o sectores del mundo inválidos.');
+        throw new Error('Invalid world bounds or sector settings.');
     const allocations = [];
     const callbacks = [];
     const errors = [];
     const malloc = size => {
         const pointer = module._malloc(Math.max(size, 1));
-        if (!pointer) throw new Error('No hay memoria para el mundo.');
+        if (!pointer) throw new Error('Out of memory while converting the world.');
         allocations.push(pointer);
         return pointer;
     };
@@ -83,7 +83,7 @@ export function convertWorld(module, files, options = {},
         const result = malloc(8), stats = malloc(48);
         const ok = module._worldbuild_convert(settings, result, result + 4, stats);
         if (errors.length) throw errors[0];
-        if (!ok) throw new Error('No se pudo convertir el mundo a DWLD.');
+        if (!ok) throw new Error('Could not convert the world to DWLD.');
         encoded = module.HEAPU32[result >>> 2];
         const size = module.HEAPU32[(result + 4) >>> 2];
         return {

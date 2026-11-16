@@ -71,7 +71,7 @@ export class Parameters {
     async params(sectionName, handler, entry) {
         const section = this.manifest.sections[sectionName];
         if (!section || !this.manifest.defaults[handler])
-            throw new Error('Sección o conversor de assets desconocido.');
+        throw new Error('Unknown asset section or converter.');
         const params = {...this.manifest.defaults[handler], ...section[handler]};
         const overrides = [];
         let removed = match(entry, section.remove || []) ||

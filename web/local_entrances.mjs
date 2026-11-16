@@ -9,7 +9,7 @@ export async function convertOriginalEntrances(original, converted,
         ['data/map_points.dpoi', 'dpoi']
     ].filter(([path]) => !existing.has(path));
     if (!targets.length) return [];
-    progress('Convirtiendo entradas y puntos de mapa en este navegador…');
+    progress('Converting entrances and map points in your browser…');
     const worker = workerFactory();
     try {
         const result = await new Promise((resolve, reject) => {
@@ -18,7 +18,7 @@ export async function convertOriginalEntrances(original, converted,
             worker.onerror = event => reject(new Error(event.message));
             worker.postMessage({files: original});
         });
-        progress(`${result.count} entradas convertidas.`);
+        progress(`${result.count} entrances converted.`);
         return targets.map(([path, key]) => ({
             path, file: new Blob([result[key]], {type: 'application/octet-stream'})
         }));

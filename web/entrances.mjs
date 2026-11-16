@@ -5,13 +5,13 @@ export function convertEntrances(module, files,
                                      new Uint8Array(new FileReaderSync().readAsArrayBuffer(
                                          file.slice(start, start + length)))) {
     if (!files.has('data/gta.dat'))
-        throw new Error('Falta data/gta.dat para las entradas.');
+        throw new Error('Missing data/gta.dat for entrances.');
     const allocations = [];
     const errors = [];
     let callback, enex = 0, points = 0;
     const malloc = size => {
         const pointer = module._malloc(size);
-        if (!pointer) throw new Error('No hay memoria para entradas.');
+        if (!pointer) throw new Error('Out of memory while converting entrances.');
         allocations.push(pointer);
         return pointer;
     };
@@ -39,12 +39,12 @@ export function convertEntrances(module, files,
         module.HEAPU8.fill(0, settings, settings + 8);
         module.HEAPU32[(settings + 4) >>> 2] = callback;
         if (!module._enexbuild_convert(settings, result, result + 4, counts))
-            throw errors[0] ?? new Error('No se pudo convertir IPL a DENX.');
+            throw errors[0] ?? new Error('Could not convert IPL to DENX.');
         enex = module.HEAPU32[result >>> 2];
         const length = module.HEAPU32[(result + 4) >>> 2];
         if (!module._points_from_denx(enex, length,
                                       pointsResult, pointsResult + 4))
-            throw new Error('No se pudo generar el mapa DPOI.');
+            throw new Error('Could not generate DPOI map points.');
         points = module.HEAPU32[pointsResult >>> 2];
         const size = module.HEAPU32[(pointsResult + 4) >>> 2];
         return {

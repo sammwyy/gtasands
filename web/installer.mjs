@@ -21,6 +21,8 @@ const variant = document.querySelector('#variant');
 const convertedInput = document.querySelector('#converted');
 const packageStatus = document.querySelector('#package-status');
 const exportButton = document.querySelector('#export');
+const progressPanel = document.querySelector('#progress-panel');
+const progressBar = document.querySelector('#progress');
 let files = null;
 let release = null;
 let converted = [];
@@ -30,20 +32,33 @@ function canExport() {
     return converted.length > 0 || !!(files && !originalMissing.length);
 }
 
+function report(message) {
+    packageStatus.textContent = message;
+    if (!progressPanel || !progressBar) return;
+    progressPanel.hidden = false;
+    const count = /(\d+)\/(\d+)\s+files/.exec(message);
+    if (count) {
+        progressBar.max = Number(count[2]);
+        progressBar.value = Number(count[1]);
+    } else {
+        progressBar.removeAttribute('value');
+    }
+}
+
 function updateReleaseLink() {
     const asset = release?.assets[variant.value];
     releaseROM.hidden = !asset;
     if (asset) {
         releaseROM.href = asset.url;
-        releaseROM.textContent = `Descargar ROM ${variant.value.toUpperCase()} de GitHub`;
+        releaseROM.textContent = `Download ${variant.value.toUpperCase()} ROM from GitHub`;
     }
 }
 
 latestRelease().then(value => {
     release = value;
     releaseStatus.textContent = value.tag ?
-        `${value.tag} — ${Object.keys(value.assets).join(' / ') || 'sin ROMs SD'}` :
-        'Todavía no hay una release publicada; puedes seleccionar una ROM SD local.';
+        `${value.tag} — ${Object.keys(value.assets).join(' / ') || 'no SD ROMs'}` :
+        'No release published yet; you can select a local SD ROM.';
     changelog.textContent = value.notes;
     updateReleaseLink();
 }).catch(error => {
@@ -52,7 +67,8 @@ latestRelease().then(value => {
 variant.addEventListener('change', updateReleaseLink);
 
 async function select(entries) {
-    folderStatus.textContent = 'Validando archivos locales…';
+    if (progressPanel) progressPanel.hidden = true;
+    folderStatus.textContent = 'Checking local files…';
     try {
         const scanned = [];
         for await (const entry of entries) scanned.push(entry);
@@ -60,11 +76,11 @@ async function select(entries) {
         originalMissing = await missingConversionFiles(files);
         const missing = originalMissing;
         folderStatus.textContent = missing.length ?
-            `Faltan archivos: ${missing.join(', ')}` :
-            `Instalación detectada: ${files.size} archivos, validación inicial correcta.`;
+            `Missing files: ${missing.join(', ')}` :
+            `Installation found: ${files.size} files, initial checks passed.`;
         exportButton.disabled = !canExport();
         if (!missing.length && !converted.length)
-            packageStatus.textContent = 'Listo para convertir desde la instalación original.';
+            packageStatus.textContent = 'Ready to convert from the original installation.';
     } catch (error) {
         files = null;
         originalMissing = [];
@@ -95,19 +111,20 @@ romInput.addEventListener('change', () => {
     if (!rom) return;
     const valid = rom.name.toLowerCase().endsWith(`.${variant.value}`) &&
         rom.size > 0 && rom.size <= 16 * 1024 * 1024;
-    if (!valid) packageStatus.textContent = 'La ROM local debe ser una build SD de la variante elegida (máximo 16 MiB).';
+    if (!valid) packageStatus.textContent = 'The local ROM must be an SD build for the selected version (16 MiB maximum).';
 });
 
 async function selectConverted(entries) {
+    if (progressPanel) progressPanel.hidden = true;
     try {
         converted = [];
         for await (const entry of entries) converted.push(entry);
         exportButton.disabled = !canExport();
         packageStatus.textContent = converted.length ?
-            `${converted.length} archivos convertidos seleccionados.` :
+            `${converted.length} converted files selected.` :
             files && !originalMissing.length ?
-                'Listo para convertir desde la instalación original.' :
-                'No hay assets convertidos seleccionados.';
+                'Ready to convert from the original installation.' :
+                'No converted assets selected.';
     } catch (error) {
         converted = [];
         exportButton.disabled = !canExport();
@@ -134,6 +151,7 @@ convertedInput.addEventListener('change', async () => {
 
 exportButton.addEventListener('click', async () => {
     exportButton.disabled = true;
+    report('Preparing download…');
     let destination;
     try {
         const mode = variant.value;
@@ -142,22 +160,25 @@ exportButton.addEventListener('click', async () => {
         const previous = converted;
         if (local && (!local.name.toLowerCase().endsWith(`.${mode}`) ||
                       !local.size || local.size > 16 * 1024 * 1024))
-            throw new Error('La ROM local no coincide con la variante SD elegida.');
-        if (!local && !release?.assets[mode])
-            throw new Error('No hay ROM en la release. Selecciona una ROM SD local.');
+            throw new Error('The local ROM does not match the selected SD version.');
+        if (!local && !release?.assets[mode]) {
+            const manualOptions = document.querySelector('#manual-options');
+            if (manualOptions) manualOptions.open = true;
+            throw new Error('No ROM available in this release. Select a local SD ROM.');
+        }
         if (files && originalMissing.length && !previous.length)
-            throw new Error(`Faltan archivos originales: ${originalMissing.join(', ')}`);
+            throw new Error(`Missing original files: ${originalMissing.join(', ')}`);
         if (original && !('showSaveFilePicker' in window))
-            throw new Error('Para generar un ZIP completo desde la instalación original, utiliza un navegador compatible con showSaveFilePicker.');
+            throw new Error('To create a full ZIP from the original installation, use a browser that supports saving large files.');
         if ('showSaveFilePicker' in window) {
             const handle = await window.showSaveFilePicker({
                 suggestedName: `gtasads-${mode}.zip`,
-                types: [{description: 'Archivo ZIP', accept: {'application/zip': ['.zip']}}]
+                types: [{description: 'ZIP archive', accept: {'application/zip': ['.zip']}}]
             });
             destination = await handle.createWritable();
         }
         const rom = local || await downloadROM(release.assets[mode]);
-        const progress = message => packageStatus.textContent = message;
+        const progress = report;
         const manifest = original ?
             await (await fetch('./resources.json')).json() : null;
         const sections = manifest?.sections;
@@ -196,13 +217,13 @@ exportButton.addEventListener('click', async () => {
                 if (original.has(source)) required.push(target);
             const missing = required.filter(path => !paths.has(path));
             if (missing.length)
-                throw new Error(`La conversión no generó: ${missing.join(', ')}`);
+                throw new Error(`Conversion did not produce: ${missing.join(', ')}`);
         }
-        packageStatus.textContent = 'Preparando ROM y ZIP local…';
+        report('Preparing ROM and local ZIP…');
         if (!destination) {
             const size = selected.reduce((sum, entry) => sum + entry.file.size, 0);
             if (size > 128 * 1024 * 1024)
-                throw new Error('Este navegador no permite escribir ZIP grandes incrementalmente. Usa un navegador compatible con showSaveFilePicker.');
+                throw new Error('This browser cannot write large ZIP files incrementally. Use a browser that supports saving large files.');
             const chunks = [];
             destination = {
                 write: async bytes => chunks.push(bytes.slice()),
@@ -216,13 +237,18 @@ exportButton.addEventListener('click', async () => {
                 }
             };
         }
-        packageStatus.textContent = 'Escribiendo ROM y assets convertidos…';
+        report('Writing ROM and converted assets…');
         await packageConverted({variant: mode, rom, files: selected, destination});
         destination = null;
-        packageStatus.textContent = 'ZIP SD creado localmente.';
+        report('SD ZIP created locally.');
+        if (progressBar) {
+            progressBar.max = 1;
+            progressBar.value = 1;
+        }
     } catch (error) {
         if (destination?.abort) await destination.abort().catch(() => {});
         if (error.name !== 'AbortError') packageStatus.textContent = error.message;
+        if (progressPanel) progressPanel.hidden = true;
     } finally {
         exportButton.disabled = !canExport();
     }

@@ -7,8 +7,8 @@ export async function convertOriginalRadar(original, converted, options,
     if (converted.some(entry => entry.path.toLowerCase() === destination))
         return [];
     const source = original.get(options.src.toLowerCase());
-    if (!source) throw new Error(`Falta el IMG original para radar: ${options.src}`);
-    progress('Convirtiendo tiles del radar en este navegador…');
+    if (!source) throw new Error(`Missing original radar IMG: ${options.src}`);
+    progress('Converting radar tiles in your browser…');
     const worker = workerFactory();
     try {
         const result = await new Promise((resolve, reject) => {
@@ -20,7 +20,7 @@ export async function convertOriginalRadar(original, converted, options,
             worker.onerror = event => reject(new Error(event.message));
             worker.postMessage({file: source, grid: options.grid || 12});
         });
-        progress(`Radar: ${result.tiles} tiles convertidos.`);
+        progress(`Radar: ${result.tiles} tiles converted.`);
         return [{
             path: destination,
             file: new Blob([result.bytes], {type: 'application/octet-stream'})

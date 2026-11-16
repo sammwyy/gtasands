@@ -8,7 +8,7 @@ function nearestEven(value) {
 export function pcm16FromAudioBuffer(buffer, sampleCount) {
     if (!Number.isSafeInteger(sampleCount) || sampleCount < 0 ||
         sampleCount > buffer.length || ![1, 2].includes(buffer.numberOfChannels))
-        throw new Error('Audio Vorbis no compatible con la conversión PCM16.');
+        throw new Error('This Vorbis audio cannot be converted to PCM16.');
     const first = buffer.getChannelData(0);
     const second = buffer.numberOfChannels === 2 ? buffer.getChannelData(1) : null;
     const output = new Int16Array(sampleCount);

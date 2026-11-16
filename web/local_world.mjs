@@ -7,8 +7,8 @@ export async function convertOriginalWorld(original, converted, options = {},
         return [];
     const required = ['data/gta.dat', 'models/gta3.img', 'models/gta_int.img'];
     const missing = required.filter(path => !original.has(path));
-    if (missing.length) throw new Error(`Faltan archivos originales: ${missing.join(', ')}`);
-    progress('Convirtiendo el mundo DWLD en este navegador…');
+    if (missing.length) throw new Error(`Missing original files: ${missing.join(', ')}`);
+    progress('Converting the world to DWLD in your browser…');
     const worker = workerFactory();
     try {
         const result = await new Promise((resolve, reject) => {
@@ -17,7 +17,7 @@ export async function convertOriginalWorld(original, converted, options = {},
             worker.onerror = event => reject(new Error(event.message));
             worker.postMessage({files: original, options});
         });
-        progress(`Mundo: ${result.models} modelos, ${result.instances} instancias.`);
+        progress(`World: ${result.models} models, ${result.instances} instances.`);
         return [{
             path: 'data/world.dwld',
             file: new Blob([result.bytes], {type: 'application/octet-stream'})

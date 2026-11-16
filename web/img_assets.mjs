@@ -15,18 +15,18 @@ export async function imgEntries(module, file) {
         output = module._malloc(4);
         count = module._malloc(4);
         if (!source || !needed || !output || !count)
-            throw new Error('No hay memoria para el índice IMG.');
+        throw new Error('Out of memory while reading the IMG index.');
         module.HEAPU8.set(head, source);
         if (!module._img_index_size(source, head.length, needed))
-            throw new Error('Archivo IMG inválido.');
+        throw new Error('Invalid IMG archive.');
         const length = module.HEAPU32[needed >>> 2];
         if (length > file.size || length > 0xffffffff)
-            throw new Error('Índice IMG incompleto.');
+        throw new Error('Incomplete IMG index.');
         index = module._malloc(length);
-        if (!index) throw new Error('No hay memoria para el índice IMG.');
+    if (!index) throw new Error('Out of memory while reading the IMG index.');
         module.HEAPU8.set(new Uint8Array(await file.slice(0, length).arrayBuffer()), index);
         if (!module._img_parse_index(index, length, output, count))
-            throw new Error('No se pudo interpretar el índice IMG.');
+        throw new Error('Could not parse the IMG index.');
         parsed = module.HEAPU32[output >>> 2];
         const entries = [];
         const view = new DataView(module.HEAPU8.buffer);
@@ -40,7 +40,7 @@ export async function imgEntries(module, file) {
                 view.getUint32(entry + 36, true) * 2 ** 32;
             const size = view.getUint32(entry + 40, true);
             if (offset + size > file.size)
-                throw new Error(`IMG truncado: ${name}`);
+            throw new Error(`Truncated IMG entry: ${name}`);
             entries.push({name, offset, size});
         }
         return entries;
@@ -72,9 +72,9 @@ export async function convertIMG(module, planner, section, source, progress = ()
             progress(`${name}: ${error.message}`);
         }
         if (index % 100 === 0)
-            progress(`${section}: ${index + 1}/${toc.length} archivos…`);
+            progress(`${section}: ${index + 1}/${toc.length} files…`);
     }
     if (!files.size && skipped)
-        throw new Error(`No se pudo convertir ningún asset de ${section}.`);
+        throw new Error(`No assets could be converted from ${section}.`);
     return {blob: packDSPK(module, files), files: files.size, skipped};
 }

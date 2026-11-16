@@ -983,7 +983,10 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   `web/streams.mjs` for C/WASM decryption, Vorbis decoding, FIR/ADPCM and DSND
   encoding (with browser-local Web Audio as a fallback), and `web/movies.mjs` for native/WASM
   MPEG-to-DVID conversion. The installer can now create the ZIP from the
-  original GTA SA folder alone: Workers read IMG archives by range, convert
+  original GTA SA folder alone: `index.html`/`style.css` center the folder
+  selector and ZIP action, with manual options collapsed and a per-stage
+  progress bar (indeterminate when no item count is available).
+  Workers read IMG archives by range, convert
   world, peds, vehicles, ENEX/DPOI, radar, loose assets and intro movies;
   SFX banks and encrypted Vorbis tracks are read by range and packed by the
   same C/WASM core. Existing `gtasads/` files may be combined with locally

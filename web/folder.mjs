@@ -6,7 +6,7 @@ export const requiredFiles = [
 function normalize(path) {
     const parts = path.replaceAll('\\', '/').split('/');
     if (parts.some(part => !part || part === '.' || part === '..'))
-        throw new Error('Ruta inválida dentro de la instalación.');
+        throw new Error('Invalid path in the installation.');
     return parts.join('/').toLowerCase();
 }
 
@@ -15,7 +15,7 @@ export function indexFiles(entries) {
     for (const {path, file} of entries) {
         const key = normalize(path);
         if (files.has(key))
-            throw new Error(`Rutas ambiguas que solo difieren en mayúsculas: ${key}`);
+            throw new Error(`Ambiguous paths differing only in capitalization: ${key}`);
         files.set(key, file);
     }
     return files;
