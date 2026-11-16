@@ -1007,7 +1007,8 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   allow cross-origin reads. Neither ROM mirror nor ZIP may include original
   GTA assets. `.github/workflows/pages.yml` builds the browser converters
   with a pinned Emscripten toolchain and deploys `web/` as a Pages artifact on
-  main updates and published releases. When a code-only ROM release exists,
+  main updates or manual dispatches from main after publishing a release
+  (`gh workflow run pages.yml --ref main`). When a code-only ROM release exists,
   the workflow verifies its SHA-256 digest and mirrors it into the artifact;
   without a release the installer accepts a local SD ROM instead. Generated
   `.wasm`, module wrappers and mirrored ROMs are ignored by Git and cannot

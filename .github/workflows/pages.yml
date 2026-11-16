@@ -10,8 +10,6 @@ on:
       - 'tools/export_web_manifest.py'
       - 'tools/generate_resample_table.py'
       - 'resources.toml'
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
