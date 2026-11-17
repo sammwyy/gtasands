@@ -8,7 +8,7 @@ export async function convertOriginalRadar(original, converted, options,
         return [];
     const source = original.get(options.src.toLowerCase());
     if (!source) throw new Error(`Missing original radar IMG: ${options.src}`);
-    progress('Converting radar tiles in your browser…');
+    progress('Converting radar tiles…');
     const worker = workerFactory();
     try {
         const result = await new Promise((resolve, reject) => {

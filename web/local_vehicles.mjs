@@ -5,7 +5,7 @@ export async function convertOriginalVehicles(original, converted,
                                                   {type: 'module'})) {
     if (converted.some(entry => entry.path.toLowerCase() === 'data/vehicles.dveh'))
         return [];
-    progress('Converting vehicles to DVEH in your browser…');
+    progress('Converting vehicles to DVEH…');
     const worker = workerFactory();
     try {
         const result = await new Promise((resolve, reject) => {

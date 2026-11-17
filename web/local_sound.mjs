@@ -5,7 +5,7 @@ export async function convertOriginalSound(original, converted, manifest,
                                                {type: 'module'})) {
     const worker = workerFactory();
     try {
-        progress('Converting SFX banks and audio tracks in your browser…');
+        progress('Converting SFX banks and audio tracks…');
         const result = await new Promise((resolve, reject) => {
             worker.onmessage = event => {
                 if (event.data.progress) progress(event.data.progress);

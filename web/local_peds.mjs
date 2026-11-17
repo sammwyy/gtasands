@@ -5,7 +5,7 @@ export async function convertOriginalPeds(original, converted, options = {},
                                               {type: 'module'})) {
     if (converted.some(entry => entry.path.toLowerCase() === 'data/peds.dped'))
         return [];
-    progress('Converting pedestrians and paths to DPED in your browser…');
+    progress('Converting pedestrians and paths to DPED…');
     const worker = workerFactory();
     try {
         const result = await new Promise((resolve, reject) => {

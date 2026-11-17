@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 // CWaterLevel, reduced: the water.dat polygons (baked into vehicles.dveh by
-// tools/gtasa/vehicles.py, ~8.6 KB resident) for GetWaterLevel and a flat
+// tools/portable/vehbuild.c, ~8.6 KB resident) for GetWaterLevel and a flat
 // translucent surface per polygon in view (no waves, no reflections).
 // Outside the map square (|x| or |y| > 3000) the sea is at z = 0 like the
 // original's out-of-map level.

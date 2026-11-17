@@ -1,7 +1,7 @@
 # gtasads - GTA San Andreas port to Nintendo DS
 
 C++17 ARM9 homebrew (BlocksDS/libnds/picolibc), porting the gta-reversed decompilation, with a
-Python asset pipeline that converts the PC game files into DS-native formats packed in NitroFS.
+Node/C-WASM asset pipeline that converts the PC game files into DS-native formats packed in NitroFS.
 
 **Read `ARCHITECTURE.md` first** - it maps every directory/system (frame loop, render engine and
 DS hardware rules, time cycle/weather/sky, player/camera/anims, HUD, loading jobs, memory,
@@ -31,7 +31,10 @@ at the spawn (~15-25 while driving).
   `Makefile` dispatches to `Makefile.blocksds`; there is no devkitPro build.
 - Emulator: melonDS at `~/bin/melonds` (AppImage wrapper). Override with `EMU=...`. It ignores
   SIGTERM sometimes: use `timeout -s INT` and `pkill -f -i melonds` if a run hangs around.
-- Python 3.12 stdlib only (no pip/venv, no numpy/PIL). `ffmpeg` is used for OGG streams/movies.
+- Node 22 is used for asset builds, emulator profiles and browser-side tests.
+  Emscripten builds the shared C/WASM converters; `make` uses a pinned Docker
+  image if `emcc` is unavailable. The Node tests keep frozen reference hashes
+  for converter parity; diagnostics and production builds run without Python.
 - PC game: `/mnt/c/Program Files (x86)/Steam/steamapps/common/Grand Theft Auto San Andreas`
   (heavily modded: SAMP, CLEO, modloader, ENB; `gta3.img` stock, some `data/` files are not,
   e.g. `timecyc.dat`).
@@ -42,7 +45,7 @@ at the spawn (~15-25 while driving).
   `fat-` means assets embedded in the ROM; the unprefixed variants need `build/gtasads/`
   copied to the SD root. `.dsi` boots DSi mode and gets ~16 MB RAM (STREAM TLSF
   uses the extra RAM) and the faster ARM9 clock. Runs the asset build
-  first if `resources.toml` or `tools/**.py`
+  first if `web/resources.json`, `web/**.mjs`, `tools/assets.mjs`, or `tools/portable/**`
   changed. **Must stay warning-free** (`-Wall -Wextra`, libnds headers are `-isystem`).
 - `make ASSETS=0 build` skips the asset pipeline (fast code iteration).
   `make ASSETS=0 build-sd-dsi` builds one variant; other targets are `build-ds`,
@@ -65,7 +68,13 @@ at the spawn (~15-25 while driving).
   Keep melonDS's DSi SD emulation enabled for both DSi variants: without it,
   `run` stalls on a black/blue screen even when all assets are embedded in the ROM.
   The embedded variant uses an empty SD root and reads assets from NitroFS.
-- `make sync` / `make assets` wrap `tools/assets.py sync|build`.
+- `make sync SOURCE="/path/to/GTA San Andreas"` stages original files in `game/`.
+  `make assets` builds from `game/`; `make assets SOURCE="..."` builds directly
+  from the PC installation. `make package-sd SOURCE="..." ROM=build/gtasads.nds
+  ZIP=build/gtasads.zip` creates an SD ZIP. Conversion rules live in
+  `resources.toml`; `tools/export_web_manifest.mjs` generates
+  `web/resources.json` for the CLI and browser (also refreshed automatically by
+  `tools/assets.mjs`).
 - Full radio is SD-only: `make radio-sync` copies the original PC station packs,
   `make radio-assets` converts them to `build/radio/gtasads/`, then `make stage-sd`
   stages them with normal assets in `build/gtasads/`. Neither the default asset
@@ -85,7 +94,7 @@ at the spawn (~15-25 while driving).
   timeout -s INT 35 make $F run-sd-ds
   strings build/emulator/ds-sd/dldi.bin | grep -E "hudok|^sky:|fps=|^log:" | grep -v %
   ```
-  `tools/run.py` creates an isolated melonDS profile with `[DLDI] Enable=true,
+  `tools/run.mjs` creates an isolated melonDS profile with `[DLDI] Enable=true,
   FolderSync=true, FolderPath=<repo>/build/emulator/ds-sd/sd-root, ImagePath=<repo>/build/emulator/ds-sd/dldi.bin` (SIGINT, not TERM:
   melonDS only writes the image on a clean exit). Recreate it if /tmp was wiped.
   For DSi use `build-sd-dsi` / `run-sd`. melonDS 1.1 has a DSi SD/MMC write
@@ -97,7 +106,7 @@ at the spawn (~15-25 while driving).
 - Headless screenshots (DEBUG with `-DGTASADS_SCREENSHOTTEST`, or COLTEST/VEHTEST/PEDTEST/WORLDTEST):
   the hudok block captures the 3D screen at frames 120 + k*90
   (`build/emulator/ds-sd/sd-root/gtasads_shot0..5.dscr`: N, W, S, E, bird's eye, 150 m west after a teleport) and writes
-  `gtasads_hudok2.txt` after the teleport. Convert + look at them: `python3 tools/dsshot.py
+  `gtasads_hudok2.txt` after the teleport. Convert + look at them: `node tools/dsshot.mjs
   build/emulator/ds-sd/sd-root/gtasads_shot0.dscr /tmp/shot0.png`, then read the PNG. Needs ~100 s of emulator time
   (`timeout -s INT 100`). The capture borrows VRAM D (textures there are garbage afterwards);
   ordinary DEBUG runs do not capture, so opening pause does not inherit corrupted textures.
@@ -109,11 +118,11 @@ at the spawn (~15-25 while driving).
   turns the skeleton + collision overlays on for all shots, then after the screenshot sequence
   runs CJ north / west with a held d-pad (`input::debugHold`), drops him from 6 m and writes
   `gtasads_coltest.txt` (pos, camera distance, near list per 20 frames) + shot6 / shot7.
-  Needs `timeout -s INT 140`. `tools/dsshot.py IN OUT --scale 3` zooms to check 1-px outlines.
+  Needs `timeout -s INT 140`. `node tools/dsshot.mjs IN OUT --scale 3` zooms to check 1-px outlines.
 - Audio test (DEBUG): `DEBUG=1 QUICKTEST=1 OPT="-Og -DGTASADS_AUDTEST"`
   runs, jumps, punches, rain + lightning, M4 bursts, sandstorm after frame 600;
   `gtasads_audtest.txt` = `aud:` stats per phase, `gtasads_aud_<phase>.wav` = the real mixer output
-  (capture units). `python3 tools/audwav.py build/emulator/ds-sd/sd-root/gtasads_aud_run.wav [--png out.png]` prints
+  (capture units). `node tools/audwav.mjs build/emulator/ds-sd/sd-root/gtasads_aud_run.wav [--png out.png]` prints
   peak/RMS/clipping. Needs `timeout -s INT 170`; don't rebuild the ROM while it runs, and keep the
   melonDS window unfocused (key presses there move CJ and skew the numbers).
   Native BlocksDS capture may halve the requested duration when both buffers
@@ -165,31 +174,37 @@ at the spawn (~15-25 while driving).
   directions, gets in and drives; `gtasads_vehspawn.txt` must show `in=1 moved>0` for the cars (plus the log ring).
   Needs `timeout -s INT 270`.
 - Pause-menu regression (DEBUG): `-DGTASADS_MENUAUDTEST` opens the pause menu, scrolls (beeps), records
-  `gtasads_menu.wav` (check with `tools/audwav.py`) and `gtasads_menutest.txt` (frame cost, world models ready after
+  `gtasads_menu.wav` (check with `tools/audwav.mjs`) and `gtasads_menutest.txt` (frame cost, world models ready after
   resuming). Needs `timeout -s INT 90`.
 - Debug console layout (DEBUG): `-DGTASADS_DBGUITEST` shows every tab and CHT category and dumps the console text
   to `gtasads_dbgui.txt` (rows must not be clipped at column 31). Needs `timeout -s INT 70`.
-- What stopped CJ there? `python3 tools/colnear.py X Y Z [R]` lists the baked collision
+- What stopped CJ there? `node tools/colnear.mjs X Y Z [R]` lists the baked collision
   (faces with world n.z, boxes) around a point.
 
 ## Asset pipeline commands
 ```
-python3 tools/assets.py sync                      # PC install -> game/ (only what enabled sections need)
-python3 tools/assets.py build [SECTION..]         # game/ -> nitrofs/ ; -j N, --force, --limit N
-python3 tools/assets.py report                    # sizes per section/type vs budget
-python3 tools/assets.py list gta3_img -n 40       # biggest entries + resolved params / REMOVED
-python3 tools/assets.py info models/gta3.img:infernus.dff   # inspect img/txd/dff/col/ifp
-python3 tools/assets.py preview models/gta3.img:infernus.txd [TEX] --section gta3_img
+make sync SOURCE="/path/to/GTA San Andreas"       # original install -> game/
+make assets                                       # game/ -> nitrofs/
+node tools/assets.mjs build --source game --output nitrofs --section models_loose
+node tools/assets.mjs list gta3_img -n 30
+node tools/assets.mjs info models/gta3.img:infernus.dff
+node tools/assets.mjs preview models/gta3.img:infernus.txd --section gta3_img
+make package-sd SOURCE="/path/to/GTA San Andreas" ROM=build/gtasads.nds ZIP=build/gtasads.zip
+node tools/assets.mjs build --package-only --output nitrofs --rom build/gtasads.nds --zip build/gtasads.zip
 ```
-Full cold build ~6 min (16 cores); `models_loose` alone ~20 s. Use single sections / `--limit N`
-while tuning. Current total ~387 MB of the 448 MB budget.
+Full builds use a section-level stat cache.
+Use `--section` while tuning; `--force` rebuilds selected sections,
+`--budget-mb N` overrides the default 448 MiB budget, and `--prune`
+explicitly removes obsolete CLI-tracked outputs. `node tools/assets.mjs report`
+reads the last full-build report. Current total ~389 MiB.
 
 Portable asset converter: `make -f tools/portable/Makefile native` builds the
 shared C library and CLI tools; `make -f tools/portable/Makefile wasm` requires
-Emscripten. Run `python3 -m unittest discover -s tools/gtasa -t . -q` for
-Python/C byte-parity and browser-helper tests. `web/resources.json` is generated
-from `resources.toml` by `make -f tools/portable/Makefile web/resources.json`;
-keep it in sync when changing conversion rules.
+Emscripten. Run `node --test tools/tests/*.test.mjs` for CLI/browser helpers.
+The suite also checks frozen conversion reference hashes and native/WASM parity.
+`resources.toml` is the canonical conversion configuration. Run
+`node tools/export_web_manifest.mjs` to refresh `web/resources.json` for the
+browser; the Makefiles and Node CLI regenerate it when needed.
 
 ## Hardware budget (keep in mind for every decision)
 - ARM9 67 MHz, no FPU -> fixed point at runtime (20.12 / 4.12, libnds `f32`/`v16`/`t16`).

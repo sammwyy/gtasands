@@ -37,15 +37,33 @@ OBJECTS := $(patsubst %.cpp,$(OUT)/%.o,$(SOURCES))
 NITRO_FILES := $(if $(filter rom,$(STORAGE)),$(call rwildcard,nitrofs,*))
 ELF := $(OUT)/gtasads.elf
 ROM := build/$(if $(filter rom,$(STORAGE)),fat-,)gtasads.$(if $(filter dsi,$(MODE)),dsi,nds)
-ASSET_DEPS := resources.toml $(filter-out tools/run.py,$(wildcard tools/*.py tools/gtasa/*.py))
+SOURCE ?= game
+ASSET_OUT ?= nitrofs
+WASM_IMAGE ?= emscripten/emsdk@sha256:644883f58ca15c38c8be59b3a727ba0eff347729bc31d50a3348a6c9ed92bc07
+WASM_SOURCES := $(wildcard tools/portable/*.c tools/portable/*.h tools/portable/vendor/*) tools/portable/Makefile
+ASSET_DEPS := web/resources.json resources.toml tools/export_web_manifest.mjs tools/assets.mjs $(wildcard web/*.mjs) $(WASM_SOURCES) web/assets.mjs web/assets.wasm
+define build_wasm
+	@if command -v emcc >/dev/null 2>&1; then \
+		$(MAKE) -f tools/portable/Makefile $(1) web/assets.mjs; \
+	elif command -v docker >/dev/null 2>&1; then \
+		docker run --rm --user "$$(id -u):$$(id -g)" -v "$(CURDIR):/work:Z" -w /work $(WASM_IMAGE) \
+			make -f tools/portable/Makefile $(1) web/assets.mjs; \
+	else \
+		echo 'The asset pipeline needs Emscripten or Docker.' >&2; exit 1; \
+	fi
+endef
+web/assets.mjs web/assets.wasm &: $(WASM_SOURCES)
+	$(call build_wasm,$(if $(wildcard web/assets.wasm),,-B))
+web/resources.json: resources.toml tools/export_web_manifest.mjs
+	node tools/export_web_manifest.mjs
 ifeq ($(ASSETS),0)
 nitrofs/.stamp:
 	@mkdir -p nitrofs && touch $@
 else
 nitrofs/.stamp: $(ASSET_DEPS)
-	python3 tools/assets.py build
+	node --max-old-space-size=4096 tools/assets.mjs build --source "$(SOURCE)" --output nitrofs
 endif
-.PHONY: all build build-ds build-dsi build-sd-ds build-sd-dsi build-quick stage-sd sdcard dldi sd run run-ds run-sd run-sd-ds assets sync radio-sync radio-assets force
+.PHONY: all build build-ds build-dsi build-sd-ds build-sd-dsi build-quick stage-sd sdcard dldi sd run run-ds run-sd run-sd-ds assets sync radio-sync radio-assets package-sd force
 .DEFAULT_GOAL := all
 all: build
 .NOTPARALLEL: build
@@ -61,13 +79,21 @@ build-sd-dsi:
 build-quick:
 	@$(MAKE) -f Makefile.blocksds --no-print-directory QUICKTEST=1 build
 assets:
-	python3 tools/assets.py build
+	@$(MAKE) -f Makefile.blocksds web/resources.json web/assets.wasm
+	node --max-old-space-size=4096 tools/assets.mjs build --source "$(SOURCE)" --output "$(ASSET_OUT)"
 sync:
-	python3 tools/assets.py sync
+	@if [ "$(SOURCE)" = "game" ]; then echo 'Use make sync SOURCE="/path/to/GTA San Andreas"' >&2; exit 1; fi
+	node tools/assets.mjs sync --source "$(SOURCE)" --output game
 radio-sync:
-	python3 tools/assets.py sync radio_streams
+	@if [ "$(SOURCE)" = "game" ]; then echo 'Use make radio-sync SOURCE="/path/to/GTA San Andreas"' >&2; exit 1; fi
+	node tools/assets.mjs sync --source "$(SOURCE)" --output game --section radio_streams
 radio-assets:
-	python3 tools/assets.py build radio_streams
+	@$(MAKE) -f Makefile.blocksds web/assets.wasm
+	node --max-old-space-size=4096 tools/assets.mjs build --source game --output build/radio/gtasads --section radio_streams
+package-sd:
+	@if [ -z "$(ROM)" ] || [ -z "$(ZIP)" ]; then echo 'Use make package-sd SOURCE="/path/to/GTA SA" ROM=build/gtasads.nds ZIP=build/gtasads.zip' >&2; exit 1; fi
+	@$(MAKE) -f Makefile.blocksds web/assets.wasm
+	node --max-old-space-size=4096 tools/assets.mjs build --source "$(SOURCE)" --output build/package/gtasads --rom "$(ROM)" --zip "$(ZIP)"
 stage-sd: nitrofs/.stamp
 	@mkdir -p build/gtasads
 	@cp -au nitrofs/. build/gtasads/
@@ -76,13 +102,13 @@ sdcard: build-sd-ds build-sd-dsi stage-sd
 sd: sdcard
 dldi: build-sd-ds build-sd-dsi
 run: build-dsi
-	python3 tools/run.py dsi rom "$(EMU)"
+	node tools/run.mjs dsi rom "$(EMU)"
 run-ds: build-ds
-	python3 tools/run.py ds rom "$(EMU)"
+	node tools/run.mjs ds rom "$(EMU)"
 run-sd: build-sd-dsi stage-sd
-	python3 tools/run.py dsi sd "$(EMU)"
+	node tools/run.mjs dsi sd "$(EMU)"
 run-sd-ds: build-sd-ds stage-sd
-	python3 tools/run.py ds sd "$(EMU)"
+	node tools/run.mjs ds sd "$(EMU)"
 single: $(ROM)
 force:
 $(OUT)/.optsig: force

@@ -5,7 +5,7 @@
 #include "assets/ds_formats.h"
 
 // CModelInfo (vehicle part) + cHandlingDataMgr + CVehicleModelInfo colours +
-// SurfaceInfos_c adhesion, all from data/vehicles.dveh (tools/gtasa/vehicles.py,
+// SurfaceInfos_c adhesion, all from data/vehicles.dveh (tools/portable/vehbuild.c,
 // handling already in game units). Only the header, the carcols table, the
 // surface table and a 4-byte index per vehicle stay resident (~2.5 KB); a
 // VehInfo record (228 B) is read when a vehicle model is requested.

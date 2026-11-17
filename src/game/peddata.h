@@ -6,7 +6,7 @@
 
 // The ped half of CModelInfo + CPedStats + CPopulation's ped groups + CPopCycle's
 // table + CTheZones' zone info + CPathFind's ped nodes, from data/peds.dped
-// (tools/gtasa/peds.py). Resident: the 12 B model records, stats, walkcycle
+// (tools/portable/pedbuild.c). Resident: the 12 B model records, stats, walkcycle
 // anim groups, ped groups and zones. Ped/road graph cells are loaded from the
 // global map on demand; model names and popcycle rows are read on demand.
 namespace peddata {

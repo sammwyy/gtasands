@@ -138,7 +138,7 @@ static void colTest(int f) {
 // rain + a lightning flash (thunder), M4 bursts, then a sandstorm (the
 // ambience stream). Writes the audio stats line per phase to
 // gtasads_audtest.txt and records the mixer output (both capture units) of
-// each phase to gtasads_aud_<phase>.wav (tools/audwav.py prints levels).
+// each phase to gtasads_aud_<phase>.wav (tools/audwav.mjs prints levels).
 static void audTest(int f) {
 	static FILE* out;
 	static char capPath[40];
@@ -762,7 +762,7 @@ void draw() {
 #ifdef GTASADS_PEDTEST
 			pedTest(s_gameFrames);
 #endif
-			// headless screenshots (tools/dsshot.py): one per compass direction
+			// headless screenshots (tools/dsshot.mjs): one per compass direction
 			// (shot0 at the marker frame, then turn, give streaming 60 frames,
 			// capture), a bird's eye view (shot4), then a teleport 150 m west to
 			// exercise sector streaming + eviction (shot5, gtasads_hudok2.txt)

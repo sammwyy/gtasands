@@ -17,7 +17,7 @@ export async function convertOriginalMovies(original, converted, progress = () =
     const generated = [];
     try {
         for (const [source, target] of missing) {
-            progress(`Converting ${source} in your browser…`);
+            progress(`Converting ${source}…`);
             const result = await new Promise((resolve, reject) => {
                 worker.onmessage = event => event.data.error ?
                     reject(new Error(event.data.error)) : resolve(event.data);

@@ -7,7 +7,7 @@ Build/run/test commands and working rules live in `AGENTS.md`; this file is the
 ## 1. Big picture
 
 ```
-PC install --tools/assets.py sync--> game/ --tools/assets.py build--> nitrofs/ --ndstool--> build/fat-gtasads.{nds,dsi}
+PC install --node tools/assets.mjs sync--> game/ --node tools/assets.mjs build--> nitrofs/ --ndstool--> build/fat-gtasads.{nds,dsi}
                                                                          |                 build/gtasads.{nds,dsi} + build/gtasads/ (SD)
 ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading jobs -> INGAME loop
 ```
@@ -16,7 +16,7 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
   software-rendered GTA HUD (`game/hud/`) or the text debug console (`hud/debugui`), SELECT toggles.
 - `make build` produces four ROMs: `fat-` embeds NitroFS, unprefixed ROMs use
   `build/gtasads/` on SD. `.nds` is DS, `.dsi` boots DSi mode (16 MB RAM,
-  134 MHz ARM9). `tools/run.py` creates isolated melonDS profiles per variant,
+  134 MHz ARM9). `tools/run.mjs` creates isolated melonDS profiles per variant,
   with separate SD roots containing only `gtasads/` (not the asset cache);
   DSi emulation reads DSi BIOS, firmware and NAND dumps from
   `build/emulator/firmware/` or the local melonDS configuration. melonDS needs
@@ -48,7 +48,7 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `platform/fs.*` | Native `device_io_t` registered as `game:`; forwards reads to NitroFS or SD/DLDI, debug `fsok` marker |
 | `platform/timing.*` | timers 0+1, `vblanks()`, `ticks()`, `usSince()`, per-section CPU (`SEC_3D/SIM/HUD`) |
 | `mem/` | memory manager (budget.h regions, TLSF, scratch stack, perm arena, `Pool<T>`) |
-| `assets/ds_formats.h` | every binary layout (mirrors the Python writers, static_asserts) |
+| `assets/ds_formats.h` | every binary layout (mirrors the portable C writers, static_asserts) |
 | `assets/pack.*` | DSPK reader (sorted FNV-1a TOC) |
 | `assets/texture.*` | DTEX -> VRAM, `tex::Group` (FRONTEND / GAME / WORLD) for bulk unloads |
 | `assets/txdfile.*` | loose DTXD read per entry into scratch (never whole) |
@@ -85,7 +85,7 @@ ARM9 runtime (src/):  boot -> intro movies -> title -> frontend menu -> loading 
 | `hud/hud.*` | bottom-screen owner: GAME (chud) vs DEBUG (console), log ring, DEBUG hudok marker |
 | `hud/debugui.*` | touch tabs LOG / PERF / MEM / GAME / REND / SKY / CHTS |
 
-Other dirs: `tools/` (pipeline, `hosthud/` host HUD harness, `dldi/`, `dsshot.py` DEBUG screenshot -> PNG), `game/` (gitignored PC
+Other dirs: `tools/` (Node/C-WASM pipeline, `hosthud/` host HUD harness, `dldi/`, `dsshot.mjs` DEBUG screenshot -> PNG), `game/` (gitignored PC
 files), `nitrofs/` (gitignored output), `build/` (ROMs, SD directory, `tmp/` per-variant objects,
 isolated emulator profiles, `assets_cache/`, reports, previews).
 
@@ -304,9 +304,9 @@ Simulation is fixed-step 60 Hz (one `updateMove` per elapsed vblank, max 4).
   backdrop. The original `cstaxi92` and `cscopcarla92` DFF/TXD models render
   through the vehicle model streamer and follow their
   cutscene root position/heading; wheel/door/body sub-tracks are not applied.
-- `tools/gtasa/ifp.py` converts CUTS.IMG ANPK into streamed DANM. For tracks
+- `tools/portable/ifp.c` converts CUTS.IMG ANPK into streamed DANM. For tracks
   whose root travels farther than the older +/-32 m format, DANM v3 stores
-  a per-sequence `transShift`; v2 remains readable. `tools/assets.py sync`
+  a per-sequence `transShift`; v2 remains readable. `tools/assets.mjs sync`
   extracts selected `.cut/.dat/.ifp` from `anim/cuts.img` and the selected
   DFF/TXD files from `models/cutscene.img`, keeping PC binaries out of git.
   The extracted CUTSCENE audio streams for PROLOG1 (track 706, ~22.37 s) and
@@ -468,7 +468,7 @@ runtime only reads `data/world.dwld` (DWLD, `ds_formats.h`).
 ## 6c. Collision (`game/collision.*`, `render/overlay.*`)
 
 CCollision / CColStore / CWorld::ProcessLineOfSight reduced to an on-foot player + camera.
-- **Data** (offline, `world.py`): the COL of every DWLD model (first definition in the gta3.img
+- **Data** (offline, `tools/portable/worldbuild.c`): the COL of every DWLD model (first definition in the gta3.img
   `.col` archives), model space, 1/128 m s16 ("cu"). Faces re-wound to CCW-front
   (`(c-a)x(b-a)` in COL), unit normal 4.12 per face, degenerate ones dropped, then a BVH (median
   split, <= 6 faces per leaf, 16 B nodes); boxes + spheres kept as they are; per-model radius in
@@ -504,7 +504,7 @@ CCollision / CColStore / CWorld::ProcessLineOfSight reduced to an on-foot player
 
 CVehicleModelInfo / cHandlingDataMgr / CAutomobile / CBike / CBoat / CHeli / CPlane / CTrain / CPhysical /
 CDamageManager / CAEVehicleAudioEntity, reduced; every IDE type spawns, pool of 8 (`veh::MAX`).
-- **Data** (offline, `tools/gtasa/vehicles.py`, section `[vehicles]` -> `data/vehicles.dveh` v2, `ds::Veh*`):
+- **Data** (offline, `tools/portable/vehbuild.c`, section `[vehicles]` -> `data/vehicles.dveh` v2, `ds::Veh*`):
   vehicles.ide (parsed like sscanf: commas or blanks, "dodo		dodo" has no comma) + handling.cfg through
   ConvertDataToGameUnits (speeds per 1/50 s step) + the `!` bike / `%` boat / `$` flying lines (VehInfo `ext[15]`,
   `fly[21]`, `extKind`, `hasFlying`) + carcols pairs + surface adhesion (surface.dat / surfinfo.dat) + the water.dat
@@ -591,7 +591,7 @@ CDamageManager / CAEVehicleAudioEntity, reduced; every IDE type spawns, pool of 
   boom, flip, hp250, tyre (burst all), skid on/off, state / susp / damage+burst+lean+rotor / perf rows.
   `GTASADS_VEHTEST` (AGENTS.md; the log line has gas / brake / handbrake / skid and the frame sections).
 - **Street traffic**: `peds.dped` v5 also carries compact vehicle path nodes/links from `data/Paths/nodes*.dat`
-  within the world bounds + 60 m (`tools/gtasa/peds.py`, `peddata::roadNode/roadLink`). Water nodes
+  within the world bounds + 60 m (`tools/portable/pedbuild.c`, `peddata::roadNode/roadLink`). Water nodes
   are excluded; switched-off and roadblock nodes from the PC file are retained in the graph but excluded
   from random traffic spawn/routes (the SCM mission road switches are not implemented). `cargrp.dat` groups (18 civilian, 10 gang, dealers)
   are resolved against `vehicles.ide` at build time; each traffic spawn samples its own `info.zon` zone,
@@ -622,7 +622,7 @@ CDamageManager / CAEVehicleAudioEntity, reduced; every IDE type spawns, pool of 
 ## 6e. Peds (`game/peddata.*`, `game/pedmodel.*`, `game/pedanim.*`, `game/peds.*`)
 
 CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, reduced; pool of `budget::MAX_PEDS` 12.
-- **Data** (offline, `tools/gtasa/peds.py`, section `[peds]` -> `data/peds.dped` v5, `ds::Ped*`): peds.ide (12 B
+- **Data** (offline, `tools/portable/pedbuild.c`, section `[peds]` -> `data/peds.dped` v5, `ds::Ped*`): peds.ide (12 B
   resident record per model, names read on demand), pedstats, pedgrp.dat (57 ePopcyclePedGroup lines), popcycle.dat
   rows (read on demand), the walkcycle groups of animgrp.dat (index 0 = man; missing clips fall back to it at
   runtime), info.zon zones touching the exterior world with main.scm's new-game zone setup (SET_ZONE_POPULATION_TYPE /
@@ -754,7 +754,7 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   them on both map views. The legend lists only types present in the current view, with labels
   resolved from the active GXT (`LG_*` keys from CRadar::GetBlipName), never fixed translations.
   IPL service and generic property icons are hidden until the CHTS WORLD unlock-all-interiors switch.
-  `data/entry_exits.denx` v3 contains 376 IPL `enex` records (`tools/gtasa/entry_exits.py`,
+  `data/entry_exits.denx` v3 contains 376 IPL `enex` records (`tools/portable/enexbuild.c`,
   64 B per record); the loading job reads it into STREAM once per boot. The current
   area is separate from the `enex` destination area, with reciprocal named links and
   an origin record for returning from reused interior layouts. Unpaired area-changing
@@ -883,7 +883,7 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   (`[audio_config]` copy section) gives GetDefaultVolume per event.
 - Cost: ~0.4 ms/frame idle (4 ambient loops), ~0.6 rain, ~0.9 under M4 fire; soft-float bound.
 - Debug: PERF rows 21-22, MEM rows 17-18, `aud:` line in hudok / coltest; `GTASADS_AUDTEST`
-  (AGENTS.md) records the mixer with the capture units to WAVs (`tools/audwav.py`).
+  (AGENTS.md) records the mixer with the capture units to WAVs (`tools/audwav.mjs`).
   `GTASADS_RADIOTEST` enables Always Radio, retunes twice and records the track,
   streaming cost and mixer output. In a DEBUG DS SD run with the full 259 MB
   radio packs, stream service was usually ~0.5-0.7 ms, with occasional ~4.8 ms
@@ -911,32 +911,70 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
 
 ## 10. Asset pipeline (`tools/`)
 
-- `tools/assets.py sync|build|report|list|info|preview` (see AGENTS.md for invocations).
-  Pure Python + multiprocessing, cached per entry (key = handler + params + source entry + hash of
-  the handler's modules). Editing a handler module rebuilds that handler's outputs only.
-- `tools/package_sd.py` reads an original installation through a temporary linked staging tree,
-  runs the same asset rules and writes an SD ZIP with a code-only `.nds` or `.dsi` and `gtasads/`.
+- `make assets` and `make build` use `tools/assets.mjs` on Node 22 to run the
+  same `web/` section planners and C/WASM converters as the browser.
+  `resources.toml` defines conversion rules; `tools/export_web_manifest.mjs`
+  exports a path-free, byte-compatible `web/resources.json` for both CLI and browser.
+  The Makefiles and CLI regenerate it when the source changes.
+  `make sync SOURCE=/path/to/GTA` stages originals under `game/`, or
+  `make assets SOURCE=/path/to/GTA` builds directly from the original install.
+  `make package-sd SOURCE=... ROM=build/gtasads.nds ZIP=build/gtasads.zip`
+  converts and writes a streaming SD ZIP; `--package-only` packages an existing
+  output tree. `make sync` stages selected original cutscene IMG entries as
+  loose files while the direct build can extract them without staging.
+  The independent `radio_streams` section is SD-only.
+  Node reads large IMG and audio files by range, accepts linked radio files,
+  and converts every enabled non-radio section without a scripting-language converter.
+  A local full game install produced 391 outputs (~389 MiB) and a validated
+  392-entry ROM/SD ZIP, with the SD-only radio stations excluded. The generated
+  assets, staged with the code-only DS ROM in an isolated melonDS SD profile,
+  booted through the menu and intro to controllable CJ in gameplay.
+  The Node browser smoke test also completed a local synthetic original-folder
+  conversion and SD ZIP in headless Chromium; an actual Windows selection
+  still needs user confirmation. Native C/WASM and the existing output agree
+  byte-for-byte for
+  world, peds, vehicles, entrances, radar, loose assets, text and all IMG
+  entries, including seven DFFs checked against frozen reference conversions.
+  MPEG and audio have the already-documented decoder differences. The Node
+  orchestration has a section-level stat-based cache and a size/budget report
+  (`node tools/assets.mjs report`); `--force` bypasses the cache and
+  `--prune` explicitly removes obsolete outputs tracked by the CLI.
+  It does not provide per-entry caching. The Node CLI supports
+  `list`, `info` and `preview` using the same IMG/TXD/DFF/COL C parsers and
+  native TXD decoder; PNG previews are written under `build/preview/`.
+  The Node suite under `tools/tests/` checks frozen reference outputs and
+  native/WASM/browser equivalence. No Makefile asset build, browser
+  conversion or Pages deployment invokes the retired tooling. `tools/run.mjs`
+  launches isolated emulator profiles from Makefiles.
   `tools/portable/` contains the C11 conversion core (`make -f tools/portable/Makefile native|wasm`);
-  `--native-lib build/libgtasads_assets.so` selects it in the Python packager. The native core covers
-  DSPK, DTEX/TXD, IMG indexing, radar, ADPCM, map points, COL, IFP, DFF/DMDL conversion
+  `build/libgtasads_assets.so` exposes the same functions to native callers.
+  `build/assets_data_cli` is an incremental native orchestration entry point:
+  `build/assets_data_cli GTA_FOLDER OUTPUT_DIR [world|peds|vehicles|entry_exits|map_points ...]`
+  writes the five generated `data/` assets using the same C conversions as WASM,
+  without overwriting existing outputs. It accepts `--bounds X0 Y0 X1 Y1`,
+  `--sector N`, and `--no-lods`; the caller supplies the destination directory.
+  With no sections it generates all five. The unified Node/WASM pipeline
+  handles the remaining sections and ZIP packaging; the data-only native
+  binary does not read `web/resources.json`. Its five outputs match
+  the current locally built assets byte for byte on the real game directory.
+  The native core covers DSPK, DTEX/TXD, IMG indexing, radar, ADPCM, map points, COL, IFP, DFF/DMDL conversion
   (cluster, QEM and wedge decimation, including skinned/rigid models), IDE and IPL text/binary
   records. Browser `img_worker.mjs` reads original IMG entries by range, resolves the
   same `resources.json` rules, runs TXD/DFF/COL/IFP conversion through the unified
   WASM module, and writes the same DSPK format via C callbacks. A mixed
-  real-entry sample package matched Python byte for byte. The pipeline also covers
+  real-entry sample package matched frozen reference bytes. The pipeline also covers
   native ENEX-to-DENX parsing/packing (`build/enex_cli` for explicit IPL
   paths), autonomous `enexbuild.c` from gta.dat/IPLs
-  (`build/enexbuild_cli`, Python and `entrance_worker.mjs`), and
-  DENX-to-DPOI map points. A real DENX/DPOI matched native C/WASM and Python.
+  (`build/enexbuild_cli` and `entrance_worker.mjs`), and
+  DENX-to-DPOI map points. A real DENX/DPOI matched native C/WASM and reference bytes.
   The native core also parses COL archives for DWLD collision BVHs, IPL instance planning
   (LOD links, bounds and model filtering), gta.dat section parsing, main/interior IMG
   source lookup, model/TXD parent-table planning, sector bucketing and DWLD binary packing.
   `worldbuild.c` now orchestrates those readers and writers from original files,
   including all COL archives and both IMG files. The autonomous
-  `build/worldbuild_cli` accepts the original folder; Python selects the same
-  C orchestrator for valid IMG archives, and the browser uses synchronous
+  `build/worldbuild_cli` accepts the original folder; the browser uses synchronous
   range callbacks in `web/world_worker.mjs` so it need not load the entire
-  IMG archives. The complete 35,708,100-byte DWLD matched the Python reference;
+  IMG archives. The complete 35,708,100-byte DWLD matched the frozen reference;
   a bounded real world also matched native C and WASM byte for byte.
   The core also covers
   audio name/lookup tables, Ogg/Vorbis stream metadata and portable
@@ -944,48 +982,48 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   `1ee679ca2ef753a528db5ba6801e1067b40481b8`, locally patched to
   validate stream offsets before pointer arithmetic; vendored SHA-256
   `54fd6a64c05e7267e8950178b9bbe30f4387c921c1bc45f456be5389a698c54e`).
-  Python without the native library still decodes OGG with `ffmpeg`;
-  `GTASADS_NATIVE_LIB` and the browser share C encrypted-stream decryption,
+  Native CLI and browser share C encrypted-stream decryption,
   stb_vorbis decoding, stereo-to-mono conversion and DSND encoding. Small PCM
-  differences from `ffmpeg` are accepted for this media path.
-  Python and C use the same integer 48-tap/512-phase windowed-sinc FIR kernel
-  (`tools/generate_resample_table.py` produces its lookup table) to downsample
+  differences from `ffmpeg` are accepted in media reference tests.
+  The C core uses an integer 48-tap/512-phase windowed-sinc FIR kernel
+  (`tools/generate_resample_table.mjs` produces its lookup table) to downsample
   to the DS rate without browser-dependent resampling. MPEG-1/MP2 decoding
   uses MIT-licensed `pl_mpeg.h` (pinned to
   `c871f2be022ece7ef4f64230b4fb8e1fb9eb6023`, SHA-256
   `3a8cb30c83c2a1147719c30fe0c8b93da2987aa43140077c575b39aaa75fc2c9`)
   for native/WASM movie conversion. The C route scales YUV frames, builds a
   median-cut 256-colour palette, downsamples decoded audio with the shared FIR
-  and packs DVID; the Python-only fallback still uses `ffmpeg`. Native movies
-  need not be byte-identical to that fallback;
-  DSND/DSBK/DSST/DSFX/DSBL audio packing (including native
+  and packs DVID; comparison with `ffmpeg` allows codec rounding differences.
+  The core also covers DSND/DSBK/DSST/DSFX/DSBL audio packing (including native
   `build/audio_pack_cli` for DSFX) and
-  encrypted-stream decryption, and DVEH IDE/handling/special/colour/surface/water/train
+  encrypted-stream decryption, plus DVEH IDE/handling/special/colour/surface/water/train
   parsing and serialization (`build/veh_cli` from explicit source paths).
   `vehbuild.c` also assembles DVEH from an original folder through
-  case-insensitive file callbacks; `build/vehbuild_cli`, Python and browser
-  `vehicle_worker.mjs` all use it. A real DVEH matched Python and native/WASM
+  case-insensitive file callbacks; `build/vehbuild_cli` and browser
+  `vehicle_worker.mjs` both use it. A real DVEH matched native/WASM
   byte for byte. The core also contains
   DPED IDE/stats/animation-group/ped+car group/zone/path parsing and graph packing, SCM zone
   population setup, popcycle text parsing and rescaling, model/stat/group tables and
   binary packing. `pedbuild.c` assembles DPED autonomously from the original
-  installation; `build/pedbuild_cli`, Python native bindings and browser
-  `ped_worker.mjs` use this same path. The full 1,543,790-byte DPED matches
-  Python exactly, and a bounded real-world DPED matches native C/WASM byte
-  for byte. Python serves as a byte-for-byte test oracle for the
-  matching non-multimedia formats. `dsfmt.write_pack` also streams DSPK through
-  the C writer when the native library is selected; Python remains the fallback.
+  installation; `build/pedbuild_cli` and browser `ped_worker.mjs`
+  use this same path. The full 1,543,790-byte DPED matches
+  frozen reference bytes, and a bounded real-world DPED matches native C/WASM byte
+  for byte. Tests retain frozen hashes for matching non-multimedia formats.
+  The CLI and browser both stream DSPK through the portable C writer.
   DFF sphere radii also use the portable reader during DWLD generation.
   `web/` hosts browser-side WASM integration, a streaming ZIP32 writer,
-  a code-only `resources.json` exported from Python conversion rules, browser
-  section/rule resolution checked against `Config.params`, source-rate Web Audio
+  a path-free `resources.json` exported from `resources.toml` by Node, browser
+  section/rule resolution checked against frozen rule selections, source-rate Web Audio
   PCM16 rounding/mixing checked against a real `ffmpeg` decode, and
   `web/streams.mjs` for C/WASM decryption, Vorbis decoding, FIR/ADPCM and DSND
   encoding (with browser-local Web Audio as a fallback), and `web/movies.mjs` for native/WASM
   MPEG-to-DVID conversion. The installer can now create the ZIP from the
   original GTA SA folder alone: `index.html`/`style.css` center the folder
-  selector and ZIP action, with manual options collapsed and a per-stage
-  progress bar (indeterminate when no item count is available).
+  selector and ZIP action, with manual options collapsed, a current-task
+  progress bar (indeterminate when no item count is available), and a second
+  bar for the overall conversion stages and streamed ZIP entries. If a Windows
+  directory picker omits `data/handling.cfg`, `folder.mjs` queries that file
+  handle directly; a manual file picker is offered only when it remains missing.
   Workers read IMG archives by range, convert
   world, peds, vehicles, ENEX/DPOI, radar, loose assets and intro movies;
   SFX banks and encrypted Vorbis tracks are read by range and packed by the
@@ -1001,7 +1039,7 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   verification discarded ZIP writes after checking their sizes and central
   directory names; it did not persist game-derived files or upload them.
   The unified `assets.mjs` build target exports these
-  functions. `tools/mirror_rom_release.py` verifies the
+  functions. `tools/mirror_rom_release.mjs` verifies the
   latest release's code-only ROM SHA-256 and stages same-origin copies in
   `web/roms/` so a browser can read them; direct GitHub asset URLs do not
   allow cross-origin reads. Neither ROM mirror nor ZIP may include original
@@ -1016,10 +1054,12 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
 - `resources.toml`: `[global]`, `[defaults.<handler>]`, sections (`kind` = img/files/copy/sfx/
   streams/...) with `[[section.rule]]` (`match`, `match_ide`, `match_texture`, `remove`, handler
   overrides). Resolution: defaults -> section -> rules -> global multipliers.
-- Readers (`tools/gtasa/`): rw, img, txd (D3D8/9, DXT, PAL8...), dff, col (tolerant), ifp (ANP3),
-  audio. Converters: `ds_texture.py` (pow2 from best mip, median cut, pal4/16/256, a3i5, a5i3,
-  direct, `additive`), `ds_mesh.py` (cluster or QEM decimation, s16 quantisation, tris by
-  material), `ds_misc.py` (DCOL, DANM), `ds_radar.py`, `intro.py`, `dsfmt.py` (fixed point, DSPK).
+- Readers/converters (`tools/portable/`): IMG, TXD (D3D8/9, DXT, PAL8...), DFF,
+  COL, IFP (ANP3/ANPK), audio, video, world, peds and vehicles. `texture.c`/`dtex.c`
+  implement mip selection, median-cut palettes and DS texture formats;
+  `dmdl.c`/`cluster.c`/`qem.c` implement s16 mesh packing/decimation.
+  `web/` orchestrates those same native C functions through WASM, and
+  `tools/assets.mjs` uses the same modules for CLI asset builds.
 - Output formats (details in `ds_formats.h`): DSPK packs (`models/gta3.dspk`, `gta_int.dspk`,
   `player.dspk`, `anim/anim.dspk`) with original entry names; loose files keep lowercased paths;
   `data/**` and `text/*.gxt` verbatim (runtime must lowercase paths read from data files),
@@ -1029,7 +1069,7 @@ CPopulation / CPopCycle / the ped part of CStreaming / CPed + street tasks, redu
   DCOL, DANM); `.ipl/.dat` inside IMGs copied raw. TOC sorted by FNV-1a(lowercase name),
   16 B/entry in RAM (gta3 = 256 KB, hence the sparse index). DSND = DS IMA-ADPCM (4-byte header,
   nibbles low first) or PCM8/16. `banks.dsbl` maps global bank id -> pak/index.
-- World (`kind = "world"`, `tools/gtasa/world.py`): gta.dat -> IDE objs/tobj/anim/txdp, IPL inst
+- World (`kind = "world"`, `tools/portable/worldbuild.c`): gta.dat -> IDE objs/tobj/anim/txdp, IPL inst
   + binary `<ipl>_stream<N>.ipl` from gta3.img and gta_int.img (lod indices point into the text IPL),
   all IPL areas retained, LODs retained (`lods = true`, 100 m linked HD/LOD switching), no `bounds` crop
   (all exterior San Andreas + IPL interiors); only sectors around the player are resident. Ped/traffic
@@ -1095,6 +1135,6 @@ Hud.cpp, Radar.cpp, TimeCycle.cpp, Weather.cpp, Clouds.cpp, Coronas.cpp, Clock.c
 Audio/Entities/AEVehicleAudioEntity.cpp (section 6d). Ported so far: Clock (in player),
 TimeCycle, Weather, Clouds (sky polys + Render), Coronas (sun only), Hud, Radar, MenuManager,
 LoadingScreen, Text/Font, ClothesBuilder (CJ), parts of Ped/PlayerPed control, FileLoader
-(LoadObjectTypes/LoadObjectInstance/LoadCollisionFile, offline in world.py), a CStreaming/CRenderer
+(LoadObjectTypes/LoadObjectInstance/LoadCollisionFile, offline in `worldbuild.c`), a CStreaming/CRenderer
 subset (world.cpp), CCollision line/sphere tests + CTempColModels ped spheres (collision.cpp), CPopulation /
 CPopCycle / ped tasks / CWanted chaos (section 6e: Population.cpp, PopCycle.cpp, PathFind.cpp, Tasks/TaskTypes/*, Wanted.cpp).

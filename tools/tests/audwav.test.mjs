@@ -1,0 +1,34 @@
+import assert from 'node:assert/strict';
+import {mkdtemp, readFile, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import test from 'node:test';
+import {analyzeWave, readWave} from '../audwav.mjs';
+
+test('WAV analyzer reads stereo PCM16 and produces the waveform PNG', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'gtasads-audwav-test-'));
+    const wav = join(root, 'capture.wav'), png = join(root, 'capture.png');
+    const data = Buffer.alloc(52);
+    data.write('RIFF');
+    data.writeUInt32LE(44, 4);
+    data.write('WAVEfmt ', 8);
+    data.writeUInt32LE(16, 16);
+    data.writeUInt16LE(1, 20);
+    data.writeUInt16LE(2, 22);
+    data.writeUInt32LE(8000, 24);
+    data.writeUInt32LE(32000, 28);
+    data.writeUInt16LE(4, 32);
+    data.writeUInt16LE(16, 34);
+    data.write('data', 36);
+    data.writeUInt32LE(8, 40);
+    data.writeInt16LE(32767, 44);
+    data.writeInt16LE(-32768, 46);
+    data.writeInt16LE(0, 48);
+    data.writeInt16LE(0, 50);
+    await writeFile(wav, data);
+    assert.deepEqual([...readWave(data).left], [32767, 0]);
+    const result = await analyzeWave(wav, 1, png);
+    assert.match(result, /clipped 1/);
+    assert.match(result, /2 samples @ 8000 Hz/);
+    assert.equal((await readFile(png)).subarray(1, 4).toString(), 'PNG');
+});

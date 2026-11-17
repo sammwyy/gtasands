@@ -1,7 +1,6 @@
 import {convertStreamNative} from './streams.mjs';
 
 const decoder = new TextDecoder('latin1');
-const encoder = new TextEncoder();
 const formats = {pcm8: 0, pcm16: 1, adpcm: 2};
 
 export function audioNames(data, width) {
@@ -66,7 +65,8 @@ function nativePack(module, entries, kind, names = [], seekable = false) {
         } else {
             const pointersToNames = malloc(names.length * 4);
             for (const [i, name] of names.entries()) {
-                const label = encoder.encode(name);
+                const label = Uint8Array.from(name, char =>
+                    char.codePointAt(0) <= 255 ? char.codePointAt(0) : 63);
                 const pointer = malloc(label.length + 1);
                 module.HEAPU8.set(label, pointer);
                 module.HEAPU8[pointer + label.length] = 0;
@@ -125,11 +125,11 @@ function convertBank(module, data, params) {
     }
 }
 
-async function config(original, names, lookup) {
-    const nameFile = original.get(`audio/config/${names.toLowerCase()}`);
-    const lookupFile = original.get(`audio/config/${lookup.toLowerCase()}`);
+async function config(original, names, lookup, directory = 'config') {
+    const nameFile = original.get(`audio/${directory}/${names.toLowerCase()}`);
+    const lookupFile = original.get(`audio/${directory}/${lookup.toLowerCase()}`);
     if (!nameFile || !lookupFile)
-        throw new Error(`Missing audio/CONFIG/${!nameFile ? names : lookup}.`);
+        throw new Error(`Missing audio/${directory}/${!nameFile ? names : lookup}.`);
     return [
         new Uint8Array(await nameFile.arrayBuffer()),
         new Uint8Array(await lookupFile.arrayBuffer())
@@ -202,9 +202,11 @@ async function alignedTrack(module, file, expected) {
 }
 
 export async function convertStreams(module, planner, original, existing,
-                                     progress = () => {}, maxTracks = Infinity) {
+                                     progress = () => {}, maxTracks = Infinity,
+                                     sectionName = 'audio_streams') {
+    const section = planner.manifest.sections[sectionName];
     const [namesData, lookupData] = await config(original, 'StrmPaks.dat',
-                                                'TrakLkup.dat');
+        'TrakLkup.dat', section.lookup_dir?.toLowerCase() || 'config');
     const names = audioNames(namesData, 16);
     const entries = audioLookup(lookupData);
     const groups = new Map();
@@ -217,7 +219,7 @@ export async function convertStreams(module, planner, original, existing,
         const output = `audio/streams/${name.toLowerCase()}.dsst`;
         if (existing.has(output)) continue;
         const {params, removed} = await planner.params(
-            'audio_streams', 'audio', name);
+            sectionName, 'audio', name);
         const file = original.get(`audio/streams/${name.toLowerCase()}`);
         const count = processed.get(name) ?? 0;
         const limit = params.max_tracks ?? 0;
@@ -245,7 +247,7 @@ export async function convertStreams(module, planner, original, existing,
         a < b ? -1 : a > b ? 1 : 0)) {
         const path = `audio/streams/${name.toLowerCase()}.dsst`;
         files.push({path, file: new Blob([nativePack(module, tracks, 'streams',
-            [], !!planner.manifest.sections.audio_streams.audio?.seekable)])});
+            [], !!section.audio?.seekable)])});
     }
     return {files, tracks: converted};
 }

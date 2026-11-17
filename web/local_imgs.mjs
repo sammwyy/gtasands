@@ -17,7 +17,7 @@ export async function convertOriginalIMGs(original, converted, manifest,
     const generated = [];
     try {
         for (const section of missing) {
-            progress(`Converting ${section} in your browser…`);
+            progress(`Converting ${section}…`);
             const result = await new Promise((resolve, reject) => {
                 worker.onmessage = event => {
                     if (event.data.progress) progress(event.data.progress);

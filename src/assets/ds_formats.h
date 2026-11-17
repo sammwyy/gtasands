@@ -1,8 +1,8 @@
 #pragma once
 
-// Binary formats produced by tools/assets.py (tools/gtasa/*). Little endian,
+// Binary formats produced by tools/assets.mjs (tools/portable/*). Little endian,
 // every block 4-byte aligned. Fixed point: fx32 = 20.12, fx16 = 4.12.
-// Keep in sync with the Python writers; bump `version` on layout changes.
+// Keep in sync with the C writers; bump `version` on layout changes.
 
 #include <stdint.h>
 
@@ -201,7 +201,7 @@ struct MapPoint {
 static_assert(sizeof(PointHeader) == 8 && sizeof(MapPoint) == 6);
 
 // ---------------------------------------------------------------- DWLD (map placement, data/world.dwld)
-// tools/gtasa/world.py runs CFileLoader (gta.dat -> IDE objs/tobj/anim/txdp,
+// tools/portable/worldbuild.c runs CFileLoader (gta.dat -> IDE objs/tobj/anim/txdp,
 // IPL inst + binary stream IPLs) offline. Instances are bucketed into a
 // gridW x gridH sector grid (row-major from the south-west corner, x fastest).
 struct WorldHeader {
@@ -268,7 +268,7 @@ struct WorldColNode { int16_t min[3], max[3]; uint16_t a, b; };
 struct WorldColFace { uint16_t a, b, c; uint8_t surface, light; int16_t n[3]; uint16_t pad; };
 
 // ---------------------------------------------------------------- DVEH (vehicles, data/vehicles.dveh)
-// tools/gtasa/vehicles.py: vehicles.ide (cars section) + handling.cfg already
+// tools/portable/vehbuild.c: vehicles.ide (cars section) + handling.cfg already
 // in game units (cHandlingDataMgr::ConvertDataToGameUnits: speeds per 1/50 s
 // step, accelerations per step^2) + carcols.dat + the surface adhesion tables.
 // Floats are IEEE singles (read on the ARM9 with soft float, never per vertex).
@@ -336,7 +336,7 @@ struct VehInfo {
 struct VehSurface { uint8_t adhesionGroup; int8_t wetGrip; uint8_t skidmark, pad; };
 
 // ---------------------------------------------------------------- DPED (ped population, data/peds.dped)
-// tools/gtasa/peds.py: peds.ide (CFileLoader::LoadPedObject), pedstats.dat,
+// tools/portable/pedbuild.c: peds.ide (CFileLoader::LoadPedObject), pedstats.dat,
 // pedgrp.dat (57 ePopcyclePedGroup lines, members = PedModel indices),
 // popcycle.dat ([20 zone types][weekday, weekend][12 two-hour slots]), the
 // walkcycle groups of animgrp.dat the peds use (index 0 = "man"), the info.zon

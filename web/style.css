@@ -134,6 +134,19 @@ button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-v
     margin-top: 18px;
 }
 
+.progress-caption {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 7px;
+    color: #515c52;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+progress + .progress-caption {
+    margin-top: 16px;
+}
+
 progress {
     display: block;
     width: 100%;

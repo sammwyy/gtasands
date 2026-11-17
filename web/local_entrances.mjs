@@ -9,7 +9,7 @@ export async function convertOriginalEntrances(original, converted,
         ['data/map_points.dpoi', 'dpoi']
     ].filter(([path]) => !existing.has(path));
     if (!targets.length) return [];
-    progress('Converting entrances and map points in your browser…');
+    progress('Converting entrances and map points…');
     const worker = workerFactory();
     try {
         const result = await new Promise((resolve, reject) => {

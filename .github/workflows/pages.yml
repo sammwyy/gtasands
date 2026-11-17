@@ -7,9 +7,10 @@ on:
       - '.github/workflows/pages.yml'
       - 'web/**'
       - 'tools/portable/**'
-      - 'tools/export_web_manifest.py'
-      - 'tools/generate_resample_table.py'
+      - 'tools/mirror_rom_release.mjs'
+      - 'tools/export_web_manifest.mjs'
       - 'resources.toml'
+      - 'web/resources.json'
   workflow_dispatch:
 
 permissions:
@@ -29,27 +30,16 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: emscripten-core/setup-emsdk@v15
         with:
           version: 5.0.1
       - name: Build browser converters
         run: make -f tools/portable/Makefile wasm
       - name: Mirror verified code-only release ROMs
-        run: |
-          python3 - <<'PY'
-          from urllib.error import HTTPError
-          from tools.mirror_rom_release import ROOT, mirror, release
-
-          try:
-              latest = release()
-          except HTTPError as error:
-              if error.code != 404:
-                  raise
-              print('No release yet; users can select a local code-only SD ROM.')
-          else:
-              for path in mirror(latest, ROOT / 'web/roms'):
-                  print(f'Verified release ROM: {path}')
-          PY
+        run: node tools/mirror_rom_release.mjs
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:

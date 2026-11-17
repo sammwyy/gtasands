@@ -4,7 +4,7 @@
 
 // Map collision (CCollision + CWorld::ProcessLineOfSight / ProcessVerticalLine,
 // reduced to what an on-foot player and the chase camera need). The COL of
-// every map model is baked into world.dwld (tools/gtasa/world.py: model
+// every map model is baked into world.dwld (tools/portable/worldbuild.c: model
 // space, 1/128 m s16 vertices, faces in a bbox tree: BVH, <= 6 per leaf).
 //  - update(): every frame, the collision records of the instances within
 //    STREAM_M of the player are streamed in (LRU over COL_CACHE_BYTES) and the

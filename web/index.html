@@ -12,7 +12,7 @@
     <header>
         <p class="eyebrow">GTASADS / INSTALLER</p>
         <h1>GTA San Andreas DS</h1>
-        <p class="intro">Select your original GTA San Andreas folder to create an SD card ZIP. Game files are converted in your browser and never uploaded.</p>
+        <p class="intro">Select your GTA San Andreas folder to create an SD card ZIP.</p>
     </header>
 
     <div class="variant-row">
@@ -26,10 +26,15 @@
     <button id="directory" class="folder-button" type="button">Select GTA San Andreas folder</button>
     <input id="folder" type="file" webkitdirectory multiple hidden>
     <p id="folder-status" class="status" role="status">No folder selected.</p>
+    <button id="handling-button" class="secondary-button" type="button" hidden>Select missing data/handling.cfg</button>
+    <input id="handling" type="file" accept=".cfg" hidden>
 
     <button id="export" class="download-button" type="button" disabled>Download ZIP</button>
     <div id="progress-panel" class="progress-panel" hidden>
+        <div class="progress-caption">Current task</div>
         <progress id="progress" aria-label="Current step progress"></progress>
+        <div class="progress-caption"><span>Total</span><span id="total-percent">0%</span></div>
+        <progress id="total-progress" aria-label="Overall progress" max="1" value="0"></progress>
     </div>
     <p id="package-status" class="status" role="status">Select a folder to get started.</p>
 

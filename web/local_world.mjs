@@ -8,7 +8,7 @@ export async function convertOriginalWorld(original, converted, options = {},
     const required = ['data/gta.dat', 'models/gta3.img', 'models/gta_int.img'];
     const missing = required.filter(path => !original.has(path));
     if (missing.length) throw new Error(`Missing original files: ${missing.join(', ')}`);
-    progress('Converting the world to DWLD in your browser…');
+    progress('Converting the world to DWLD…');
     const worker = workerFactory();
     try {
         const result = await new Promise((resolve, reject) => {

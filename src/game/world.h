@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 // Streamed map (CWorld + CStreaming + CRenderer, heavily reduced). The map
-// placement is baked offline into data/world.dwld (tools/gtasa/world.py):
+// placement is baked offline into data/world.dwld (tools/portable/worldbuild.c):
 // a sector grid of fixed-point instances. At runtime:
 //  - a window of sectors around the player is kept in RAM (instances only),
 //  - map models (gta3.dspk DMDL) are compiled into GX display lists on

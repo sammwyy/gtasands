@@ -5,7 +5,7 @@
 
 #include "assets/model.h"
 
-// DANM (from tools/gtasa/ds_misc.py, an IFP ANP3 convert) playback. Pose is
+// DANM (from tools/portable/ifp.c, an IFP ANP3 convert) playback. Pose is
 // evaluated per hAnim node into 4x3 fixed-point matrices (20.12): rows
 // right/up/at (m[0..8]) then translation (m[9..11]).
 // All math follows the RW convention: points are row vectors (p' = p * M),

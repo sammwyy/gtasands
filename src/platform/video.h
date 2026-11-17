@@ -56,7 +56,7 @@ bool textureUploadWindow();
 // Headless screenshot: the next displayed 3D frame is captured into VRAM D
 // (borrowed from the texture allocator: whatever texture lives in D is
 // garbage afterwards, so this is for test runs) and written as a raw dump:
-// "DSCR" + u16 w, h + RGB15 pixels. tools/dsshot.py converts it to PNG.
+// "DSCR" + u16 w, h + RGB15 pixels. tools/dsshot.mjs converts it to PNG.
 void requestCapture(const char* path);
 #endif
 

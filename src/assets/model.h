@@ -4,7 +4,7 @@
 
 #include "assets/ds_formats.h"
 
-// DMDL (from tools/gtasa/ds_mesh.py) runtime view. The blob stays owned by the
+// DMDL (from tools/portable/dmdl.c) runtime view. The blob stays owned by the
 // caller; the loader parses frames + geometry pointers into one malloc block.
 // Geometry arrays are left inside the blob (already packed s16/u8).
 //

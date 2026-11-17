@@ -83,7 +83,7 @@ expanding simulation breadth further.
 3. Entities retain ids and handles, never raw pointers to evictable asset blobs.
 4. Use explicit fixed pools/arenas for world, streaming, entities, effects, and
    audio. Log pool exhaustion and degrade predictably.
-5. Any binary-layout change updates the Python writer, ds_formats.h, format
+5. Any binary-layout change updates the C writer, ds_formats.h, format
    version, and a host-side validation test together.
 6. Profile on real DS and melonDS: CPU/frame, RAM/VRAM, polygons, vertices,
    sector state, cache misses, I/O bytes, and audio underruns.

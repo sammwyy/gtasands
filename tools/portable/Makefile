@@ -9,18 +9,17 @@ LIB_HEADERS = $(filter-out tools/portable/worldcol_archive.h,$(LIB_SOURCES:.c=.h
 WASM_LIB_FLAGS = -O2 -sMODULARIZE=1 -sEXPORT_ES6=1 --no-entry -sALLOW_MEMORY_GROWTH=1 -sALLOW_TABLE_GROWTH=1 -sSTACK_SIZE=1048576 -sEXPORTED_RUNTIME_METHODS='["FS","addFunction","removeFunction","HEAPU8","HEAP16","HEAPU32"]'
 WASM_EXPORTS = -sEXPORTED_FUNCTIONS='["_malloc","_free","_dtex_free","_dtex_encode","_texture_convert_txd","_texture_inspect","_img_index_size","_img_parse_index","_img_free","_radar_convert","_adpcm_encode","_dsnd_encode","_dsnd_encode_simple","_resample_pcm16","_dsbk_convert","_dsst_pack","_dvid_pack","_mpeg_video_open","_mpeg_video_next","_mpeg_video_close","_mpeg_audio_open","_mpeg_audio_next","_mpeg_audio_close","_mpeg_movie_convert","_audio_stream_convert","_dsfx_pack","_dsbl_pack","_audio_decrypt","_audio_decrypt_parts","_audio_aligned_offset","_audio_table_names","_audio_table_entries","_ogg_read_vorbis_info","_ogg_read_stream_info","_ogg_decode_vorbis","_points_from_denx","_enex_parse","_enex_pack","_enexbuild_convert","_col_convert","_ifp_convert","_dff_radius","_dff_parse_model","_dff_free_model","_geometry_encode","_dmdl_convert","_cluster_decimate","_cluster_decimate_limited","_cluster_free","_qem_decimate","_wedge_decimate","_worldcol_pack","_worldcol_parse_archive","_worldcol_free_archive","_worldpack_encode","_worldplan_instances","_worldplan_resolve","_worldplan_parse_dat","_worldplan_sectors","_worldplan_tables","_worldbuild_convert","_vehpack_encode","_vehpack_convert_handling","_vehparse_ide","_vehparse_handling","_vehparse_water","_vehparse_track","_vehparse_special","_vehparse_carcols","_vehparse_surfaces","_vehbuild_convert","_pedpath_parse","_pedpack_encode","_pedpack_paths","_pedpop_rescale","_pedpop_parse","_pedparse_ide","_pedparse_stats","_pedparse_zones","_pedparse_animgrp","_pedparse_groups","_pedtables_encode","_pedscm_scan","_pedbuild_convert","_ipl_parse_binary","_ipl_parse_text","_ipl_rotation","_ide_parse","_dspk_write"]'
 
-.PHONY: native wasm mirror-roms
+.PHONY: native wasm mirror-roms regenerate-resample
 mirror-roms:
-	python3 tools/mirror_rom_release.py
+	node tools/mirror_rom_release.mjs
+regenerate-resample:
+	node tools/generate_resample_table.mjs
 
-tools/portable/resample_coeffs.h: tools/generate_resample_table.py
-	python3 tools/generate_resample_table.py
-
-native: build/dspk_cli build/texture_cli build/img_cli build/adpcm_cli build/audio_cli build/audio_pack_cli build/audio_stream_cli build/ogg_cli build/dvid_cli build/mpeg_video_cli build/mpeg_audio_cli build/mpeg_movie_cli build/worldbuild_cli build/pedbuild_cli build/vehbuild_cli build/enexbuild_cli build/veh_cli build/enex_cli build/ifp_cli build/dff_radius_cli build/dmdl_cli build/libgtasads_assets.so
+native: build/dspk_cli build/texture_cli build/txd_cli build/img_cli build/adpcm_cli build/audio_cli build/audio_pack_cli build/audio_stream_cli build/ogg_cli build/dvid_cli build/mpeg_video_cli build/mpeg_audio_cli build/mpeg_movie_cli build/assets_data_cli build/worldbuild_cli build/pedbuild_cli build/vehbuild_cli build/enexbuild_cli build/veh_cli build/enex_cli build/ifp_cli build/dff_radius_cli build/dmdl_cli build/libgtasads_assets.so
 wasm: web/resources.json web/dspk.mjs web/texture.mjs web/adpcm.mjs web/audio.mjs web/audio_pack.mjs web/audio_stream.mjs web/ogg.mjs web/dvid.mjs web/mpeg_video.mjs web/mpeg_audio.mjs web/mpeg_movie.mjs web/veh.mjs web/enex.mjs web/ifp.mjs web/dff_radius.mjs web/dmdl.mjs web/assets.mjs
 
-web/resources.json: resources.toml tools/export_web_manifest.py
-	python3 tools/export_web_manifest.py
+web/resources.json: resources.toml tools/export_web_manifest.mjs
+	node tools/export_web_manifest.mjs
 
 build:
 	mkdir -p build
@@ -30,6 +29,9 @@ build/dspk_cli: tools/portable/dspk.c tools/portable/dspk_cli.c tools/portable/d
 
 build/texture_cli: $(TEXTURE) tools/portable/texture_cli.c tools/portable/dtex.h tools/portable/txd.h tools/portable/texture.h tools/portable/radar.h | build
 	$(CC) $(CFLAGS) $(TEXTURE) tools/portable/texture_cli.c -o $@
+
+build/txd_cli: tools/portable/txd.c tools/portable/txd_cli.c tools/portable/txd.h | build
+	$(CC) $(CFLAGS) tools/portable/txd.c tools/portable/txd_cli.c -o $@
 
 build/img_cli: tools/portable/img.c tools/portable/img_cli.c tools/portable/img.h | build
 	$(CC) $(CFLAGS) tools/portable/img.c tools/portable/img_cli.c -o $@
@@ -63,6 +65,9 @@ build/mpeg_movie_cli: tools/portable/mpeg_video.c tools/portable/mpeg_audio.c to
 
 build/worldbuild_cli: tools/portable/worldbuild.c tools/portable/worldbuild_cli.c tools/portable/worldbuild.h tools/portable/gamefiles.c tools/portable/gamefiles.h tools/portable/dff.c tools/portable/ide.c tools/portable/img.c tools/portable/ipl.c tools/portable/worldplan.c tools/portable/worldpack.c tools/portable/worldcol.c tools/portable/worldcol_archive.c | build
 	$(CC) $(CFLAGS) tools/portable/worldbuild.c tools/portable/worldbuild_cli.c tools/portable/gamefiles.c tools/portable/dff.c tools/portable/ide.c tools/portable/img.c tools/portable/ipl.c tools/portable/worldplan.c tools/portable/worldpack.c tools/portable/worldcol.c tools/portable/worldcol_archive.c -lm -o $@
+
+build/assets_data_cli: $(LIB_SOURCES) $(LIB_HEADERS) tools/portable/gamefiles.c tools/portable/gamefiles.h tools/portable/assets_data_cli.c tools/portable/resample_coeffs.h tools/portable/vendor/stb_vorbis.c tools/portable/vendor/pl_mpeg.h | build
+	$(CC) $(CFLAGS) $(LIB_SOURCES) tools/portable/gamefiles.c tools/portable/assets_data_cli.c -lm -o $@
 
 build/pedbuild_cli: tools/portable/pedbuild.c tools/portable/pedbuild_cli.c tools/portable/pedbuild.h tools/portable/gamefiles.c tools/portable/gamefiles.h tools/portable/pedpack.c tools/portable/pedparse.c tools/portable/pedpath.c tools/portable/pedscm.c tools/portable/pedtables.c tools/portable/vehparse.c tools/portable/vehpack.c | build
 	$(CC) $(CFLAGS) tools/portable/pedbuild.c tools/portable/pedbuild_cli.c tools/portable/gamefiles.c tools/portable/pedpack.c tools/portable/pedparse.c tools/portable/pedpath.c tools/portable/pedscm.c tools/portable/pedtables.c tools/portable/vehparse.c tools/portable/vehpack.c -lm -o $@

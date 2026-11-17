@@ -18,6 +18,15 @@ export function indexFiles(entries) {
             throw new Error(`Ambiguous paths differing only in capitalization: ${key}`);
         files.set(key, file);
     }
+    if (missingFiles(files).length) {
+        const suffix = 'models/gta3.img';
+        const roots = [...files.keys()].filter(path => path.endsWith(`/${suffix}`))
+            .map(path => path.slice(0, -suffix.length))
+            .filter(prefix => requiredFiles.every(path => files.has(prefix + path)));
+        if (roots.length === 1)
+            return new Map([...files].filter(([path]) => path.startsWith(roots[0]))
+                .map(([path, file]) => [path.slice(roots[0].length), file]));
+    }
     return files;
 }
 
@@ -57,16 +66,34 @@ export async function missingConversionFiles(files) {
 }
 
 export async function* directoryFiles(directory, prefix = '') {
+    const names = new Set();
     for await (const [name, entry] of directory.entries()) {
+        names.add(name.toLowerCase());
         const path = prefix ? `${prefix}/${name}` : name;
         if (entry.kind === 'directory') yield* directoryFiles(entry, path);
         else if (entry.kind === 'file') yield {path, file: await entry.getFile()};
     }
+    if (prefix.toLowerCase().split('/').at(-1) === 'data' &&
+        !names.has('handling.cfg') && directory.getFileHandle) {
+        try {
+            const handle = await directory.getFileHandle('handling.cfg');
+            yield {path: `${prefix}/handling.cfg`, file: await handle.getFile()};
+        } catch (error) {
+            if (!['NotFoundError', 'NotAllowedError', 'TypeError'].includes(error.name))
+                throw error;
+        }
+    }
+}
+
+export function addHandlingFile(files, file) {
+    if (!file || file.name.toLowerCase() !== 'handling.cfg' || !file.size)
+        throw new Error('Select a non-empty handling.cfg from the installation data folder.');
+    files.set('data/handling.cfg', file);
 }
 
 export function selectedFiles(files) {
     return [...files].map(file => ({
-        path: file.webkitRelativePath.split('/').slice(1).join('/'),
+        path: file.webkitRelativePath.replaceAll('\\', '/').split('/').slice(1).join('/'),
         file
     }));
 }

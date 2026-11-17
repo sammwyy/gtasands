@@ -1,9 +1,9 @@
 # =============================================================================
-# GTA:SA -> NDS asset build configuration (tools/assets.py)
+# GTA:SA -> NDS asset build configuration (tools/assets.mjs)
 #
-#   python3 tools/assets.py sync      # copy what's needed from the PC install to game/
-#   python3 tools/assets.py build     # game/ -> nitrofs/  (cached, only changed entries rebuild)
-#   python3 tools/assets.py report    # size per section vs budget
+#   node tools/assets.mjs sync --source "GTA San Andreas" --output game
+#   node tools/assets.mjs build --source game --output nitrofs
+#   node tools/assets.mjs report      # size per section vs budget
 #   make assets / make                # same, from the Makefile
 #
 # Params resolve as: [defaults.<handler>] -> [<section>.<handler>] -> matching

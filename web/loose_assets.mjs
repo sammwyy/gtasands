@@ -59,7 +59,9 @@ export async function convertLooseAssets(module, planner, original, converted,
                     progress(`${path}: ${error.message}`);
                     continue;
                 }
-                if (pack) pack.set(output.split('/').at(-1), bytes);
+                if (pack) pack.set(output.split('/').at(-1),
+                    bytes instanceof Uint8Array ? bytes :
+                        new Uint8Array(await bytes.arrayBuffer()));
                 else generated.push({
                     path: output,
                     file: bytes instanceof Uint8Array ? new Blob([bytes]) : bytes
